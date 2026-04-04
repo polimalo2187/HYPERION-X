@@ -34,7 +34,7 @@ ADMIN_WHATSAPP_LINK = os.getenv("ADMIN_WHATSAPP_LINK", "").strip()
 # ============================================================
 
 MONGO_URI = os.getenv("MONGO_URL")
-DB_NAME = "TRADING_X_HIPER_PRO"
+DB_NAME = os.getenv("MONGO_DB_NAME", "TRADING_X_HIPER_PRO")
 
 if not MONGO_URI:
     raise RuntimeError("❌ MONGO_URL no está definido en variables de entorno")
@@ -131,3 +131,25 @@ REFERRAL_PAYOUT_MINUTE = int(os.getenv("REFERRAL_PAYOUT_MINUTE", "59"))
 
 VERBOSE_LOGS = (os.getenv("VERBOSE_LOGS", "False").lower() == "true")
 PRODUCTION_MODE = (os.getenv("PRODUCTION_MODE", "True").lower() == "true")
+
+
+# ============================================================
+# MINIAPP / API BACKEND
+# ============================================================
+
+MINIAPP_URL = os.getenv("MINIAPP_URL", "").strip()
+API_PORT = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
+
+WEBAPP_INITDATA_MAX_AGE_SECONDS = int(
+    os.getenv("WEBAPP_INITDATA_MAX_AGE_SECONDS", "300")
+)
+WEBAPP_SESSION_TTL_SECONDS = int(
+    os.getenv("WEBAPP_SESSION_TTL_SECONDS", "43200")
+)
+WEBAPP_SESSION_SECRET = os.getenv("WEBAPP_SESSION_SECRET", TELEGRAM_BOT_TOKEN)
+
+MINIAPP_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("MINIAPP_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
