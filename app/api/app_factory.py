@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_admin import router as admin_router
 from app.api.routes_auth import router as auth_router
@@ -15,6 +17,7 @@ from app.api.routes_user import router as user_router
 from app.config import MINIAPP_ALLOWED_ORIGINS
 
 logger = logging.getLogger(__name__)
+WEB_STATIC_DIR = Path(__file__).resolve().parent.parent / 'web' / 'static'
 
 
 def create_app() -> FastAPI:
@@ -54,13 +57,34 @@ def create_app() -> FastAPI:
     async def runtime_error_handler(_: Request, exc: RuntimeError):
         return JSONResponse(status_code=500, content={'detail': str(exc)})
 
-    @app.get('/')
-    def root() -> dict:
+    if WEB_STATIC_DIR.exists():
+        app.mount('/static', StaticFiles(directory=str(WEB_STATIC_DIR)), name='static')
+
+        @app.get('/', include_in_schema=False)
+        def root() -> FileResponse:
+            return FileResponse(WEB_STATIC_DIR / 'index.html')
+
+        @app.get('/app', include_in_schema=False)
+        def app_entry() -> FileResponse:
+            return FileResponse(WEB_STATIC_DIR / 'index.html')
+    else:
+        @app.get('/')
+        def root() -> dict:
+            return {
+                'service': 'trading-x-hiper-pro-miniapp-api',
+                'status': 'ok',
+                'docs': '/docs',
+                'health': '/health',
+            }
+
+    @app.get('/api', include_in_schema=False)
+    def api_root() -> dict:
         return {
             'service': 'trading-x-hiper-pro-miniapp-api',
             'status': 'ok',
             'docs': '/docs',
             'health': '/health',
+            'miniapp': '/' if WEB_STATIC_DIR.exists() else None,
         }
 
     app.include_router(health_router)
