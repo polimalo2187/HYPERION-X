@@ -1,1 +1,1 @@
-# app package
+"""Service layer for Telegram bot and MiniApp API."""
