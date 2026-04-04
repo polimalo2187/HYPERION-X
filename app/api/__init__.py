@@ -1,1 +1,1 @@
-
+"""MiniApp API package."""
