@@ -4,74 +4,104 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Trading X Hiper Pro MiniApp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+
     <div id="app" class="app-shell">
-      <header class="topbar">
-        <div>
-          <div class="eyebrow">MiniApp</div>
+      <header class="app-header glass-card">
+        <div class="brand-block">
+          <div class="eyebrow-row">
+            <span class="eyebrow">MINIAPP</span>
+            <span id="headerConnectionBadge" class="status-pill neutral">Offline</span>
+          </div>
           <h1>Trading X Hiper Pro</h1>
-          <p class="subtitle">Control visual del bot automático sobre Hyperliquid.</p>
+          <p class="subtitle">Interfaz premium para controlar el bot automático sobre Hyperliquid sin depender de botones dentro de Telegram.</p>
         </div>
-        <button id="refreshButton" class="ghost-button" type="button">Actualizar</button>
+        <div class="header-actions">
+          <button id="refreshButton" class="secondary-button" type="button">Actualizar</button>
+        </div>
       </header>
 
-      <section id="statusBanner" class="status-banner info">
-        Iniciando MiniApp...
+      <section id="statusBanner" class="status-banner info">Inicializando MiniApp...</section>
+
+      <section class="hero-panel glass-card">
+        <div class="hero-copy">
+          <div class="hero-kicker">AUTO TRADING CONTROL</div>
+          <h2>Panel operativo listo para móvil</h2>
+          <p>
+            Estado del usuario, configuración crítica, actividad reciente y visibilidad admin en una interfaz mucho más seria que la shell inicial.
+          </p>
+          <div class="hero-actions">
+            <div class="signal-chip"><span class="signal-dot"></span><span id="heroSignalState">Sin sesión</span></div>
+            <div class="signal-chip secondary"><span class="chip-label">Plan</span><strong id="heroPlan">--</strong></div>
+            <div class="signal-chip secondary"><span class="chip-label">Trading</span><strong id="heroTrading">--</strong></div>
+          </div>
+        </div>
+        <div class="hero-metrics-grid">
+          <article class="metric-card emphasis">
+            <span class="metric-caption">Usuario</span>
+            <strong id="heroUser">--</strong>
+            <small id="heroUserSubtext">No autenticado</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-caption">Wallet</span>
+            <strong id="heroWallet">--</strong>
+            <small id="heroWalletSubtext">Pendiente</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-caption">Private Key</span>
+            <strong id="heroKey">--</strong>
+            <small id="heroKeySubtext">Pendiente</small>
+          </article>
+          <article class="metric-card">
+            <span class="metric-caption">Acceso</span>
+            <strong id="heroAccess">--</strong>
+            <small id="heroAccessSubtext">Sin evaluar</small>
+          </article>
+        </div>
       </section>
 
-      <section class="hero-grid">
-        <article class="card hero-card">
-          <div class="card-title-row">
-            <h2>Usuario</h2>
-            <span id="userPlanBadge" class="badge neutral">--</span>
+      <section class="quick-grid">
+        <article class="glass-card quick-card">
+          <div class="quick-card-head">
+            <span class="quick-icon">◎</span>
+            <span id="userPlanBadge" class="status-pill neutral">--</span>
           </div>
-          <div class="hero-metrics">
-            <div>
-              <span class="metric-label">Usuario</span>
-              <strong id="userIdentity">--</strong>
-            </div>
-            <div>
-              <span class="metric-label">Trading</span>
-              <strong id="userTradingStatus">--</strong>
-            </div>
-            <div>
-              <span class="metric-label">Estado</span>
-              <strong id="userReadiness">--</strong>
-            </div>
-          </div>
+          <h3>Identidad</h3>
+          <strong id="userIdentity">--</strong>
+          <p id="userIdentitySubtext">Esperando autenticación</p>
         </article>
 
-        <article class="card hero-card">
-          <div class="card-title-row">
-            <h2>Configuración crítica</h2>
-            <span id="walletBadge" class="badge neutral">--</span>
+        <article class="glass-card quick-card">
+          <div class="quick-card-head">
+            <span class="quick-icon">◉</span>
+            <span id="userStatusBadge" class="status-pill neutral">--</span>
           </div>
-          <div class="hero-metrics compact">
-            <div>
-              <span class="metric-label">Wallet</span>
-              <strong id="walletConfigured">--</strong>
-            </div>
-            <div>
-              <span class="metric-label">Private key</span>
-              <strong id="privateKeyConfigured">--</strong>
-            </div>
-            <div>
-              <span class="metric-label">Plan activo</span>
-              <strong id="planActive">--</strong>
-            </div>
-            <div>
-              <span class="metric-label">Vencimiento</span>
-              <strong id="planExpiresAt">--</strong>
-            </div>
+          <h3>Preparación</h3>
+          <strong id="userReadiness">--</strong>
+          <p id="userTradingStatus">--</p>
+        </article>
+
+        <article class="glass-card quick-card">
+          <div class="quick-card-head">
+            <span class="quick-icon">◌</span>
+            <span id="walletBadge" class="status-pill neutral">--</span>
           </div>
+          <h3>Configuración crítica</h3>
+          <strong id="walletConfigured">--</strong>
+          <p id="privateKeyConfigured">--</p>
         </article>
       </section>
 
-      <nav class="tabs" aria-label="Secciones principales">
-        <button class="tab is-active" data-tab="dashboard" type="button">Dashboard</button>
+      <nav class="tabbar" aria-label="Secciones principales">
+        <button class="tab is-active" data-tab="dashboard" type="button">Resumen</button>
         <button class="tab" data-tab="operations" type="button">Operaciones</button>
         <button class="tab" data-tab="referrals" type="button">Referidos</button>
         <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">Admin</button>
@@ -79,37 +109,60 @@
 
       <main class="content-stack">
         <section class="panel is-active" data-panel="dashboard">
-          <div class="section-header">
-            <h3>Resumen operativo</h3>
-            <p>Estado general del usuario y del bot.</p>
+          <div class="section-grid section-grid-dashboard">
+            <article class="glass-card panel-card">
+              <div class="section-header">
+                <div>
+                  <span class="section-kicker">ESTADO GENERAL</span>
+                  <h3>Resumen operativo</h3>
+                </div>
+              </div>
+              <div class="stats-grid" id="dashboardStats"></div>
+            </article>
+
+            <article class="glass-card panel-card">
+              <div class="section-header">
+                <div>
+                  <span class="section-kicker">CHECKLIST</span>
+                  <h3>Configuración crítica</h3>
+                </div>
+              </div>
+              <div class="readiness-list" id="readinessList"></div>
+            </article>
           </div>
-          <div class="stats-grid" id="dashboardStats"></div>
         </section>
 
         <section class="panel" data-panel="operations">
-          <div class="section-header">
-            <h3>Operaciones recientes</h3>
-            <p>Últimos cierres y actividad del usuario.</p>
-          </div>
-          <div class="stack-gap">
-            <article class="card">
-              <div class="card-title-row">
-                <h4>Última apertura</h4>
-                <span class="badge neutral">Open</span>
+          <div class="section-grid section-grid-operations">
+            <article class="glass-card panel-card">
+              <div class="section-header compact-space">
+                <div>
+                  <span class="section-kicker">ÚLTIMO EVENTO</span>
+                  <h3>Última apertura</h3>
+                </div>
+                <span class="status-pill neutral">OPEN</span>
               </div>
               <pre id="lastOpen" class="json-box">Sin datos</pre>
             </article>
-            <article class="card">
-              <div class="card-title-row">
-                <h4>Último cierre</h4>
-                <span class="badge neutral">Close</span>
+
+            <article class="glass-card panel-card">
+              <div class="section-header compact-space">
+                <div>
+                  <span class="section-kicker">ÚLTIMO EVENTO</span>
+                  <h3>Último cierre</h3>
+                </div>
+                <span class="status-pill neutral">CLOSE</span>
               </div>
               <pre id="lastClose" class="json-box">Sin datos</pre>
             </article>
-            <article class="card">
-              <div class="card-title-row">
-                <h4>Historial</h4>
-                <span id="operationsCount" class="badge neutral">0</span>
+
+            <article class="glass-card panel-card wide-card">
+              <div class="section-header compact-space">
+                <div>
+                  <span class="section-kicker">HISTORIAL</span>
+                  <h3>Operaciones recientes</h3>
+                </div>
+                <span id="operationsCount" class="status-pill neutral">0</span>
               </div>
               <div id="operationsList" class="list-stack empty-state">Sin operaciones recientes.</div>
             </article>
@@ -117,24 +170,35 @@
         </section>
 
         <section class="panel" data-panel="referrals">
-          <div class="section-header">
-            <h3>Referidos</h3>
-            <p>Conteo validado sobre el clon actual.</p>
-          </div>
-          <div class="stats-grid" id="referralStats"></div>
+          <article class="glass-card panel-card">
+            <div class="section-header">
+              <div>
+                <span class="section-kicker">AFILIADOS</span>
+                <h3>Estado de referidos</h3>
+              </div>
+            </div>
+            <div class="stats-grid" id="referralStats"></div>
+          </article>
         </section>
 
         <section class="panel" data-panel="admin">
-          <div class="section-header">
-            <h3>Panel admin</h3>
-            <p>Métricas globales del clon MiniApp.</p>
-          </div>
-          <div class="stack-gap">
-            <div class="stats-grid" id="adminVisualStats"></div>
-            <article class="card">
-              <div class="card-title-row">
-                <h4>Trading 30 días</h4>
-                <span class="badge neutral">30D</span>
+          <div class="section-grid section-grid-dashboard">
+            <article class="glass-card panel-card">
+              <div class="section-header">
+                <div>
+                  <span class="section-kicker">VISIÓN GLOBAL</span>
+                  <h3>Admin overview</h3>
+                </div>
+              </div>
+              <div class="stats-grid" id="adminVisualStats"></div>
+            </article>
+
+            <article class="glass-card panel-card">
+              <div class="section-header">
+                <div>
+                  <span class="section-kicker">TRADING 30D</span>
+                  <h3>Métricas agregadas</h3>
+                </div>
               </div>
               <div class="stats-grid" id="adminTradeStats"></div>
             </article>
