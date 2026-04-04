@@ -20,7 +20,7 @@ import pytz
 # ============================================================
 
 MONGO_URI = os.getenv("MONGO_URL")
-DB_NAME = "TRADING_X_HIPER_PRO"
+DB_NAME = os.getenv("MONGO_DB_NAME", "TRADING_X_HIPER_PRO")
 
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
@@ -799,3 +799,71 @@ def has_accepted_terms(user_id: int) -> bool:
         return bool((u or {}).get("terms_accepted", False))
     except Exception:
         return False
+
+
+# ============================================================
+# HELPERS PÚBLICOS PARA API / MINIAPP
+# ============================================================
+
+def get_user_public_snapshot(user_id: int) -> dict | None:
+    """
+    Snapshot seguro del usuario para API/MiniApp.
+    Nunca expone la private key.
+    """
+    try:
+        uid = int(user_id)
+    except Exception:
+        return None
+
+    u = users_col.find_one(
+        {"user_id": uid},
+        {
+            "_id": 0,
+            "user_id": 1,
+            "username": 1,
+            "wallet": 1,
+            "private_key": 1,
+            "trading_status": 1,
+            "plan": 1,
+            "plan_expires_at": 1,
+            "trial_used": 1,
+            "terms_accepted": 1,
+            "referral_valid_count": 1,
+            "last_open_at": 1,
+            "last_close_at": 1,
+        },
+    )
+    if not u:
+        return None
+
+    exp = _parse_dt(u.get("plan_expires_at"))
+    return {
+        "user_id": int(u.get("user_id")),
+        "username": u.get("username"),
+        "wallet": u.get("wallet"),
+        "wallet_configured": bool(u.get("wallet")),
+        "private_key_configured": bool(u.get("private_key")),
+        "trading_status": u.get("trading_status") or "inactive",
+        "plan": u.get("plan") or "none",
+        "plan_expires_at": exp,
+        "plan_active": _plan_is_active(u),
+        "trial_used": bool(u.get("trial_used", False)),
+        "terms_accepted": bool(u.get("terms_accepted", False)),
+        "referral_valid_count": int(u.get("referral_valid_count", 0) or 0),
+        "last_open_at": _parse_dt(u.get("last_open_at")),
+        "last_close_at": _parse_dt(u.get("last_close_at")),
+    }
+
+
+def get_user_trades_limited(user_id: int, limit: int = 20):
+    try:
+        uid = int(user_id)
+        lim = max(1, min(int(limit), 100))
+    except Exception:
+        return []
+
+    return list(
+        trades_col.find({"user_id": uid}, {"_id": 0})
+        .sort("timestamp", -1)
+        .limit(lim)
+    )
