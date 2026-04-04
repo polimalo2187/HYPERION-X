@@ -1,1 +1,148 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Trading X Hiper Pro MiniApp</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">MiniApp</div>
+          <h1>Trading X Hiper Pro</h1>
+          <p class="subtitle">Control visual del bot automático sobre Hyperliquid.</p>
+        </div>
+        <button id="refreshButton" class="ghost-button" type="button">Actualizar</button>
+      </header>
 
+      <section id="statusBanner" class="status-banner info">
+        Iniciando MiniApp...
+      </section>
+
+      <section class="hero-grid">
+        <article class="card hero-card">
+          <div class="card-title-row">
+            <h2>Usuario</h2>
+            <span id="userPlanBadge" class="badge neutral">--</span>
+          </div>
+          <div class="hero-metrics">
+            <div>
+              <span class="metric-label">Usuario</span>
+              <strong id="userIdentity">--</strong>
+            </div>
+            <div>
+              <span class="metric-label">Trading</span>
+              <strong id="userTradingStatus">--</strong>
+            </div>
+            <div>
+              <span class="metric-label">Estado</span>
+              <strong id="userReadiness">--</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="card hero-card">
+          <div class="card-title-row">
+            <h2>Configuración crítica</h2>
+            <span id="walletBadge" class="badge neutral">--</span>
+          </div>
+          <div class="hero-metrics compact">
+            <div>
+              <span class="metric-label">Wallet</span>
+              <strong id="walletConfigured">--</strong>
+            </div>
+            <div>
+              <span class="metric-label">Private key</span>
+              <strong id="privateKeyConfigured">--</strong>
+            </div>
+            <div>
+              <span class="metric-label">Plan activo</span>
+              <strong id="planActive">--</strong>
+            </div>
+            <div>
+              <span class="metric-label">Vencimiento</span>
+              <strong id="planExpiresAt">--</strong>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <nav class="tabs" aria-label="Secciones principales">
+        <button class="tab is-active" data-tab="dashboard" type="button">Dashboard</button>
+        <button class="tab" data-tab="operations" type="button">Operaciones</button>
+        <button class="tab" data-tab="referrals" type="button">Referidos</button>
+        <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">Admin</button>
+      </nav>
+
+      <main class="content-stack">
+        <section class="panel is-active" data-panel="dashboard">
+          <div class="section-header">
+            <h3>Resumen operativo</h3>
+            <p>Estado general del usuario y del bot.</p>
+          </div>
+          <div class="stats-grid" id="dashboardStats"></div>
+        </section>
+
+        <section class="panel" data-panel="operations">
+          <div class="section-header">
+            <h3>Operaciones recientes</h3>
+            <p>Últimos cierres y actividad del usuario.</p>
+          </div>
+          <div class="stack-gap">
+            <article class="card">
+              <div class="card-title-row">
+                <h4>Última apertura</h4>
+                <span class="badge neutral">Open</span>
+              </div>
+              <pre id="lastOpen" class="json-box">Sin datos</pre>
+            </article>
+            <article class="card">
+              <div class="card-title-row">
+                <h4>Último cierre</h4>
+                <span class="badge neutral">Close</span>
+              </div>
+              <pre id="lastClose" class="json-box">Sin datos</pre>
+            </article>
+            <article class="card">
+              <div class="card-title-row">
+                <h4>Historial</h4>
+                <span id="operationsCount" class="badge neutral">0</span>
+              </div>
+              <div id="operationsList" class="list-stack empty-state">Sin operaciones recientes.</div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="referrals">
+          <div class="section-header">
+            <h3>Referidos</h3>
+            <p>Conteo validado sobre el clon actual.</p>
+          </div>
+          <div class="stats-grid" id="referralStats"></div>
+        </section>
+
+        <section class="panel" data-panel="admin">
+          <div class="section-header">
+            <h3>Panel admin</h3>
+            <p>Métricas globales del clon MiniApp.</p>
+          </div>
+          <div class="stack-gap">
+            <div class="stats-grid" id="adminVisualStats"></div>
+            <article class="card">
+              <div class="card-title-row">
+                <h4>Trading 30 días</h4>
+                <span class="badge neutral">30D</span>
+              </div>
+              <div class="stats-grid" id="adminTradeStats"></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
