@@ -1,23 +1,36 @@
 const state = {
   token: null,
-  session: null,
   telegram: null,
+  session: null,
   isAdmin: false,
 };
 
 const elements = {
   statusBanner: document.getElementById('statusBanner'),
   refreshButton: document.getElementById('refreshButton'),
+  headerConnectionBadge: document.getElementById('headerConnectionBadge'),
+  heroSignalState: document.getElementById('heroSignalState'),
+  heroPlan: document.getElementById('heroPlan'),
+  heroTrading: document.getElementById('heroTrading'),
+  heroUser: document.getElementById('heroUser'),
+  heroUserSubtext: document.getElementById('heroUserSubtext'),
+  heroWallet: document.getElementById('heroWallet'),
+  heroWalletSubtext: document.getElementById('heroWalletSubtext'),
+  heroKey: document.getElementById('heroKey'),
+  heroKeySubtext: document.getElementById('heroKeySubtext'),
+  heroAccess: document.getElementById('heroAccess'),
+  heroAccessSubtext: document.getElementById('heroAccessSubtext'),
   userPlanBadge: document.getElementById('userPlanBadge'),
+  userStatusBadge: document.getElementById('userStatusBadge'),
+  walletBadge: document.getElementById('walletBadge'),
   userIdentity: document.getElementById('userIdentity'),
+  userIdentitySubtext: document.getElementById('userIdentitySubtext'),
   userTradingStatus: document.getElementById('userTradingStatus'),
   userReadiness: document.getElementById('userReadiness'),
-  walletBadge: document.getElementById('walletBadge'),
   walletConfigured: document.getElementById('walletConfigured'),
   privateKeyConfigured: document.getElementById('privateKeyConfigured'),
-  planActive: document.getElementById('planActive'),
-  planExpiresAt: document.getElementById('planExpiresAt'),
   dashboardStats: document.getElementById('dashboardStats'),
+  readinessList: document.getElementById('readinessList'),
   lastOpen: document.getElementById('lastOpen'),
   lastClose: document.getElementById('lastClose'),
   operationsCount: document.getElementById('operationsCount'),
@@ -33,6 +46,20 @@ function setStatus(message, variant = 'info') {
   elements.statusBanner.textContent = message;
 }
 
+function pillClass(value) {
+  const normalized = String(value || '').toLowerCase();
+  if (['ready', 'active', 'premium', 'true', 'configured', 'connected', 'ok', 'sí', 'yes'].includes(normalized)) return 'success';
+  if (['trial', 'warning', 'parcial', 'partial'].includes(normalized)) return 'warning';
+  if (['inactive', 'false', 'not_ready', 'none', 'missing', 'error', 'offline', 'no'].includes(normalized)) return 'danger';
+  if (['info', 'loading'].includes(normalized)) return 'info';
+  return 'neutral';
+}
+
+function setPill(element, label, valueForClass = label) {
+  element.textContent = label;
+  element.className = `status-pill ${pillClass(valueForClass)}`;
+}
+
 function formatDate(value) {
   if (!value) return '—';
   const date = new Date(value);
@@ -44,17 +71,20 @@ function pretty(value) {
   if (!value) return 'Sin datos';
   try {
     return JSON.stringify(value, null, 2);
-  } catch (error) {
+  } catch {
     return String(value);
   }
 }
 
-function badgeClassForStatus(value) {
-  const normalized = String(value || '').toLowerCase();
-  if (['ready', 'active', 'premium', 'true', 'configured'].includes(normalized)) return 'success';
-  if (['trial', 'warning'].includes(normalized)) return 'warning';
-  if (['inactive', 'false', 'not_ready', 'none'].includes(normalized)) return 'danger';
-  return 'neutral';
+function boolLabel(value, positive = 'Sí', negative = 'No') {
+  return value ? positive : negative;
+}
+
+function truncateMiddle(value, max = 18) {
+  const text = String(value || '');
+  if (!text || text.length <= max) return text || '—';
+  const side = Math.floor((max - 3) / 2);
+  return `${text.slice(0, side)}...${text.slice(-side)}`;
 }
 
 function buildKpiCard(label, value, subtext = '') {
@@ -68,27 +98,68 @@ function buildKpiCard(label, value, subtext = '') {
   return article;
 }
 
+function buildReadinessItem(label, description, status) {
+  const article = document.createElement('article');
+  article.className = `readiness-item ${pillClass(status)}`;
+  article.innerHTML = `
+    <span class="readiness-dot"></span>
+    <div class="readiness-copy">
+      <strong>${label}</strong>
+      <span>${description}</span>
+    </div>
+    <span class="status-pill ${pillClass(status)}">${status}</span>
+  `;
+  return article;
+}
+
 function renderDashboard(data) {
-  elements.userPlanBadge.textContent = data.plan || 'none';
-  elements.userPlanBadge.className = `badge ${badgeClassForStatus(data.plan_active ? data.plan : 'none')}`;
-  elements.userIdentity.textContent = data.username ? `@${data.username}` : `ID ${data.user_id}`;
-  elements.userTradingStatus.textContent = data.trading_status || 'inactive';
-  elements.userReadiness.textContent = data.status_summary || 'not_ready';
-  elements.walletBadge.textContent = data.wallet_configured ? 'wallet ok' : 'wallet pendiente';
-  elements.walletBadge.className = `badge ${badgeClassForStatus(data.wallet_configured ? 'configured' : 'false')}`;
-  elements.walletConfigured.textContent = data.wallet_configured ? 'Configurada' : 'Falta configurar';
-  elements.privateKeyConfigured.textContent = data.private_key_configured ? 'Configurada' : 'Falta configurar';
-  elements.planActive.textContent = data.plan_active ? 'Sí' : 'No';
-  elements.planExpiresAt.textContent = formatDate(data.plan_expires_at);
+  const usernameText = data.username ? `@${data.username}` : `ID ${data.user_id}`;
+  const readinessText = data.status_summary || 'not_ready';
+  const tradingText = data.trading_status || 'inactive';
+  const planText = data.plan || 'none';
+  const accessText = data.plan_active ? 'Activo' : 'Sin acceso';
+  const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 16) : 'Pendiente';
+
+  setPill(elements.headerConnectionBadge, 'Conectado', 'connected');
+  setPill(elements.userPlanBadge, planText, data.plan_active ? planText : 'none');
+  setPill(elements.userStatusBadge, readinessText, readinessText);
+  setPill(elements.walletBadge, data.wallet_configured ? 'Wallet ok' : 'Pendiente', data.wallet_configured ? 'configured' : 'missing');
+
+  elements.heroSignalState.textContent = data.plan_active ? 'Sesión activa' : 'Sesión limitada';
+  elements.heroPlan.textContent = planText;
+  elements.heroTrading.textContent = tradingText;
+  elements.heroUser.textContent = usernameText;
+  elements.heroUserSubtext.textContent = data.plan_active ? 'Usuario autenticado correctamente' : 'Acceso sin plan activo';
+  elements.heroWallet.textContent = walletText;
+  elements.heroWalletSubtext.textContent = data.wallet_configured ? 'Wallet configurada' : 'Wallet pendiente';
+  elements.heroKey.textContent = data.private_key_configured ? 'Cargada' : 'Falta';
+  elements.heroKeySubtext.textContent = data.private_key_configured ? 'Llave detectada' : 'Sin llave privada';
+  elements.heroAccess.textContent = accessText;
+  elements.heroAccessSubtext.textContent = formatDate(data.plan_expires_at);
+
+  elements.userIdentity.textContent = usernameText;
+  elements.userIdentitySubtext.textContent = data.user_id ? `Telegram ID ${data.user_id}` : 'Usuario no resuelto';
+  elements.userTradingStatus.textContent = tradingText;
+  elements.userReadiness.textContent = readinessText;
+  elements.walletConfigured.textContent = data.wallet_configured ? 'Wallet configurada' : 'Wallet pendiente';
+  elements.privateKeyConfigured.textContent = data.private_key_configured ? 'Private key cargada' : 'Private key faltante';
 
   elements.dashboardStats.innerHTML = '';
   elements.dashboardStats.append(
-    buildKpiCard('Plan', data.plan || 'none', data.plan_active ? 'Activo' : 'Sin acceso activo'),
-    buildKpiCard('Trading status', data.trading_status || 'inactive', data.wallet_configured && data.private_key_configured ? 'Configuración mínima cargada' : 'Configuración incompleta'),
-    buildKpiCard('Wallet', data.wallet || 'No configurada', data.wallet_configured ? 'Lista para operar' : 'Pendiente en el perfil'),
-    buildKpiCard('Balance exchange', data.exchange_balance !== undefined ? data.exchange_balance : 'No consultado', 'Se solicita al backend cuando aplica'),
+    buildKpiCard('Plan activo', planText, data.plan_active ? 'El acceso está habilitado' : 'No hay acceso activo'),
+    buildKpiCard('Trading status', tradingText, 'Estado operativo actual reportado por backend'),
+    buildKpiCard('Balance exchange', data.exchange_balance !== undefined ? data.exchange_balance : 'No consultado', 'Consulta opcional al backend'),
+    buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Se evalúa desde la base actual'),
     buildKpiCard('Trial usado', data.trial_used ? 'Sí' : 'No', 'Control del clon actual'),
-    buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Estado actual del usuario')
+    buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha registrada en el usuario')
+  );
+
+  elements.readinessList.innerHTML = '';
+  elements.readinessList.append(
+    buildReadinessItem('Wallet', data.wallet_configured ? 'La wallet ya está cargada en el sistema.' : 'Todavía falta configurar la wallet.', data.wallet_configured ? 'configured' : 'missing'),
+    buildReadinessItem('Private key', data.private_key_configured ? 'La llave privada existe en la configuración.' : 'Aún falta la private key.', data.private_key_configured ? 'configured' : 'missing'),
+    buildReadinessItem('Plan', data.plan_active ? `El usuario tiene acceso ${planText}.` : 'No hay plan activo en este momento.', data.plan_active ? 'active' : 'inactive'),
+    buildReadinessItem('Trading', tradingText === 'active' ? 'El bot reporta trading activo.' : 'El bot no está en estado activo.', tradingText)
   );
 }
 
@@ -96,6 +167,7 @@ function renderOperations(data) {
   elements.lastOpen.textContent = pretty(data.last_open);
   elements.lastClose.textContent = pretty(data.last_close);
   elements.operationsCount.textContent = String(data.count || 0);
+
   if (!Array.isArray(data.trades) || data.trades.length === 0) {
     elements.operationsList.className = 'list-stack empty-state';
     elements.operationsList.textContent = 'Sin operaciones recientes.';
@@ -104,19 +176,22 @@ function renderOperations(data) {
 
   elements.operationsList.className = 'list-stack';
   elements.operationsList.innerHTML = '';
+
   data.trades.forEach((trade) => {
     const item = document.createElement('article');
     item.className = 'list-item';
+
     const profit = Number(trade.profit || 0);
     const profitLabel = Number.isFinite(profit) ? profit.toFixed(4) : String(trade.profit || '0');
     const badgeClass = profit > 0 ? 'success' : (profit < 0 ? 'danger' : 'neutral');
+
     item.innerHTML = `
       <div class="list-item-header">
         <div>
           <div class="list-item-title">${trade.symbol || 'Trade'} · ${trade.side || 'N/A'}</div>
           <div class="list-item-meta">${formatDate(trade.timestamp)}</div>
         </div>
-        <span class="badge ${badgeClass}">${profitLabel}</span>
+        <span class="status-pill ${badgeClass}">${profitLabel}</span>
       </div>
       <div class="list-item-grid">
         <div><span class="metric-label">Entry</span><strong>${trade.entry_price ?? '—'}</strong></div>
@@ -125,6 +200,7 @@ function renderOperations(data) {
         <div><span class="metric-label">Best score</span><strong>${trade.best_score ?? '—'}</strong></div>
       </div>
     `;
+
     elements.operationsList.appendChild(item);
   });
 }
@@ -132,7 +208,7 @@ function renderOperations(data) {
 function renderReferrals(data) {
   elements.referralStats.innerHTML = '';
   elements.referralStats.append(
-    buildKpiCard('Usuario', data.user_id || '—', 'ID del usuario autenticado'),
+    buildKpiCard('Usuario', data.user_id || '—', 'ID autenticado contra el backend'),
     buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Contados sobre este clon')
   );
 }
@@ -144,58 +220,71 @@ function renderAdmin(data) {
   elements.adminVisualStats.innerHTML = '';
   elements.adminVisualStats.append(
     buildKpiCard('Usuarios totales', visual.total_users || 0, 'Registrados en esta base'),
-    buildKpiCard('Free/Trial vencido', visual.free_old || 0, 'Usuarios sin premium activo'),
-    buildKpiCard('Premium activo', visual.premium_active || 0, 'Estado actual'),
-    buildKpiCard('Premium vencido', visual.premium_expired || 0, 'Caducados en la base')
+    buildKpiCard('Free / trial vencido', visual.free_old || 0, 'Usuarios sin premium activo'),
+    buildKpiCard('Premium activo', visual.premium_active || 0, 'Estado actual en la base'),
+    buildKpiCard('Premium vencido', visual.premium_expired || 0, 'Usuarios caducados')
   );
 
   elements.adminTradeStats.innerHTML = '';
   elements.adminTradeStats.append(
     buildKpiCard('Total trades', tradeStats.total || 0, 'Últimos 30 días'),
     buildKpiCard('Wins', tradeStats.wins || 0, `Win rate ${tradeStats.win_rate ?? 0}%`),
-    buildKpiCard('Losses', tradeStats.losses || 0, `Win rate decisivo ${tradeStats.win_rate_decisive ?? 0}%`),
+    buildKpiCard('Losses', tradeStats.losses || 0, `Decisivas ${tradeStats.win_rate_decisive ?? 0}%`),
     buildKpiCard('Profit factor', tradeStats.profit_factor ?? 0, `PnL total ${tradeStats.pnl_total ?? 0}`),
-    buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Suma de resultados positivos'),
-    buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Suma absoluta de pérdidas')
+    buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Suma de cierres positivos'),
+    buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Pérdidas acumuladas')
   );
 }
 
 async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (state.token) {
-    headers.set('Authorization', `Bearer ${state.token}`);
-  }
-  if (options.body && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
+  if (state.token) headers.set('Authorization', `Bearer ${state.token}`);
+  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
-  const response = await fetch(path, {
-    ...options,
-    headers,
-  });
-
+  const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || `Error HTTP ${response.status}`);
   }
-
   return response.json();
+}
+
+function setDirectBrowserMode() {
+  setPill(elements.headerConnectionBadge, 'Preview', 'warning');
+  setStatus('Esta interfaz debe abrirse desde el botón del bot dentro de Telegram para autenticarse. En navegador directo solo verás el diseño.', 'warning');
+  elements.heroSignalState.textContent = 'Abrir desde Telegram';
+  elements.heroPlan.textContent = 'Preview';
+  elements.heroTrading.textContent = 'Preview';
+  elements.heroUser.textContent = 'Modo visual';
+  elements.heroUserSubtext.textContent = 'La autenticación real llega desde Telegram WebApp';
+  elements.heroWallet.textContent = '—';
+  elements.heroWalletSubtext.textContent = 'Sin sesión';
+  elements.heroKey.textContent = '—';
+  elements.heroKeySubtext.textContent = 'Sin sesión';
+  elements.heroAccess.textContent = 'Bloqueado';
+  elements.heroAccessSubtext.textContent = 'Necesita initData';
+  setPill(elements.userPlanBadge, 'Preview', 'warning');
+  setPill(elements.userStatusBadge, 'Sin auth', 'danger');
+  setPill(elements.walletBadge, 'Sin auth', 'danger');
+  elements.refreshButton.disabled = true;
 }
 
 async function authenticate() {
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   if (!tg) {
-    throw new Error('Telegram WebApp no está disponible. Abre esta URL desde el botón del bot.');
+    setDirectBrowserMode();
+    throw new Error('Telegram WebApp no está disponible.');
   }
 
   state.telegram = tg;
   tg.ready();
   tg.expand();
-  tg.setHeaderColor('#0c111b');
-  tg.setBackgroundColor('#0c111b');
+  tg.setHeaderColor('#09111f');
+  tg.setBackgroundColor('#050816');
 
   if (!tg.initData) {
-    throw new Error('initData ausente. Debes abrir la MiniApp desde Telegram.');
+    setDirectBrowserMode();
+    throw new Error('Abre esta MiniApp desde Telegram para autenticar la sesión.');
   }
 
   const payload = await apiFetch('/api/v1/auth/telegram', {
@@ -219,17 +308,14 @@ async function loadData() {
   renderOperations(operations);
   renderReferrals(referrals);
 
-  state.isAdmin = !!state.session && Number(state.session.user_id) > 0 && (state.session.user_id === referrals.user_id) && !!window.Telegram?.WebApp;
-  if (state.session && (state.session.user_id || state.session.username)) {
-    setStatus('MiniApp conectada correctamente al backend.', 'success');
-  }
+  setStatus('MiniApp conectada correctamente al backend.', 'success');
 
   try {
     const admin = await apiFetch('/api/v1/admin/overview');
     renderAdmin(admin);
     elements.adminTabButton.classList.remove('hidden');
     state.isAdmin = true;
-  } catch (error) {
+  } catch {
     elements.adminTabButton.classList.add('hidden');
     state.isAdmin = false;
   }
@@ -249,6 +335,7 @@ function bindTabs() {
 
 async function bootstrap() {
   bindTabs();
+
   elements.refreshButton.addEventListener('click', async () => {
     elements.refreshButton.disabled = true;
     try {
@@ -262,10 +349,13 @@ async function bootstrap() {
 
   try {
     await authenticate();
+    if (!state.token) return;
     await loadData();
   } catch (error) {
     console.error(error);
-    setStatus(error.message || 'No se pudo iniciar la MiniApp.', 'error');
+    if (state.token) {
+      setStatus(error.message || 'No se pudo iniciar la MiniApp.', 'error');
+    }
   }
 }
 
