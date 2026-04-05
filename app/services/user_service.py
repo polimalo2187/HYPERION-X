@@ -13,6 +13,7 @@ from app.database import (
     ensure_access_on_activate,
     get_last_operation,
     get_referral_valid_count,
+    get_system_runtime_snapshot,
     get_user_public_snapshot,
     get_user_trade_stats,
     get_user_trades_limited,
@@ -235,4 +236,50 @@ def get_referrals_summary(user_id: int) -> dict:
     return {
         'user_id': int(user_id),
         'referral_valid_count': int(get_referral_valid_count(int(user_id)) or 0),
+    }
+
+
+def get_system_runtime_summary(user_id: int) -> dict:
+    profile = get_user_profile(int(user_id))
+    snapshot = get_system_runtime_snapshot() or {}
+
+    def _serialize_component(item: dict | None) -> dict:
+        payload = dict(item or {})
+        payload['last_seen_at'] = _serialize_dt(payload.get('last_seen_at'))
+        return payload
+
+    def _serialize_activity(item: dict | None) -> dict | None:
+        if not item:
+            return None
+        payload = dict(item)
+        payload['at'] = _serialize_dt(payload.get('at'))
+        return payload
+
+    latest_manager = (snapshot.get('runtime') or {}).get('latest_trade_manager') or {}
+    latest_manager = dict(latest_manager) if latest_manager else None
+    if latest_manager and latest_manager.get('manager_heartbeat_at'):
+        latest_manager['manager_heartbeat_at'] = _serialize_dt(latest_manager.get('manager_heartbeat_at'))
+
+    return {
+        'viewer_user_id': int(profile['user_id']),
+        'viewer_plan': profile.get('plan'),
+        'overall_status': snapshot.get('overall_status') or 'unknown',
+        'checked_at': _serialize_dt(snapshot.get('checked_at')),
+        'backend': {
+            'status': 'online',
+            'message': 'El backend web respondió a esta solicitud.',
+            'checked_at': _serialize_dt(snapshot.get('checked_at')),
+        },
+        'components': {
+            'telegram_bot': _serialize_component((snapshot.get('components') or {}).get('telegram_bot')),
+            'trading_loop': _serialize_component((snapshot.get('components') or {}).get('trading_loop')),
+            'scanner': _serialize_component((snapshot.get('components') or {}).get('scanner')),
+        },
+        'runtime': {
+            **(snapshot.get('runtime') or {}),
+            'latest_open': _serialize_activity((snapshot.get('runtime') or {}).get('latest_open')),
+            'latest_close': _serialize_activity((snapshot.get('runtime') or {}).get('latest_close')),
+            'latest_trade_manager': latest_manager,
+        },
+        'issues': snapshot.get('issues') or [],
     }
