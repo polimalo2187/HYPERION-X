@@ -399,28 +399,79 @@ def ensure_access_on_activate(user_id: int) -> dict:
         "message": "⛔ Tu prueba terminó.\nPara seguir utilizando el bot, contacta al administrador."
     }
 
-def activate_premium_plan(target_user_id: int) -> bool:
+def _midnight_cuba_after_days_from_base(base_dt: datetime | None, days: int) -> datetime:
     """
-    Activación manual por admin:
-    - Premium 30 días (vence medianoche Cuba)
+    Calcula la próxima expiración a medianoche Cuba sumando días completos
+    sobre una fecha base.
+
+    - Si `base_dt` existe y sigue vigente, se usa como base para extender.
+    - Si no existe o ya venció, el conteo parte desde hoy en Cuba.
+    """
+    base_utc = _parse_dt(base_dt)
+    if base_utc and base_utc > _now_utc():
+        base_local = base_utc.replace(tzinfo=pytz.UTC).astimezone(CUBA_TZ)
+        base_date = base_local.date()
+    else:
+        base_date = _now_cuba().date()
+
+    target_date = base_date + timedelta(days=int(days))
+    midnight_local = CUBA_TZ.localize(datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0))
+    return midnight_local.astimezone(pytz.UTC).replace(tzinfo=None)
+
+
+def grant_manual_premium_days(target_user_id: int, days: int) -> dict:
+    """
+    Extensión manual de acceso premium por una cantidad exacta de días.
+
+    Reglas:
+    - Si el usuario tiene acceso vigente, suma desde el vencimiento actual.
+    - Si no tiene acceso vigente, parte desde hoy (hora Cuba).
+    - No marca referidos válidos: esto es una extensión/admin reward, no una compra.
     """
     try:
-        u = users_col.find_one({"user_id": int(target_user_id)})
-        if not u:
-            return False
+        target_user_id = int(target_user_id)
+        days = int(days)
+        if days <= 0:
+            return {"ok": False, "message": "La cantidad de días debe ser mayor que cero"}
 
-        exp_utc = _midnight_cuba_after_days(30)
+        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1})
+        if not u:
+            return {"ok": False, "message": "Usuario no encontrado"}
+
+        previous_plan = (u.get("plan") or "none")
+        previous_exp = _parse_dt(u.get("plan_expires_at"))
+        exp_utc = _midnight_cuba_after_days_from_base(previous_exp, days)
+
         users_col.update_one(
-            {"user_id": int(target_user_id)},
+            {"user_id": target_user_id},
             {"$set": {"plan": "premium", "plan_expires_at": exp_utc, "expiry_notified_on": None}}
         )
-        db_log(f"💎 Premium activado user={target_user_id} exp={exp_utc.isoformat()}")
-        # ✅ Marcar referido válido (una sola vez)
-        _mark_referral_valid(int(target_user_id))
-        return True
+
+        db_log(
+            f"💎 Premium manual user={target_user_id} days={days} prev_plan={previous_plan} prev_exp={previous_exp.isoformat() if previous_exp else 'none'} new_exp={exp_utc.isoformat()}"
+        )
+        return {
+            "ok": True,
+            "message": f"Premium actualizado manualmente por {days} días",
+            "previous_plan": previous_plan,
+            "previous_expires_at": previous_exp,
+            "new_expires_at": exp_utc,
+            "days": days,
+        }
     except Exception as e:
-        db_log(f"❌ Error activando premium user={target_user_id}: {e}")
-        return False
+        db_log(f"❌ Error aplicando premium manual user={target_user_id}: {e}")
+        return {"ok": False, "message": "Error interno al aplicar la extensión manual"}
+
+
+def activate_premium_plan(target_user_id: int) -> bool:
+    """
+    Compatibilidad legacy: activación manual premium de 30 días.
+
+    Nota: no marca referidos válidos. Las compras automáticas futuras
+    deben contabilizarse por su propio flujo de pagos.
+    """
+    outcome = grant_manual_premium_days(int(target_user_id), 30)
+    return bool(outcome.get("ok"))
 
 def is_plan_expired(user_id: int) -> bool:
     u = users_col.find_one({"user_id": int(user_id)}, {"_id": 0, "plan": 1, "plan_expires_at": 1})
