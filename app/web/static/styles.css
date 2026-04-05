@@ -570,3 +570,32 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
     grid-template-columns: 1fr;
   }
 }
+
+
+.glass-subcard {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  background: rgba(255,255,255,0.03);
+}
+
+.admin-plan-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.compact-field {
+  max-width: 220px;
+}
+
+.compact-field input {
+  width: 100%;
+}
+
+.admin-ops-card .admin-action-grid,
+.admin-plan-card .admin-plan-row {
+  margin-top: 12px;
+}
