@@ -67,6 +67,7 @@ const elements = {
   adminUserDetail: $('adminUserDetail'),
   adminUserTitle: $('adminUserTitle'),
   adminUserSubtitle: $('adminUserSubtitle'),
+  adminPlanSelect: $('adminPlanSelect'),
   adminPlanDaysInput: $('adminPlanDaysInput'),
   adminGrantPlanButton: $('adminGrantPlanButton'),
   adminPlanGrantHint: $('adminPlanGrantHint'),
@@ -106,6 +107,14 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString();
+}
+
+function planLabel(plan) {
+  const normalized = String(plan || '').toLowerCase();
+  if (normalized === 'trial') return 'PRUEBA';
+  if (normalized === 'premium') return 'PREMIUM';
+  if (!normalized || normalized === 'none') return 'SIN PLAN';
+  return normalized.toUpperCase();
 }
 
 function pretty(value) {
@@ -385,14 +394,23 @@ function renderAdminPlanPreview(preview) {
     return;
   }
 
+  const planCopy = `Plan destino: ${planLabel(preview.target_plan || preview.new_plan)}`;
   const baseCopy = preview.base_type === 'current_expiry'
     ? 'La extensión se sumará desde el vencimiento actual.'
     : 'La extensión empezará desde hoy porque no hay acceso vigente.';
 
   elements.adminPlanPreviewBox.innerHTML = `
     <strong>Previsualización antes de aplicar</strong><br />
-    ${baseCopy}
+    ${planCopy}. ${baseCopy}
     <div class="preview-grid">
+      <div class="preview-item">
+        <span class="preview-label">Plan actual</span>
+        <strong>${planLabel(preview.previous_plan)}</strong>
+      </div>
+      <div class="preview-item">
+        <span class="preview-label">Plan resultante</span>
+        <strong>${planLabel(preview.new_plan)}</strong>
+      </div>
       <div class="preview-item">
         <span class="preview-label">Días vigentes</span>
         <strong>${preview.previous_days_remaining || 0}</strong>
@@ -413,12 +431,33 @@ function renderAdminPlanPreview(preview) {
   `;
 }
 
+function updateAdminPlanGrantHint(user = state.adminSelectedUser) {
+  if (!elements.adminPlanGrantHint) return;
+  const targetPlan = elements.adminPlanSelect ? elements.adminPlanSelect.value : 'premium';
+  if (!user || !user.user_id) {
+    elements.adminPlanGrantHint.textContent = 'Carga un usuario para aplicar días exactos sin simular una compra automática.';
+    return;
+  }
+
+  const planText = planLabel(targetPlan);
+  let baseMessage = user.plan_active
+    ? `El usuario tiene acceso vigente hasta ${formatDate(user.plan_expires_at)}. Los días nuevos se sumarán desde ese vencimiento.`
+    : 'El usuario no tiene acceso vigente. Los días nuevos se aplicarán desde hoy.';
+
+  if (targetPlan === 'trial' && user.plan === 'premium' && user.plan_active) {
+    baseMessage = 'No se puede aplicar PRUEBA mientras el usuario tenga PREMIUM activo.';
+  }
+
+  elements.adminPlanGrantHint.textContent = `${baseMessage} Plan seleccionado: ${planText}. Esta acción es manual y no cuenta como compra automática.`;
+}
+
 async function refreshAdminPlanPreview() {
   const selected = state.adminSelectedUser;
   if (!selected || !selected.user_id || !elements.adminPlanDaysInput) {
     renderAdminPlanPreview(null);
     return;
   }
+  const targetPlan = elements.adminPlanSelect ? elements.adminPlanSelect.value : 'premium';
   const rawDays = elements.adminPlanDaysInput.value.trim();
   const days = Number.parseInt(rawDays, 10);
   if (!Number.isInteger(days) || days <= 0) {
@@ -426,7 +465,7 @@ async function refreshAdminPlanPreview() {
     return;
   }
   try {
-    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?days=${days}`);
+    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?plan=${encodeURIComponent(targetPlan)}&days=${days}`);
     renderAdminPlanPreview(payload.preview || null);
   } catch (error) {
     elements.adminPlanPreviewBox.textContent = error.message || 'No se pudo calcular la previsualización.';
@@ -459,11 +498,9 @@ function renderAdminSelectedUser(user) {
   const remainingDays = Number(user.plan_days_remaining || 0);
   const expiryCopy = user.plan_active && user.plan_expires_at ? ` · Vence ${formatDate(user.plan_expires_at)} · ${remainingDays} día(s) restantes` : '';
   elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'}${expiryCopy} · Trading ${user.trading_status || 'inactive'}`;
-  if (elements.adminPlanGrantHint) {
-    const baseMessage = user.plan_active
-      ? `El usuario tiene acceso vigente hasta ${formatDate(user.plan_expires_at)}. Los días nuevos se sumarán desde ese vencimiento.`
-      : 'El usuario no tiene acceso vigente. Los días nuevos se aplicarán desde hoy.';
-    elements.adminPlanGrantHint.textContent = `${baseMessage} Esta acción es manual y no cuenta como compra automática.`;
+  updateAdminPlanGrantHint(user);
+  if (elements.adminPlanSelect && !elements.adminPlanSelect.value) {
+    elements.adminPlanSelect.value = 'premium';
   }
   if (elements.adminPlanDaysInput && !elements.adminPlanDaysInput.value) {
     elements.adminPlanDaysInput.value = '7';
@@ -731,6 +768,7 @@ async function grantManualPremiumDaysForSelectedUser() {
     return;
   }
 
+  const targetPlan = elements.adminPlanSelect ? elements.adminPlanSelect.value : 'premium';
   const rawDays = elements.adminPlanDaysInput ? elements.adminPlanDaysInput.value.trim() : '';
   const days = Number.parseInt(rawDays, 10);
   if (!Number.isInteger(days) || days <= 0) {
@@ -740,7 +778,7 @@ async function grantManualPremiumDaysForSelectedUser() {
 
   let preview = null;
   try {
-    const previewPayload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?days=${days}`);
+    const previewPayload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?plan=${encodeURIComponent(targetPlan)}&days=${days}`);
     preview = previewPayload.preview || null;
     renderAdminPlanPreview(preview);
   } catch (error) {
@@ -749,7 +787,7 @@ async function grantManualPremiumDaysForSelectedUser() {
   }
 
   const confirmMessage = preview
-    ? `Aplicar ${days} día(s) manuales a ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}?\n\nVencimiento actual: ${formatDateTimeOrDash(preview.previous_expires_at)}\nNuevo vencimiento: ${formatDateTimeOrDash(preview.new_expires_at)}\nDías resultantes: ${preview.new_days_remaining || 0}`
+    ? `Aplicar ${days} día(s) manuales de ${planLabel(targetPlan)} a ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}?\n\nPlan actual: ${planLabel(preview.previous_plan)}\nPlan resultante: ${planLabel(preview.new_plan)}\nVencimiento actual: ${formatDateTimeOrDash(preview.previous_expires_at)}\nNuevo vencimiento: ${formatDateTimeOrDash(preview.new_expires_at)}\nDías resultantes: ${preview.new_days_remaining || 0}`
     : `Aplicar ${days} día(s) manuales a este usuario?`;
 
   if (!window.confirm(confirmMessage)) {
@@ -761,11 +799,11 @@ async function grantManualPremiumDaysForSelectedUser() {
   try {
     const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days`, {
       method: 'POST',
-      body: JSON.stringify({ days }),
+      body: JSON.stringify({ plan: targetPlan, days }),
     });
     renderAdminSelectedUser(payload.user);
     await loadData();
-    setStatus(payload.message || `Premium actualizado por ${days} días.`, 'success');
+    setStatus(payload.message || `${planLabel(targetPlan)} actualizado por ${days} días.`, 'success');
   } catch (error) {
     setStatus(error.message || 'No se pudo aplicar la extensión manual.', 'error');
   } finally {
@@ -882,6 +920,12 @@ function bindActions() {
 
   if (elements.adminGrantPlanButton) {
     elements.adminGrantPlanButton.addEventListener('click', grantManualPremiumDaysForSelectedUser);
+  }
+  if (elements.adminPlanSelect) {
+    elements.adminPlanSelect.addEventListener('change', () => {
+      updateAdminPlanGrantHint();
+      void refreshAdminPlanPreview();
+    });
   }
   if (elements.adminPlanDaysInput) {
     elements.adminPlanDaysInput.addEventListener('input', () => { void refreshAdminPlanPreview(); });
