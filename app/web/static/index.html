@@ -291,6 +291,16 @@
               <div id="adminVisualStats" class="stats-grid compact"></div>
             </article>
 
+            <article class="glass-card panel-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">ADMIN · SEGURIDAD</span>
+                  <h3>Secretos en reposo</h3>
+                </div>
+              </div>
+              <div id="adminSecurityStats" class="stats-grid compact"></div>
+            </article>
+
             <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
@@ -299,6 +309,34 @@
                 </div>
               </div>
               <div id="adminTradeStats" class="stats-grid"></div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">ADMIN · OPERACIONES</span>
+                  <h3>Buscar usuario y activar premium</h3>
+                </div>
+              </div>
+
+              <form id="adminSearchForm" class="admin-search-row">
+                <input id="adminSearchInput" type="text" placeholder="Telegram ID o username" autocomplete="off" spellcheck="false" />
+                <button id="adminSearchButton" class="primary-button" type="submit">Buscar</button>
+              </form>
+
+              <div id="adminSearchResults" class="list-stack empty-state">Busca un usuario para cargar su ficha administrativa.</div>
+
+              <div id="adminUserDetail" class="admin-user-detail hidden">
+                <div class="admin-user-head">
+                  <div>
+                    <span class="section-tag">USUARIO SELECCIONADO</span>
+                    <h3 id="adminUserTitle">—</h3>
+                    <p id="adminUserSubtitle" class="admin-subcopy">—</p>
+                  </div>
+                  <button id="adminActivatePremiumButton" class="success-button" type="button">Activar Premium 30d</button>
+                </div>
+                <div id="adminUserStats" class="stats-grid compact"></div>
+              </div>
             </article>
           </div>
         </section>
