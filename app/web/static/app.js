@@ -67,7 +67,9 @@ const elements = {
   adminUserDetail: $('adminUserDetail'),
   adminUserTitle: $('adminUserTitle'),
   adminUserSubtitle: $('adminUserSubtitle'),
-  adminActivatePremiumButton: $('adminActivatePremiumButton'),
+  adminPlanDaysInput: $('adminPlanDaysInput'),
+  adminGrantPlanButton: $('adminGrantPlanButton'),
+  adminPlanGrantHint: $('adminPlanGrantHint'),
   adminActivateTradingButton: $('adminActivateTradingButton'),
   adminPauseTradingButton: $('adminPauseTradingButton'),
   adminMigrateKeyButton: $('adminMigrateKeyButton'),
@@ -395,6 +397,15 @@ function renderAdminSelectedUser(user) {
   elements.adminUserDetail.classList.remove('hidden');
   elements.adminUserTitle.textContent = user.username ? `@${user.username}` : `Usuario ${user.user_id}`;
   elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'}`;
+  if (elements.adminPlanGrantHint) {
+    const baseMessage = user.plan_active
+      ? `El usuario tiene acceso vigente hasta ${formatDate(user.plan_expires_at)}. Los días nuevos se sumarán desde ese vencimiento.`
+      : 'El usuario no tiene acceso vigente. Los días nuevos se aplicarán desde hoy.';
+    elements.adminPlanGrantHint.textContent = `${baseMessage} Esta acción es manual y no cuenta como compra automática.`;
+  }
+  if (elements.adminPlanDaysInput && !elements.adminPlanDaysInput.value) {
+    elements.adminPlanDaysInput.value = '7';
+  }
   elements.adminUserStats.innerHTML = '';
   elements.adminUserStats.append(
     buildKpiCard('Wallet', user.wallet_configured ? truncateMiddle(user.wallet || '—', 18) : 'Pendiente', 'Estado de wallet.'),
@@ -650,22 +661,33 @@ async function searchAdminUsers() {
   }
 }
 
-async function activatePremiumForSelectedUser() {
+async function grantManualPremiumDaysForSelectedUser() {
   const selected = state.adminSelectedUser;
   if (!selected || !selected.user_id) {
     setStatus('Primero carga un usuario admin.', 'warning');
     return;
   }
-  elements.adminActivatePremiumButton.disabled = true;
+
+  const rawDays = elements.adminPlanDaysInput ? elements.adminPlanDaysInput.value.trim() : '';
+  const days = Number.parseInt(rawDays, 10);
+  if (!Number.isInteger(days) || days <= 0) {
+    setStatus('Introduce una cantidad válida de días mayor que cero.', 'warning');
+    return;
+  }
+
+  elements.adminGrantPlanButton.disabled = true;
   try {
-    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/premium`, { method: 'POST' });
+    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days`, {
+      method: 'POST',
+      body: JSON.stringify({ days }),
+    });
     renderAdminSelectedUser(payload.user);
     await loadData();
-    setStatus(payload.message || 'Premium activado.', 'success');
+    setStatus(payload.message || `Premium actualizado por ${days} días.`, 'success');
   } catch (error) {
-    setStatus(error.message || 'No se pudo activar premium.', 'error');
+    setStatus(error.message || 'No se pudo aplicar la extensión manual.', 'error');
   } finally {
-    elements.adminActivatePremiumButton.disabled = false;
+    elements.adminGrantPlanButton.disabled = false;
   }
 }
 
@@ -776,8 +798,8 @@ function bindActions() {
     });
   }
 
-  if (elements.adminActivatePremiumButton) {
-    elements.adminActivatePremiumButton.addEventListener('click', activatePremiumForSelectedUser);
+  if (elements.adminGrantPlanButton) {
+    elements.adminGrantPlanButton.addEventListener('click', grantManualPremiumDaysForSelectedUser);
   }
   if (elements.adminActivateTradingButton) {
     elements.adminActivateTradingButton.addEventListener('click', activateTradingForSelectedUser);
