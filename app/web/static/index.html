@@ -1,132 +1,120 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>Trading X Hiper Pro MiniApp</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trading X Hiper Pro · MiniApp</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
-    <div class="bg-orb orb-a"></div>
-    <div class="bg-orb orb-b"></div>
-    <div class="bg-grid"></div>
+    <div class="page-glow glow-a"></div>
+    <div class="page-glow glow-b"></div>
+    <div class="page-grid"></div>
 
-    <div id="app" class="app-shell">
-      <header class="topbar surface-card">
-        <div class="brand-lockup">
-          <div class="brand-mark">
-            <span>TX</span>
-          </div>
-          <div class="brand-copy">
+    <div class="app-shell">
+      <header class="topbar glass-card">
+        <div class="brand-wrap">
+          <div class="brand-badge">TX</div>
+          <div>
             <div class="eyebrow-row">
-              <span class="eyebrow">MINIAPP · AUTO TRADING</span>
-              <span id="headerConnectionBadge" class="status-pill neutral">Inicializando</span>
+              <span class="eyebrow">MINIAPP · HYPERLIQUID AUTO TRADING</span>
+              <span id="connectionBadge" class="status-pill neutral">Inicializando</span>
             </div>
             <h1>Trading X Hiper Pro</h1>
-            <p>Control visual premium del bot automático sobre Hyperliquid, con foco en claridad operativa, estado real y ejecución móvil.</p>
+            <p class="topbar-copy">
+              Panel premium para control operativo, configuración crítica y lectura ejecutiva del bot automático.
+            </p>
           </div>
         </div>
 
         <div class="topbar-actions">
-          <div class="topbar-domain">
-            <span class="topbar-label">Modo</span>
+          <div class="mode-chip">
+            <span class="mode-chip-label">Modo</span>
             <strong>Control Desk</strong>
           </div>
-          <button id="refreshButton" class="primary-button" type="button">Actualizar panel</button>
+          <button id="refreshButton" class="primary-button" type="button">Actualizar</button>
         </div>
       </header>
 
       <section id="statusBanner" class="status-banner info">Inicializando MiniApp...</section>
 
-      <section class="hero-shell">
-        <article class="hero-card surface-card">
+      <section class="hero-grid">
+        <article class="hero-card glass-card">
           <div class="hero-copy">
-            <div class="hero-kicker">AUTOMATED EXECUTION DESK</div>
-            <h2>Un panel que ya parece producto, no una prueba</h2>
+            <span class="section-tag">AUTOMATED EXECUTION DESK</span>
+            <h2>Una MiniApp con presencia real de producto</h2>
             <p>
-              Visibilidad de usuario, preparación operativa, configuración crítica, actividad reciente y lectura administrativa desde una UI mucho más seria y limpia.
+              Controla activación, estado del usuario, configuración sensible, métricas y actividad reciente desde una interfaz más seria y útil.
             </p>
 
-            <div class="hero-chip-row">
-              <div class="signal-chip live">
-                <span class="signal-dot"></span>
-                <span id="heroSignalState">Sin sesión</span>
-              </div>
-              <div class="signal-chip">
-                <span class="chip-label">Plan</span>
-                <strong id="heroPlan">--</strong>
-              </div>
-              <div class="signal-chip">
-                <span class="chip-label">Trading</span>
-                <strong id="heroTrading">--</strong>
-              </div>
+            <div class="hero-pills">
+              <span id="heroSessionPill" class="status-pill info">Sin sesión</span>
+              <span id="heroPlanPill" class="status-pill neutral">Plan --</span>
+              <span id="heroTradingPill" class="status-pill neutral">Trading --</span>
             </div>
           </div>
 
-          <div class="hero-telemetry">
-            <article class="telemetry-card telemetry-primary">
-              <span class="telemetry-label">Usuario</span>
+          <div class="hero-metrics">
+            <article class="hero-metric hero-metric-primary">
+              <span class="metric-kicker">Usuario</span>
               <strong id="heroUser">--</strong>
-              <small id="heroUserSubtext">No autenticado</small>
+              <small id="heroUserSubtext">Esperando autenticación</small>
             </article>
-
-            <article class="telemetry-card">
-              <span class="telemetry-label">Wallet</span>
+            <article class="hero-metric">
+              <span class="metric-kicker">Wallet</span>
               <strong id="heroWallet">--</strong>
-              <small id="heroWalletSubtext">Pendiente</small>
+              <small id="heroWalletSubtext">Sin configurar</small>
             </article>
-
-            <article class="telemetry-card">
-              <span class="telemetry-label">Private Key</span>
+            <article class="hero-metric">
+              <span class="metric-kicker">Private Key</span>
               <strong id="heroKey">--</strong>
-              <small id="heroKeySubtext">Pendiente</small>
+              <small id="heroKeySubtext">Sin configurar</small>
             </article>
-
-            <article class="telemetry-card">
-              <span class="telemetry-label">Acceso</span>
+            <article class="hero-metric">
+              <span class="metric-kicker">Acceso</span>
               <strong id="heroAccess">--</strong>
               <small id="heroAccessSubtext">Sin evaluar</small>
             </article>
           </div>
         </article>
 
-        <aside class="ops-strip surface-card">
-          <div class="ops-strip-head">
-            <span class="section-kicker">ESTADO RÁPIDO</span>
-            <h3>Lectura inmediata</h3>
+        <aside class="signal-rail glass-card">
+          <div class="rail-head">
+            <span class="section-tag">LECTURA INMEDIATA</span>
+            <h3>Estado rápido</h3>
           </div>
 
-          <div class="quick-grid">
-            <article class="quick-card">
-              <div class="quick-top">
-                <span class="quick-dot"></span>
+          <div class="rail-stack">
+            <article class="rail-card">
+              <div class="rail-card-head">
+                <span class="rail-dot"></span>
                 <span id="userPlanBadge" class="status-pill neutral">--</span>
               </div>
-              <span class="quick-label">Identidad</span>
+              <span class="rail-label">Usuario</span>
               <strong id="userIdentity">--</strong>
-              <p id="userIdentitySubtext">Esperando autenticación</p>
+              <p id="userIdentitySubtext">Sin sesión</p>
             </article>
 
-            <article class="quick-card">
-              <div class="quick-top">
-                <span class="quick-dot"></span>
-                <span id="userStatusBadge" class="status-pill neutral">--</span>
+            <article class="rail-card">
+              <div class="rail-card-head">
+                <span class="rail-dot"></span>
+                <span id="userReadinessBadge" class="status-pill neutral">--</span>
               </div>
-              <span class="quick-label">Preparación</span>
+              <span class="rail-label">Preparación</span>
               <strong id="userReadiness">--</strong>
               <p id="userTradingStatus">--</p>
             </article>
 
-            <article class="quick-card">
-              <div class="quick-top">
-                <span class="quick-dot"></span>
+            <article class="rail-card">
+              <div class="rail-card-head">
+                <span class="rail-dot"></span>
                 <span id="walletBadge" class="status-pill neutral">--</span>
               </div>
-              <span class="quick-label">Configuración crítica</span>
+              <span class="rail-label">Configuración crítica</span>
               <strong id="walletConfigured">--</strong>
               <p id="privateKeyConfigured">--</p>
             </article>
@@ -134,105 +122,154 @@
         </aside>
       </section>
 
-      <nav class="tabbar surface-card" aria-label="Secciones principales">
-        <button class="tab is-active" data-tab="dashboard" type="button">
-          <span class="tab-icon">◈</span>
-          <span>Resumen</span>
-        </button>
-        <button class="tab" data-tab="operations" type="button">
-          <span class="tab-icon">⇄</span>
-          <span>Operaciones</span>
-        </button>
-        <button class="tab" data-tab="referrals" type="button">
-          <span class="tab-icon">◎</span>
-          <span>Referidos</span>
-        </button>
-        <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">
-          <span class="tab-icon">◆</span>
-          <span>Admin</span>
-        </button>
+      <nav class="tabbar glass-card" aria-label="Secciones principales">
+        <button class="tab is-active" data-tab="overview" type="button">Resumen</button>
+        <button class="tab" data-tab="control" type="button">Control</button>
+        <button class="tab" data-tab="operations" type="button">Operaciones</button>
+        <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">Admin</button>
       </nav>
 
       <main class="content-stack">
-        <section class="panel is-active" data-panel="dashboard">
-          <div class="dashboard-layout">
-            <article class="surface-card panel-card panel-wide">
+        <section class="panel is-active" data-panel="overview">
+          <div class="dashboard-grid">
+            <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
-                  <span class="section-kicker">RESUMEN OPERATIVO</span>
-                  <h3>KPIs del backend y acceso del usuario</h3>
+                  <span class="section-tag">KPIs DEL USUARIO</span>
+                  <h3>Resumen operativo</h3>
                 </div>
               </div>
-              <div class="stats-grid" id="dashboardStats"></div>
+              <div id="dashboardStats" class="stats-grid"></div>
             </article>
 
-            <article class="surface-card panel-card">
+            <article class="glass-card panel-card">
               <div class="panel-head">
                 <div>
-                  <span class="section-kicker">CHECKLIST CRÍTICO</span>
-                  <h3>Preparación del usuario</h3>
+                  <span class="section-tag">CHECKLIST</span>
+                  <h3>Bloqueadores reales</h3>
                 </div>
               </div>
-              <div class="readiness-list" id="readinessList"></div>
+              <div id="readinessList" class="readiness-list"></div>
             </article>
 
-            <article class="surface-card panel-card insight-card">
+            <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
-                  <span class="section-kicker">LECTURA EJECUTIVA</span>
-                  <h3>Qué está listo y qué falta</h3>
+                  <span class="section-tag">RENDIMIENTO</span>
+                  <h3>24h · 7d · 30d</h3>
                 </div>
               </div>
-              <div class="insight-stack">
-                <div class="insight-row">
-                  <span class="insight-label">Cuenta</span>
-                  <strong id="insightAccount">Sin sesión</strong>
-                </div>
-                <div class="insight-row">
-                  <span class="insight-label">Capacidad operativa</span>
-                  <strong id="insightReadiness">Pendiente</strong>
-                </div>
-                <div class="insight-row">
-                  <span class="insight-label">Autenticación</span>
-                  <strong id="insightAuth">Pendiente</strong>
-                </div>
-                <div class="insight-row">
-                  <span class="insight-label">Vencimiento</span>
-                  <strong id="insightExpiry">—</strong>
+              <div id="performanceGrid" class="performance-grid"></div>
+            </article>
+
+            <article class="glass-card panel-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">AFILIADOS</span>
+                  <h3>Referidos</h3>
                 </div>
               </div>
+              <div id="referralStats" class="stats-grid compact"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="control">
+          <div class="control-grid">
+            <article class="glass-card panel-card control-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">CONFIGURACIÓN CRÍTICA</span>
+                  <h3>Wallet y private key</h3>
+                </div>
+              </div>
+
+              <div class="info-banner muted">
+                La MiniApp nunca vuelve a leer la private key guardada. Solo muestra si existe o no.
+              </div>
+
+              <form id="configurationForm" class="form-stack">
+                <label class="field-block">
+                  <span>Wallet Hyperliquid</span>
+                  <input id="walletInput" type="text" placeholder="0x..." autocomplete="off" spellcheck="false" />
+                </label>
+
+                <label class="field-block">
+                  <span>Nueva private key</span>
+                  <input id="privateKeyInput" type="password" placeholder="0x... o 64 hex" autocomplete="off" spellcheck="false" />
+                </label>
+
+                <div class="button-row">
+                  <button id="saveConfigurationButton" class="primary-button" type="submit">Guardar configuración</button>
+                  <button id="clearConfigurationButton" class="secondary-button" type="button">Limpiar campos</button>
+                </div>
+              </form>
+            </article>
+
+            <article class="glass-card panel-card control-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">CONTROL OPERATIVO</span>
+                  <h3>Activación del bot</h3>
+                </div>
+              </div>
+
+              <div id="controlReadinessBox" class="control-summary-box"></div>
+
+              <div class="terms-box">
+                <div>
+                  <strong>Términos operativos</strong>
+                  <p id="termsStatusText">Pendiente</p>
+                </div>
+                <button id="acceptTermsButton" class="secondary-button" type="button">Aceptar términos</button>
+              </div>
+
+              <div class="button-row stacked-mobile">
+                <button id="activateTradingButton" class="success-button" type="button">Activar trading</button>
+                <button id="pauseTradingButton" class="danger-button" type="button">Pausar trading</button>
+              </div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">LECTURA DE CONTROL</span>
+                  <h3>Snapshot operativo</h3>
+                </div>
+              </div>
+              <div id="controlStats" class="stats-grid"></div>
             </article>
           </div>
         </section>
 
         <section class="panel" data-panel="operations">
-          <div class="operations-layout">
-            <article class="surface-card panel-card">
+          <div class="operations-grid">
+            <article class="glass-card panel-card">
               <div class="panel-head compact">
                 <div>
-                  <span class="section-kicker">ÚLTIMO EVENTO</span>
-                  <h3>Apertura</h3>
+                  <span class="section-tag">ÚLTIMA APERTURA</span>
+                  <h3>Open payload</h3>
                 </div>
                 <span class="status-pill neutral">OPEN</span>
               </div>
               <pre id="lastOpen" class="json-box">Sin datos</pre>
             </article>
 
-            <article class="surface-card panel-card">
+            <article class="glass-card panel-card">
               <div class="panel-head compact">
                 <div>
-                  <span class="section-kicker">ÚLTIMO EVENTO</span>
-                  <h3>Cierre</h3>
+                  <span class="section-tag">ÚLTIMO CIERRE</span>
+                  <h3>Close payload</h3>
                 </div>
                 <span class="status-pill neutral">CLOSE</span>
               </div>
               <pre id="lastClose" class="json-box">Sin datos</pre>
             </article>
 
-            <article class="surface-card panel-card panel-wide">
+            <article class="glass-card panel-card panel-span-2">
               <div class="panel-head compact">
                 <div>
-                  <span class="section-kicker">TRACK RECORD</span>
+                  <span class="section-tag">TRACK RECORD</span>
                   <h3>Operaciones recientes</h3>
                 </div>
                 <span id="operationsCount" class="status-pill neutral">0</span>
@@ -242,52 +279,26 @@
           </div>
         </section>
 
-        <section class="panel" data-panel="referrals">
-          <div class="dashboard-layout">
-            <article class="surface-card panel-card panel-wide">
-              <div class="panel-head">
-                <div>
-                  <span class="section-kicker">AFILIADOS</span>
-                  <h3>Estado del sistema de referidos</h3>
-                </div>
-              </div>
-              <div class="stats-grid" id="referralStats"></div>
-            </article>
-
-            <article class="surface-card panel-card insight-card">
-              <div class="panel-head">
-                <div>
-                  <span class="section-kicker">NOTA OPERATIVA</span>
-                  <h3>Lectura rápida</h3>
-                </div>
-              </div>
-              <div class="copy-block">
-                <p>Esta vista ya está pensada como producto real: limpia, legible y con espacio para evolucionar después a acciones concretas, rankings y recompensas.</p>
-              </div>
-            </article>
-          </div>
-        </section>
-
         <section class="panel" data-panel="admin">
-          <div class="dashboard-layout">
-            <article class="surface-card panel-card panel-wide">
+          <div class="dashboard-grid">
+            <article class="glass-card panel-card">
               <div class="panel-head">
                 <div>
-                  <span class="section-kicker">VISIÓN GLOBAL</span>
-                  <h3>Admin overview</h3>
+                  <span class="section-tag">ADMIN · VISUAL</span>
+                  <h3>Usuarios y planes</h3>
                 </div>
               </div>
-              <div class="stats-grid" id="adminVisualStats"></div>
+              <div id="adminVisualStats" class="stats-grid compact"></div>
             </article>
 
-            <article class="surface-card panel-card panel-wide">
+            <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
-                  <span class="section-kicker">TRADING 30D</span>
-                  <h3>Métricas agregadas</h3>
+                  <span class="section-tag">ADMIN · PERFORMANCE</span>
+                  <h3>Trading global 30d</h3>
                 </div>
               </div>
-              <div class="stats-grid" id="adminTradeStats"></div>
+              <div id="adminTradeStats" class="stats-grid"></div>
             </article>
           </div>
         </section>
