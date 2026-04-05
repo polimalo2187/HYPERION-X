@@ -8,6 +8,7 @@ const state = {
   operations: null,
   referrals: null,
   admin: null,
+  adminSelectedUser: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -57,7 +58,17 @@ const elements = {
   operationsCount: $('operationsCount'),
   operationsList: $('operationsList'),
   adminVisualStats: $('adminVisualStats'),
+  adminSecurityStats: $('adminSecurityStats'),
   adminTradeStats: $('adminTradeStats'),
+  adminSearchForm: $('adminSearchForm'),
+  adminSearchInput: $('adminSearchInput'),
+  adminSearchButton: $('adminSearchButton'),
+  adminSearchResults: $('adminSearchResults'),
+  adminUserDetail: $('adminUserDetail'),
+  adminUserTitle: $('adminUserTitle'),
+  adminUserSubtitle: $('adminUserSubtitle'),
+  adminActivatePremiumButton: $('adminActivatePremiumButton'),
+  adminUserStats: $('adminUserStats'),
 };
 
 function setStatus(message, variant = 'info') {
@@ -235,7 +246,8 @@ function renderControl(control) {
   elements.controlStats.innerHTML = '';
   elements.controlStats.append(
     buildKpiCard('Wallet', control.wallet_configured ? truncateMiddle(control.wallet_masked, 18) : 'Pendiente', 'Dirección actual del usuario.'),
-    buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', 'Nunca se reexpone por API.'),
+    buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', control.security_posture === 'encrypted_at_rest' ? 'Cifrada en reposo.' : 'Nunca se reexpone por API.'),
+    buildKpiCard('Seguridad', control.security_posture === 'encrypted_at_rest' ? 'Cifrada' : (control.security_posture === 'legacy_plaintext' ? 'Legacy' : 'Sin key'), control.security_posture === 'legacy_plaintext' ? 'Requiere rotación para endurecer.' : 'Estado del almacenamiento sensible.'),
     buildKpiCard('Términos', control.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean activación.'),
     buildKpiCard('Trading', control.trading_status || 'inactive', 'Se puede pausar desde aquí.'),
     buildKpiCard('Plan', control.plan || 'none', control.plan_active ? 'Plan vigente.' : 'Sin acceso vigente.'),
@@ -309,6 +321,7 @@ function renderAdmin(data) {
   state.admin = data;
   const visual = data.visual || {};
   const tradeStats = data.trade_stats_30d || {};
+  const security = data.security || {};
 
   elements.adminVisualStats.innerHTML = '';
   elements.adminVisualStats.append(
@@ -316,6 +329,13 @@ function renderAdmin(data) {
     buildKpiCard('Trial vencido', visual.free_old || 0, 'Sin premium activo.'),
     buildKpiCard('Premium activo', visual.premium_active || 0, 'Estado actual.'),
     buildKpiCard('Premium vencido', visual.premium_expired || 0, 'Caducados.')
+  );
+
+  elements.adminSecurityStats.innerHTML = '';
+  elements.adminSecurityStats.append(
+    buildKpiCard('Keys cifradas', security.encrypted_private_keys || 0, 'Protegidas en reposo.'),
+    buildKpiCard('Legacy plaintext', security.legacy_plaintext_private_keys || 0, 'Deuda crítica a rotar.'),
+    buildKpiCard('Wallets', security.wallets_configured || 0, 'Usuarios con wallet configurada.')
   );
 
   elements.adminTradeStats.innerHTML = '';
@@ -326,6 +346,41 @@ function renderAdmin(data) {
     buildKpiCard('Profit factor', tradeStats.profit_factor === Infinity ? '∞' : tradeStats.profit_factor ?? 0, `PnL ${tradeStats.pnl_total ?? 0}`),
     buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Cierres positivos.'),
     buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Pérdidas acumuladas.')
+  );
+}
+
+function buildAdminSearchResultItem(user) {
+  const item = document.createElement('article');
+  item.className = 'list-item';
+  item.innerHTML = `
+    <div class="list-item-header">
+      <div>
+        <div class="list-item-title">${user.username ? `@${user.username}` : `ID ${user.user_id}`}</div>
+        <div class="list-item-meta">Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'} · Key ${user.private_key_storage || 'not_configured'}</div>
+      </div>
+      <button class="secondary-button" type="button" data-admin-user-id="${user.user_id}">Cargar</button>
+    </div>
+  `;
+  const button = item.querySelector('button');
+  button.addEventListener('click', async () => {
+    await loadAdminUserDetail(user.user_id);
+  });
+  return item;
+}
+
+function renderAdminSelectedUser(user) {
+  state.adminSelectedUser = user;
+  elements.adminUserDetail.classList.remove('hidden');
+  elements.adminUserTitle.textContent = user.username ? `@${user.username}` : `Usuario ${user.user_id}`;
+  elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'}`;
+  elements.adminUserStats.innerHTML = '';
+  elements.adminUserStats.append(
+    buildKpiCard('Wallet', user.wallet_configured ? truncateMiddle(user.wallet || '—', 18) : 'Pendiente', 'Estado de wallet.'),
+    buildKpiCard('Private key', user.private_key_configured ? 'Configurada' : 'Pendiente', user.private_key_storage || 'not_configured'),
+    buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)}` : 'Sin acceso vigente.'),
+    buildKpiCard('Términos', user.terms_accepted ? 'Aceptados' : 'Pendientes', user.terms_timestamp ? `TS ${formatDate(user.terms_timestamp)}` : 'Sin aceptación registrada.'),
+    buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
+    buildKpiCard('Referidos válidos', user.referral_valid_count || 0, user.private_key_version ? `Cipher ${user.private_key_version}` : 'Sin versión de cifrado.')
   );
 }
 
@@ -518,6 +573,60 @@ async function refreshSummaryOnly() {
   renderControl(control);
   renderPerformance(performance);
 }
+async function loadAdminUserDetail(userId) {
+  const detail = await apiFetch(`/api/v1/admin/users/${userId}`);
+  renderAdminSelectedUser(detail);
+}
+
+async function searchAdminUsers() {
+  const query = elements.adminSearchInput.value.trim();
+  if (!query) {
+    setStatus('Escribe un Telegram ID o username para buscar.', 'warning');
+    return;
+  }
+  elements.adminSearchButton.disabled = true;
+  try {
+    const payload = await apiFetch(`/api/v1/admin/users/search?q=${encodeURIComponent(query)}&limit=10`);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    if (!items.length) {
+      elements.adminSearchResults.className = 'list-stack empty-state';
+      elements.adminSearchResults.textContent = 'No se encontraron usuarios con ese criterio.';
+      elements.adminUserDetail.classList.add('hidden');
+      state.adminSelectedUser = null;
+      setStatus('Búsqueda admin sin resultados.', 'warning');
+      return;
+    }
+
+    elements.adminSearchResults.className = 'list-stack';
+    elements.adminSearchResults.innerHTML = '';
+    items.forEach((user) => elements.adminSearchResults.appendChild(buildAdminSearchResultItem(user)));
+    setStatus(`Se encontraron ${items.length} usuarios.`, 'success');
+  } catch (error) {
+    setStatus(error.message || 'No se pudo buscar el usuario.', 'error');
+  } finally {
+    elements.adminSearchButton.disabled = false;
+  }
+}
+
+async function activatePremiumForSelectedUser() {
+  const selected = state.adminSelectedUser;
+  if (!selected || !selected.user_id) {
+    setStatus('Primero carga un usuario admin.', 'warning');
+    return;
+  }
+  elements.adminActivatePremiumButton.disabled = true;
+  try {
+    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/premium`, { method: 'POST' });
+    renderAdminSelectedUser(payload.user);
+    await loadData();
+    setStatus(payload.message || 'Premium activado.', 'success');
+  } catch (error) {
+    setStatus(error.message || 'No se pudo activar premium.', 'error');
+  } finally {
+    elements.adminActivatePremiumButton.disabled = false;
+  }
+}
+
 
 function bindActions() {
   elements.refreshButton.addEventListener('click', async () => {
@@ -544,6 +653,17 @@ function bindActions() {
   elements.acceptTermsButton.addEventListener('click', acceptTermsAction);
   elements.activateTradingButton.addEventListener('click', activateTradingAction);
   elements.pauseTradingButton.addEventListener('click', pauseTradingAction);
+
+  if (elements.adminSearchForm) {
+    elements.adminSearchForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await searchAdminUsers();
+    });
+  }
+
+  if (elements.adminActivatePremiumButton) {
+    elements.adminActivatePremiumButton.addEventListener('click', activatePremiumForSelectedUser);
+  }
 }
 
 async function bootstrap() {
