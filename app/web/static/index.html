@@ -318,6 +318,16 @@
             <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
+                  <span class="section-tag">ADMIN · HISTORIAL</span>
+                  <h3>Acciones recientes</h3>
+                </div>
+              </div>
+              <div id="adminRecentActions" class="list-stack empty-state">Sin acciones administrativas registradas todavía.</div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
                   <span class="section-tag">ADMIN · OPERACIONES</span>
                   <h3>Buscar usuario y soporte operativo</h3>
                 </div>
@@ -348,6 +358,10 @@
                     </div>
                     <span class="status-pill info">Manual</span>
                   </div>
+                  <label class="field-block admin-note-field">
+                    <span>Nota administrativa / motivo</span>
+                    <textarea id="adminActionReasonInput" rows="3" placeholder="Ej: compensación por incidencia, premio, soporte manual..."></textarea>
+                  </label>
                   <p id="adminPlanGrantHint" class="admin-subcopy">Carga un usuario para aplicar días exactos sin simular una compra automática.</p>
                   <div id="adminPlanPreviewBox" class="admin-plan-preview">Sin previsualización todavía.</div>
                   <div class="admin-plan-row">
@@ -388,6 +402,16 @@
                     </div>
                   </div>
                   <div id="adminUserPerformance" class="stats-grid"></div>
+                </div>
+
+                <div>
+                  <div class="panel-head compact no-margin">
+                    <div>
+                      <span class="section-tag">USUARIO · HISTORIAL ADMIN</span>
+                      <h3>Últimas acciones sobre este usuario</h3>
+                    </div>
+                  </div>
+                  <div id="adminUserActionHistory" class="list-stack empty-state">Sin acciones administrativas sobre este usuario todavía.</div>
                 </div>
               </div>
             </article>
