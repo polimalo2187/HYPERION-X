@@ -337,6 +337,52 @@ def _plan_is_active(u: dict) -> bool:
         return False
     return _now_utc() < exp
 
+
+def _days_remaining_from_exp(exp: datetime | None) -> int:
+    exp = _parse_dt(exp)
+    if not exp:
+        return 0
+    remaining = exp - _now_utc()
+    if remaining.total_seconds() <= 0:
+        return 0
+    return max(1, int((remaining.total_seconds() + 86399) // 86400))
+
+
+def get_manual_premium_days_preview(target_user_id: int, days: int) -> dict:
+    """
+    Previsualiza el efecto de una extensión manual sin persistir cambios.
+    """
+    try:
+        target_user_id = int(target_user_id)
+        days = int(days)
+        if days <= 0:
+            return {"ok": False, "message": "La cantidad de días debe ser mayor que cero"}
+
+        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1})
+        if not u:
+            return {"ok": False, "message": "Usuario no encontrado"}
+
+        previous_plan = (u.get("plan") or "none")
+        previous_exp = _parse_dt(u.get("plan_expires_at"))
+        has_active_access = _plan_is_active(u)
+        base_type = "current_expiry" if has_active_access and previous_exp else "today"
+        exp_utc = _midnight_cuba_after_days_from_base(previous_exp, days)
+
+        return {
+            "ok": True,
+            "days": days,
+            "previous_plan": previous_plan,
+            "previous_expires_at": previous_exp,
+            "previous_days_remaining": _days_remaining_from_exp(previous_exp) if has_active_access else 0,
+            "new_expires_at": exp_utc,
+            "new_days_remaining": _days_remaining_from_exp(exp_utc),
+            "base_type": base_type,
+        }
+    except Exception as e:
+        db_log(f"❌ Error previsualizando premium manual user={target_user_id}: {e}")
+        return {"ok": False, "message": "Error interno al calcular la previsualización"}
+
+
 def user_is_ready(user_id: int) -> bool:
     u = users_col.find_one({"user_id": int(user_id)})
     if not u:
@@ -456,6 +502,7 @@ def grant_manual_premium_days(target_user_id: int, days: int) -> dict:
             "previous_plan": previous_plan,
             "previous_expires_at": previous_exp,
             "new_expires_at": exp_utc,
+            "new_days_remaining": _days_remaining_from_exp(exp_utc),
             "days": days,
         }
     except Exception as e:
@@ -1014,6 +1061,7 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "plan": u.get("plan") or "none",
         "plan_expires_at": exp,
         "plan_active": _plan_is_active(u),
+        "plan_days_remaining": _days_remaining_from_exp(exp) if _plan_is_active(u) else 0,
         "trial_used": bool(u.get("trial_used", False)),
         "terms_accepted": bool(u.get("terms_accepted", False)),
         "terms_timestamp": _parse_dt(u.get("terms_timestamp")),
