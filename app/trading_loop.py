@@ -20,6 +20,7 @@ from app.database import (
     mark_expiry_notified,
     save_last_open,
     save_last_close,
+    touch_runtime_component,
 )
 from app.trading_engine import execute_trade_cycle
 from app.config import SCAN_INTERVAL
@@ -125,6 +126,14 @@ async def execute_user_cycle(user_id: int, semaphore: asyncio.Semaphore):
                 pass
 
             try:
+                touch_runtime_component(
+                    'scanner',
+                    'online',
+                    metadata={
+                        'user_id': int(user_id),
+                        'phase': 'execute_cycle',
+                    },
+                )
                 loop = asyncio.get_running_loop()
 
                 result = await asyncio.wait_for(
@@ -132,13 +141,26 @@ async def execute_user_cycle(user_id: int, semaphore: asyncio.Semaphore):
                     timeout=TRADE_TIMEOUT_SECONDS
                 )
 
+                touch_runtime_component(
+                    'scanner',
+                    'online',
+                    metadata={
+                        'user_id': int(user_id),
+                        'phase': 'cycle_finished',
+                        'last_event': (result or {}).get('event') if isinstance(result, dict) else None,
+                        'symbol': (((result or {}).get('manager') or {}).get('symbol') if isinstance(result, dict) else None)
+                            or (((result or {}).get('open') or {}).get('symbol') if isinstance(result, dict) else None),
+                    },
+                )
                 return result
 
             except asyncio.TimeoutError:
+                touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'timeout', 'error': 'execute_user_cycle timeout'})
                 log(f"Timeout ejecución usuario {user_id}", "WARN")
                 return None
 
             except Exception as e:
+                touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'exception', 'error': str(e)[:300]})
                 log(f"Error crítico usuario {user_id}: {e}", "ERROR")
                 return None
 
@@ -154,6 +176,15 @@ async def trading_loop(app: Application):
 
     log("Trading Loop iniciado — BANK GRADE 24/7")
     log(f"Startup grace: {STARTUP_GRACE_SECONDS}s (no escanea/operará durante este tiempo)")
+    touch_runtime_component(
+        'trading_loop',
+        'online',
+        metadata={
+            'phase': 'started',
+            'scan_interval': SCAN_INTERVAL,
+            'startup_grace_seconds': STARTUP_GRACE_SECONDS,
+        },
+    )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
 
@@ -163,10 +194,27 @@ async def trading_loop(app: Application):
             if STARTUP_GRACE_SECONDS > 0:
                 elapsed = time.time() - float(_loop_started_at or time.time())
                 if elapsed < float(STARTUP_GRACE_SECONDS):
+                    touch_runtime_component(
+                        'trading_loop',
+                        'online',
+                        metadata={
+                            'phase': 'startup_grace',
+                            'seconds_remaining': max(0, int(float(STARTUP_GRACE_SECONDS) - elapsed)),
+                        },
+                    )
                     await asyncio.sleep(1.0)
                     continue
 
             users = get_all_users() or []
+            touch_runtime_component(
+                'trading_loop',
+                'online',
+                metadata={
+                    'phase': 'loop_tick',
+                    'users_loaded': len(users),
+                    'max_concurrent_users': MAX_CONCURRENT_USERS,
+                },
+            )
             log(f"Usuarios activos: {len(users)}")
 
             tasks = []
@@ -206,10 +254,27 @@ async def trading_loop(app: Application):
                 task_user_ids.append(user_id)
 
             if not tasks:
+                touch_runtime_component(
+                    'scanner',
+                    'online',
+                    metadata={
+                        'phase': 'idle',
+                        'users_loaded': len(users),
+                        'users_ready': 0,
+                    },
+                )
                 await asyncio.sleep(max(1, int(SCAN_INTERVAL or 1)))
                 continue
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            touch_runtime_component(
+                'trading_loop',
+                'online',
+                metadata={
+                    'phase': 'batch_completed',
+                    'tasks_executed': len(tasks),
+                },
+            )
 
             for user_id, result in zip(task_user_ids, results):
                 if isinstance(result, Exception):
