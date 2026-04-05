@@ -19,6 +19,7 @@ const elements = {
   refreshButton: $('refreshButton'),
   connectionBadge: $('connectionBadge'),
   adminTabButton: $('adminTabButton'),
+  systemTabButton: $('systemTabButton'),
   heroSessionPill: $('heroSessionPill'),
   heroPlanPill: $('heroPlanPill'),
   heroTradingPill: $('heroTradingPill'),
@@ -159,10 +160,114 @@ function buildSystemComponentCard(label, component = {}) {
       <span class="kpi-label">${label}</span>
       <span class="status-pill ${pillClass(status)}">${runtimeStatusLabel(status)}</span>
     </div>
-    <div class="kpi-value">${component.last_seen_at ? formatDate(component.last_seen_at) : 'Sin heartbeat'}</div>
-    <div class="kpi-subtext">${component.message || 'Sin mensaje'} · Frescura ${formatFreshness(freshness)}</div>
+    <div class="kpi-value">${component.last_seen_at ? formatDate(component.last_seen_at) : 'Sin registro reciente'}</div>
+    <div class="kpi-subtext">${component.message || 'Sin actualización reciente'} · Actualización ${formatFreshness(freshness)}</div>
   `;
   return article;
+}
+
+function systemStatusCopy(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'healthy') return 'La plataforma opera con normalidad.';
+  if (normalized === 'warning' || normalized === 'stale') return 'La plataforma sigue operativa, pero hay una atención temporal en curso.';
+  if (normalized === 'degraded') return 'Hay una incidencia temporal en algunos servicios. Algunas funciones pueden tardar más de lo normal.';
+  return 'La plataforma está sincronizando su estado operativo.';
+}
+
+function publicIssueSummary(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'healthy') return { label: 'Operativo', description: 'Todos los servicios principales responden correctamente.', tone: 'active' };
+  if (normalized === 'warning' || normalized === 'stale') return { label: 'Atención', description: 'Se detectó una condición temporal que no bloquea el uso general.', tone: 'warning' };
+  if (normalized === 'degraded') return { label: 'Incidencia', description: 'Hay una degradación temporal en la plataforma.', tone: 'blocked' };
+  return { label: 'Sincronizando', description: 'La plataforma está resolviendo su estado actual.', tone: 'warning' };
+}
+
+function renderPublicSystemOverview(payload) {
+  const publicSummary = payload.public_summary || {};
+  const checkedAt = payload.checked_at || publicSummary.last_update_at;
+  const summary = publicIssueSummary(payload.overall_status);
+  const activityLabel = publicSummary.recent_activity_label || 'Sin actividad reciente';
+  const activityDetail = publicSummary.recent_activity_detail || 'Todavía no hay actividad reciente para mostrar.';
+  const syncLabel = publicSummary.connection_label || 'Sincronizada';
+  const syncDetail = checkedAt ? `Última actualización ${formatDate(checkedAt)}` : 'Sin actualización reciente.';
+
+  const healthCards = [
+    buildKpiCard('Estado del sistema', runtimeStatusLabel(payload.overall_status), systemStatusCopy(payload.overall_status)),
+    buildKpiCard('Conectividad', syncLabel, syncDetail),
+    buildKpiCard('Actividad reciente', activityLabel, activityDetail),
+  ];
+
+  const overviewCards = [
+    buildKpiCard('Operaciones activas', publicSummary.active_trades ?? 0, 'Posiciones activas registradas en el sistema.'),
+    buildKpiCard('Estado de ejecución', publicSummary.execution_label || 'Monitoreado', publicSummary.execution_detail || 'Visión resumida del estado operativo.'),
+    buildKpiCard('Última lectura', checkedAt ? formatDate(checkedAt) : '—', 'Hora de la última sincronización visual.'),
+  ];
+
+  if (elements.systemHealthGrid) {
+    elements.systemHealthGrid.innerHTML = '';
+    healthCards.forEach((card) => elements.systemHealthGrid.appendChild(card));
+  }
+
+  if (elements.systemRuntimeGrid) {
+    elements.systemRuntimeGrid.innerHTML = '';
+    overviewCards.forEach((card) => elements.systemRuntimeGrid.appendChild(card));
+  }
+
+  if (elements.systemRuntimeNotes) {
+    elements.systemRuntimeNotes.innerHTML = '';
+    elements.systemRuntimeNotes.className = 'readiness-list compact-list';
+    elements.systemRuntimeNotes.appendChild(buildReadinessItem(summary.label, summary.description, summary.tone));
+    if (publicSummary.plan_notice) {
+      elements.systemRuntimeNotes.appendChild(buildReadinessItem('Acceso', publicSummary.plan_notice, 'active'));
+    }
+  }
+}
+
+function renderTechnicalSystemPanel(payload) {
+  const components = payload.components || {};
+  const runtime = payload.runtime || {};
+  const cards = [
+    buildSystemComponentCard('Backend web', { status: payload.backend?.status || 'online', last_seen_at: payload.backend?.checked_at, message: payload.backend?.message, freshness_seconds: 0 }),
+    buildSystemComponentCard('Canal Telegram', components.telegram_bot || {}),
+    buildSystemComponentCard('Motor de trading', components.trading_loop || {}),
+    buildSystemComponentCard('Scanner de mercado', components.scanner || {}),
+  ];
+
+  if (elements.systemHealthGridPanel) {
+    elements.systemHealthGridPanel.innerHTML = '';
+    cards.forEach((card) => elements.systemHealthGridPanel.appendChild(card.cloneNode(true)));
+  }
+
+  const runtimeCards = [
+    buildKpiCard('Estado global', runtimeStatusLabel(payload.overall_status), payload.issues?.length ? `${payload.issues.length} incidencia(s) detectadas.` : 'Sin alertas críticas ahora mismo.'),
+    buildKpiCard('Usuarios con plan', runtime.users_with_active_plan || 0, 'Acceso vigente en esta base.'),
+    buildKpiCard('Trading activo', runtime.users_trading_active || 0, 'Usuarios con trading activo.'),
+    buildKpiCard('Operaciones activas', runtime.active_trades || 0, 'Operaciones abiertas registradas.'),
+    buildKpiCard('Última actividad del scanner', runtime.scanner_last_event || '—', runtime.scanner_last_symbol ? `Símbolo ${runtime.scanner_last_symbol}` : 'Sin símbolo reciente.'),
+    buildKpiCard('Última actividad del manager', runtime.latest_trade_manager?.manager_heartbeat_at ? formatDate(runtime.latest_trade_manager.manager_heartbeat_at) : 'Sin registro', runtime.latest_trade_manager?.symbol ? `${runtime.latest_trade_manager.symbol} · user ${runtime.latest_trade_manager.user_id}` : 'Sin trade activo reciente.'),
+  ];
+
+  if (elements.systemRuntimeGridPanel) {
+    elements.systemRuntimeGridPanel.innerHTML = '';
+    runtimeCards.forEach((card) => elements.systemRuntimeGridPanel.appendChild(card));
+  }
+
+  if (elements.backendHealthCard) {
+    elements.backendHealthCard.innerHTML = '';
+    elements.backendHealthCard.append(
+      buildKpiCard('Backend', 'ONLINE', payload.backend?.message || 'El backend respondió.'),
+      buildKpiCard('Chequeado', payload.backend?.checked_at ? formatDate(payload.backend.checked_at) : '—', 'Timestamp de esta respuesta.')
+    );
+  }
+
+  if (elements.systemActivityList) {
+    elements.systemActivityList.className = 'list-stack';
+    elements.systemActivityList.innerHTML = '';
+    elements.systemActivityList.append(
+      buildActivityItem('Última apertura', runtime.latest_open, 'No hay aperturas registradas todavía.'),
+      buildActivityItem('Último cierre', runtime.latest_close, 'No hay cierres registrados todavía.'),
+    );
+  }
 }
 
 function buildActivityItem(title, item, emptyCopy) {
@@ -494,67 +599,26 @@ function renderReferrals(data) {
 
 function renderSystemRuntime(payload) {
   state.systemRuntime = payload;
-  const components = payload.components || {};
-  const runtime = payload.runtime || {};
+  renderPublicSystemOverview(payload);
 
-  const cards = [
-    buildSystemComponentCard('Backend web', { status: payload.backend?.status || 'online', last_seen_at: payload.backend?.checked_at, message: payload.backend?.message, freshness_seconds: 0 }),
-    buildSystemComponentCard('Bot Telegram', components.telegram_bot || {}),
-    buildSystemComponentCard('Trading loop', components.trading_loop || {}),
-    buildSystemComponentCard('Scanner', components.scanner || {}),
-  ];
+  const hasTechnicalDetails = Boolean(payload.components && Object.keys(payload.components).length);
 
-  [elements.systemHealthGrid, elements.systemHealthGridPanel].forEach((container) => {
-    if (!container) return;
-    container.innerHTML = '';
-    cards.forEach((card) => container.appendChild(card.cloneNode(true)));
-  });
-
-  const runtimeCards = [
-    buildKpiCard('Estado global', runtimeStatusLabel(payload.overall_status), payload.issues?.length ? `${payload.issues.length} issue(s) detectadas.` : 'Sin alertas críticas ahora mismo.'),
-    buildKpiCard('Usuarios con plan', runtime.users_with_active_plan || 0, 'Acceso vigente en esta DB.'),
-    buildKpiCard('Trading activo', runtime.users_trading_active || 0, 'Usuarios con status active.'),
-    buildKpiCard('Trades activos', runtime.active_trades || 0, 'Documentos activos en runtime.'),
-    buildKpiCard('Scanner último evento', runtime.scanner_last_event || '—', runtime.scanner_last_symbol ? `Símbolo ${runtime.scanner_last_symbol}` : 'Sin símbolo reciente.'),
-    buildKpiCard('Manager heartbeat', runtime.latest_trade_manager?.manager_heartbeat_at ? formatDate(runtime.latest_trade_manager.manager_heartbeat_at) : 'Sin manager', runtime.latest_trade_manager?.symbol ? `${runtime.latest_trade_manager.symbol} · user ${runtime.latest_trade_manager.user_id}` : 'Sin trade activo reciente.'),
-  ];
-
-  [elements.systemRuntimeGrid, elements.systemRuntimeGridPanel].forEach((container) => {
-    if (!container) return;
-    container.innerHTML = '';
-    runtimeCards.forEach((card) => container.appendChild(card.cloneNode(true)));
-  });
-
-  if (elements.backendHealthCard) {
-    elements.backendHealthCard.innerHTML = '';
-    elements.backendHealthCard.append(
-      buildKpiCard('Backend', 'ONLINE', payload.backend?.message || 'El backend respondió.'),
-      buildKpiCard('Chequeado', payload.backend?.checked_at ? formatDate(payload.backend.checked_at) : '—', 'Timestamp de esta respuesta.')
-    );
+  if (elements.systemTabButton) {
+    elements.systemTabButton.classList.toggle('hidden', !hasTechnicalDetails);
   }
 
-  const issues = Array.isArray(payload.issues) ? payload.issues : [];
-  if (elements.systemRuntimeNotes) {
-    elements.systemRuntimeNotes.innerHTML = '';
-    if (!issues.length) {
-      elements.systemRuntimeNotes.className = 'readiness-list compact-list';
-      elements.systemRuntimeNotes.appendChild(buildReadinessItem('Sistema estable', 'No se detectan componentes degradados en este chequeo.', 'active'));
-    } else {
-      elements.systemRuntimeNotes.className = 'readiness-list compact-list';
-      issues.forEach((issue) => {
-        elements.systemRuntimeNotes.appendChild(buildReadinessItem(issue.component || 'issue', issue.message || 'Revisar componente', issue.status || 'warning'));
-      });
+  if (!hasTechnicalDetails) {
+    if (elements.systemHealthGridPanel) elements.systemHealthGridPanel.innerHTML = '';
+    if (elements.systemRuntimeGridPanel) elements.systemRuntimeGridPanel.innerHTML = '';
+    if (elements.backendHealthCard) elements.backendHealthCard.innerHTML = '';
+    if (elements.systemActivityList) {
+      elements.systemActivityList.className = 'list-stack empty-state';
+      elements.systemActivityList.textContent = 'Los detalles técnicos solo están disponibles para administración.';
     }
+    return;
   }
 
-  if (elements.systemActivityList) {
-    elements.systemActivityList.className = 'list-stack';
-    elements.systemActivityList.innerHTML = '';
-    elements.systemActivityList.append(
-      buildActivityItem('Última apertura', runtime.latest_open, 'No hay aperturas registradas todavía.'),
-      buildActivityItem('Último cierre', runtime.latest_close, 'No hay cierres registrados todavía.'),
-    );
-  }
+  renderTechnicalSystemPanel(payload);
 }
 
 
@@ -581,7 +645,7 @@ function renderAdmin(data) {
 
   elements.adminTradeStats.innerHTML = '';
   elements.adminTradeStats.append(
-    buildKpiCard('Trades 30d', tradeStats.total || 0, 'Global del clon.'),
+    buildKpiCard('Trades 30d', tradeStats.total || 0, 'Global del sistema.'),
     buildKpiCard('Wins', tradeStats.wins || 0, `Win rate ${tradeStats.win_rate ?? 0}%`),
     buildKpiCard('Losses', tradeStats.losses || 0, `Decisivas ${tradeStats.win_rate_decisive ?? 0}%`),
     buildKpiCard('Profit factor', tradeStats.profit_factor === Infinity ? '∞' : tradeStats.profit_factor ?? 0, `PnL ${tradeStats.pnl_total ?? 0}`),
@@ -798,10 +862,12 @@ function setPreviewMode() {
   elements.walletConfigured.textContent = 'No disponible';
   elements.privateKeyConfigured.textContent = 'No disponible';
   elements.refreshButton.disabled = true;
+  if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
+  if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
   if (elements.systemRuntimeNotes) {
     elements.systemRuntimeNotes.className = 'readiness-list compact-list';
     elements.systemRuntimeNotes.innerHTML = '';
-    elements.systemRuntimeNotes.appendChild(buildReadinessItem('Sin runtime', 'El health center solo se resuelve con sesión real desde Telegram.', 'blocked'));
+    elements.systemRuntimeNotes.appendChild(buildReadinessItem('Sin lectura del sistema', 'El estado operativo solo se resuelve con sesión real desde Telegram.', 'blocked'));
   }
 }
 
@@ -853,12 +919,15 @@ async function loadData() {
   try {
     const admin = await apiFetch('/api/v1/admin/overview');
     renderAdmin(admin);
-    elements.adminTabButton.classList.remove('hidden');
+    if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
+    if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
     state.isAdmin = true;
   } catch {
-    elements.adminTabButton.classList.add('hidden');
+    if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
+    if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
     state.isAdmin = false;
     document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
+    document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
   }
 
   setStatus('MiniApp sincronizada correctamente.', 'success');
@@ -870,7 +939,7 @@ function bindTabs() {
   buttons.forEach((button) => {
     button.addEventListener('click', () => {
       const target = button.dataset.tab;
-      if (target === 'admin' && !state.isAdmin) return;
+      if ((target === 'admin' || target === 'system') && !state.isAdmin) return;
       buttons.forEach((item) => item.classList.toggle('is-active', item === button));
       panels.forEach((panel) => panel.classList.toggle('is-active', panel.dataset.panel === target));
     });
@@ -1159,6 +1228,8 @@ async function bulkMigrateLegacyKeys() {
 function bindActions() {
   elements.refreshButton.addEventListener('click', async () => {
     elements.refreshButton.disabled = true;
+  if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
+  if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
     try {
       await loadData();
     } catch (error) {
