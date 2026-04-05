@@ -599,3 +599,47 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .admin-plan-card .admin-plan-row {
   margin-top: 12px;
 }
+
+
+.admin-plan-preview {
+  margin: 12px 0 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.admin-plan-preview strong {
+  color: white;
+}
+
+.admin-plan-preview .preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.admin-plan-preview .preview-item {
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(99, 167, 255, 0.07);
+  border: 1px solid rgba(99, 167, 255, 0.14);
+}
+
+.admin-plan-preview .preview-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 6px;
+}
+
+@media (max-width: 640px) {
+  .admin-plan-preview .preview-grid {
+    grid-template-columns: 1fr;
+  }
+}
