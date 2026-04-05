@@ -60,6 +60,7 @@ const elements = {
   adminVisualStats: $('adminVisualStats'),
   adminSecurityStats: $('adminSecurityStats'),
   adminTradeStats: $('adminTradeStats'),
+  adminRecentActions: $('adminRecentActions'),
   adminSearchForm: $('adminSearchForm'),
   adminSearchInput: $('adminSearchInput'),
   adminSearchButton: $('adminSearchButton'),
@@ -72,6 +73,7 @@ const elements = {
   adminGrantPlanButton: $('adminGrantPlanButton'),
   adminPlanGrantHint: $('adminPlanGrantHint'),
   adminPlanPreviewBox: $('adminPlanPreviewBox'),
+  adminActionReasonInput: $('adminActionReasonInput'),
   adminActivateTradingButton: $('adminActivateTradingButton'),
   adminPauseTradingButton: $('adminPauseTradingButton'),
   adminMigrateKeyButton: $('adminMigrateKeyButton'),
@@ -80,6 +82,7 @@ const elements = {
   adminBulkMigrationStatus: $('adminBulkMigrationStatus'),
   adminUserStats: $('adminUserStats'),
   adminUserPerformance: $('adminUserPerformance'),
+  adminUserActionHistory: $('adminUserActionHistory'),
 };
 
 function setStatus(message, variant = 'info') {
@@ -115,6 +118,85 @@ function planLabel(plan) {
   if (normalized === 'premium') return 'PREMIUM';
   if (!normalized || normalized === 'none') return 'SIN PLAN';
   return normalized.toUpperCase();
+}
+
+
+
+function adminActionLabel(action) {
+  const normalized = String(action || '').toLowerCase();
+  const labels = {
+    grant_manual_plan_days: 'Extensión manual de plan',
+    activate_user_trading: 'Reanudar trading',
+    pause_user_trading: 'Pausar trading',
+    migrate_user_private_key: 'Migrar private key',
+    reset_user_stats: 'Resetear rendimiento',
+    bulk_migrate_legacy_keys: 'Migración masiva de keys legacy',
+    activate_premium_fixed_30d: 'Activación fija Premium 30d',
+  };
+  return labels[normalized] || normalized.replace(/_/g, ' ').toUpperCase();
+}
+
+function getAdminActionReason() {
+  return elements.adminActionReasonInput ? elements.adminActionReasonInput.value.trim() : '';
+}
+
+function renderAdminActionHistory(container, items, emptyText) {
+  if (!container) return;
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) {
+    container.className = 'list-stack empty-state';
+    container.textContent = emptyText;
+    return;
+  }
+
+  container.className = 'admin-history-list';
+  container.innerHTML = '';
+
+  rows.forEach((row) => {
+    const article = document.createElement('article');
+    article.className = 'admin-history-item';
+    const actor = row.actor_username ? `@${row.actor_username}` : (row.actor_user_id ? `ID ${row.actor_user_id}` : 'Admin');
+    const target = row.target_username ? `@${row.target_username}` : (row.target_user_id ? `ID ${row.target_user_id}` : 'Global');
+    const statusClass = row.status === 'rejected' ? 'danger' : 'info';
+    const metadata = row.metadata || {};
+    const extra = [];
+    if (metadata.plan) extra.push(`Plan ${planLabel(metadata.plan)}`);
+    if (metadata.days) extra.push(`${metadata.days} día(s)`);
+    if (metadata.migrated_count) extra.push(`${metadata.migrated_count} migradas`);
+    article.innerHTML = `
+      <div class="admin-history-head">
+        <div>
+          <div class="admin-history-title">${adminActionLabel(row.action)}</div>
+          <div class="admin-history-meta">${formatDate(row.created_at)} · ${actor} → ${target}${extra.length ? ` · ${extra.join(' · ')}` : ''}</div>
+        </div>
+        <span class="status-pill ${statusClass}">${row.status === 'rejected' ? 'RECHAZADA' : 'REGISTRADA'}</span>
+      </div>
+      <div class="admin-history-body">
+        <p class="admin-history-message"><strong>Resultado:</strong> ${row.message || 'Sin mensaje adicional.'}</p>
+        ${row.reason ? `<p class="admin-history-reason"><strong>Motivo:</strong> ${row.reason}</p>` : ''}
+      </div>
+    `;
+    container.appendChild(article);
+  });
+}
+
+async function requestStrongConfirmation(title, lines = []) {
+  const promptText = `${title}
+
+${lines.filter(Boolean).join('
+')}
+
+Escribe CONFIRMAR para continuar.`;
+  const value = window.prompt(promptText, '');
+  if (value === null) {
+    setStatus('Acción cancelada.', 'warning');
+    return false;
+  }
+  if (value.trim().toUpperCase() !== 'CONFIRMAR') {
+    setStatus('Confirmación inválida. Escribe exactamente CONFIRMAR.', 'warning');
+    return false;
+  }
+  return true;
 }
 
 function pretty(value) {
@@ -378,6 +460,12 @@ function renderAdmin(data) {
     buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Pérdidas acumuladas.')
   );
 
+  renderAdminActionHistory(
+    elements.adminRecentActions,
+    data.recent_actions || [],
+    'Sin acciones administrativas registradas todavía.',
+  );
+
   if (elements.adminBulkMigrationStatus) {
     elements.adminBulkMigrationStatus.textContent = `Legacy pendientes: ${security.legacy_plaintext_private_keys || 0} · Keys cifradas: ${security.encrypted_private_keys || 0}`;
   }
@@ -525,6 +613,12 @@ function renderAdminSelectedUser(user) {
       buildAdminPerformanceCard('30d', perf['30d'] || {}),
     );
   }
+
+  renderAdminActionHistory(
+    elements.adminUserActionHistory,
+    user.recent_admin_actions || [],
+    'Sin acciones administrativas sobre este usuario todavía.',
+  );
 
   if (elements.adminActivateTradingButton) {
     elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured;
@@ -776,6 +870,7 @@ async function grantManualPremiumDaysForSelectedUser() {
     return;
   }
 
+  const reason = getAdminActionReason();
   let preview = null;
   try {
     const previewPayload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?plan=${encodeURIComponent(targetPlan)}&days=${days}`);
@@ -786,20 +881,24 @@ async function grantManualPremiumDaysForSelectedUser() {
     return;
   }
 
-  const confirmMessage = preview
-    ? `Aplicar ${days} día(s) manuales de ${planLabel(targetPlan)} a ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}?\n\nPlan actual: ${planLabel(preview.previous_plan)}\nPlan resultante: ${planLabel(preview.new_plan)}\nVencimiento actual: ${formatDateTimeOrDash(preview.previous_expires_at)}\nNuevo vencimiento: ${formatDateTimeOrDash(preview.new_expires_at)}\nDías resultantes: ${preview.new_days_remaining || 0}`
-    : `Aplicar ${days} día(s) manuales a este usuario?`;
-
-  if (!window.confirm(confirmMessage)) {
-    setStatus('Aplicación manual cancelada.', 'warning');
-    return;
-  }
+  const confirmed = await requestStrongConfirmation(
+    'Confirmación reforzada · Extensión manual de plan',
+    [
+      `Usuario: ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}`,
+      `Plan actual: ${planLabel(preview?.previous_plan)}`,
+      `Plan resultante: ${planLabel(preview?.new_plan || targetPlan)}`,
+      `Días a agregar: ${days}`,
+      `Nuevo vencimiento: ${formatDateTimeOrDash(preview?.new_expires_at)}`,
+      reason ? `Motivo: ${reason}` : 'Motivo: sin nota administrativa',
+    ],
+  );
+  if (!confirmed) return;
 
   elements.adminGrantPlanButton.disabled = true;
   try {
     const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days`, {
       method: 'POST',
-      body: JSON.stringify({ plan: targetPlan, days }),
+      body: JSON.stringify({ plan: targetPlan, days, reason }),
     });
     renderAdminSelectedUser(payload.user);
     await loadData();
@@ -811,15 +910,27 @@ async function grantManualPremiumDaysForSelectedUser() {
   }
 }
 
-async function runAdminSelectedAction(button, path, fallbackMessage, variant = 'success') {
+async function runAdminSelectedAction(button, path, fallbackMessage, variant = 'success', confirmationTitle = 'Confirmación reforzada', confirmationDetails = []) {
   const selected = state.adminSelectedUser;
   if (!selected || !selected.user_id) {
     setStatus('Primero carga un usuario admin.', 'warning');
     return;
   }
+
+  const reason = getAdminActionReason();
+  const confirmed = await requestStrongConfirmation(confirmationTitle, [
+    `Usuario: ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}`,
+    ...confirmationDetails,
+    reason ? `Motivo: ${reason}` : 'Motivo: sin nota administrativa',
+  ]);
+  if (!confirmed) return;
+
   if (button) button.disabled = true;
   try {
-    const payload = await apiFetch(path(selected.user_id), { method: 'POST' });
+    const payload = await apiFetch(path(selected.user_id), {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
     if (payload.user) {
       renderAdminSelectedUser(payload.user);
     }
@@ -838,6 +949,8 @@ async function activateTradingForSelectedUser() {
     (userId) => `/api/v1/admin/users/${userId}/trading/activate`,
     'No se pudo activar trading para el usuario.',
     'success',
+    'Confirmación reforzada · Reanudar trading',
+    ['Se intentará reactivar el motor del usuario.'],
   );
 }
 
@@ -847,6 +960,8 @@ async function pauseTradingForSelectedUser() {
     (userId) => `/api/v1/admin/users/${userId}/trading/pause`,
     'No se pudo pausar trading para el usuario.',
     'warning',
+    'Confirmación reforzada · Pausar trading',
+    ['Esta acción detiene la operativa del usuario hasta nuevo cambio manual.'],
   );
 }
 
@@ -856,6 +971,8 @@ async function migrateKeyForSelectedUser() {
     (userId) => `/api/v1/admin/users/${userId}/security/migrate-key`,
     'No se pudo migrar la private key del usuario.',
     'success',
+    'Confirmación reforzada · Migrar private key legacy',
+    ['Se intentará convertir la key almacenada a cifrado en reposo.'],
   );
 }
 
@@ -865,14 +982,29 @@ async function resetStatsForSelectedUser() {
     (userId) => `/api/v1/admin/users/${userId}/stats/reset`,
     'No se pudo resetear el rendimiento del usuario.',
     'warning',
+    'Confirmación reforzada · Resetear rendimiento',
+    ['Esta acción reinicia el punto de partida de métricas del usuario.'],
   );
 }
 
 async function bulkMigrateLegacyKeys() {
   if (!elements.adminBulkMigrateButton) return;
+  const reason = getAdminActionReason();
+  const confirmed = await requestStrongConfirmation(
+    'Confirmación reforzada · Migración masiva de keys legacy',
+    [
+      'Se migrarán hasta 25 registros legacy en esta ejecución.',
+      reason ? `Motivo: ${reason}` : 'Motivo: sin nota administrativa',
+    ],
+  );
+  if (!confirmed) return;
+
   elements.adminBulkMigrateButton.disabled = true;
   try {
-    const payload = await apiFetch('/api/v1/admin/security/migrate-legacy-keys?limit=25', { method: 'POST' });
+    const payload = await apiFetch('/api/v1/admin/security/migrate-legacy-keys?limit=25', {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
     if (elements.adminBulkMigrationStatus) {
       elements.adminBulkMigrationStatus.textContent = payload.message || `Migradas ${payload.migrated_count || 0} keys.`;
     }
