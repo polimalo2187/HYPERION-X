@@ -68,7 +68,14 @@ const elements = {
   adminUserTitle: $('adminUserTitle'),
   adminUserSubtitle: $('adminUserSubtitle'),
   adminActivatePremiumButton: $('adminActivatePremiumButton'),
+  adminActivateTradingButton: $('adminActivateTradingButton'),
+  adminPauseTradingButton: $('adminPauseTradingButton'),
+  adminMigrateKeyButton: $('adminMigrateKeyButton'),
+  adminResetStatsButton: $('adminResetStatsButton'),
+  adminBulkMigrateButton: $('adminBulkMigrateButton'),
+  adminBulkMigrationStatus: $('adminBulkMigrationStatus'),
   adminUserStats: $('adminUserStats'),
+  adminUserPerformance: $('adminUserPerformance'),
 };
 
 function setStatus(message, variant = 'info') {
@@ -161,6 +168,17 @@ function buildPerformanceCard(windowLabel, stats) {
     </div>
   `;
   return article;
+}
+
+function buildAdminPerformanceCard(windowLabel, stats = {}) {
+  return buildPerformanceCard(windowLabel, {
+    total: stats.total || 0,
+    pnl_total: stats.pnl_total || 0,
+    wins: stats.wins || 0,
+    losses: stats.losses || 0,
+    profit_factor: stats.profit_factor === Infinity ? Infinity : Number(stats.profit_factor || 0),
+    win_rate: Number(stats.win_rate || 0),
+  });
 }
 
 function buildControlSummary(control) {
@@ -347,6 +365,10 @@ function renderAdmin(data) {
     buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Cierres positivos.'),
     buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Pérdidas acumuladas.')
   );
+
+  if (elements.adminBulkMigrationStatus) {
+    elements.adminBulkMigrationStatus.textContent = `Legacy pendientes: ${security.legacy_plaintext_private_keys || 0} · Keys cifradas: ${security.encrypted_private_keys || 0}`;
+  }
 }
 
 function buildAdminSearchResultItem(user) {
@@ -382,6 +404,26 @@ function renderAdminSelectedUser(user) {
     buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
     buildKpiCard('Referidos válidos', user.referral_valid_count || 0, user.private_key_version ? `Cipher ${user.private_key_version}` : 'Sin versión de cifrado.')
   );
+
+  if (elements.adminUserPerformance) {
+    const perf = user.performance || {};
+    elements.adminUserPerformance.innerHTML = '';
+    elements.adminUserPerformance.append(
+      buildAdminPerformanceCard('24h', perf['24h'] || {}),
+      buildAdminPerformanceCard('7d', perf['7d'] || {}),
+      buildAdminPerformanceCard('30d', perf['30d'] || {}),
+    );
+  }
+
+  if (elements.adminActivateTradingButton) {
+    elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured;
+  }
+  if (elements.adminPauseTradingButton) {
+    elements.adminPauseTradingButton.disabled = user.trading_status !== 'active';
+  }
+  if (elements.adminMigrateKeyButton) {
+    elements.adminMigrateKeyButton.disabled = !user.private_key_configured || user.private_key_storage === 'encrypted';
+  }
 }
 
 async function apiFetch(path, options = {}) {
@@ -627,6 +669,79 @@ async function activatePremiumForSelectedUser() {
   }
 }
 
+async function runAdminSelectedAction(button, path, fallbackMessage, variant = 'success') {
+  const selected = state.adminSelectedUser;
+  if (!selected || !selected.user_id) {
+    setStatus('Primero carga un usuario admin.', 'warning');
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const payload = await apiFetch(path(selected.user_id), { method: 'POST' });
+    if (payload.user) {
+      renderAdminSelectedUser(payload.user);
+    }
+    await loadData();
+    setStatus(payload.message || fallbackMessage, variant);
+  } catch (error) {
+    setStatus(error.message || fallbackMessage, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function activateTradingForSelectedUser() {
+  await runAdminSelectedAction(
+    elements.adminActivateTradingButton,
+    (userId) => `/api/v1/admin/users/${userId}/trading/activate`,
+    'No se pudo activar trading para el usuario.',
+    'success',
+  );
+}
+
+async function pauseTradingForSelectedUser() {
+  await runAdminSelectedAction(
+    elements.adminPauseTradingButton,
+    (userId) => `/api/v1/admin/users/${userId}/trading/pause`,
+    'No se pudo pausar trading para el usuario.',
+    'warning',
+  );
+}
+
+async function migrateKeyForSelectedUser() {
+  await runAdminSelectedAction(
+    elements.adminMigrateKeyButton,
+    (userId) => `/api/v1/admin/users/${userId}/security/migrate-key`,
+    'No se pudo migrar la private key del usuario.',
+    'success',
+  );
+}
+
+async function resetStatsForSelectedUser() {
+  await runAdminSelectedAction(
+    elements.adminResetStatsButton,
+    (userId) => `/api/v1/admin/users/${userId}/stats/reset`,
+    'No se pudo resetear el rendimiento del usuario.',
+    'warning',
+  );
+}
+
+async function bulkMigrateLegacyKeys() {
+  if (!elements.adminBulkMigrateButton) return;
+  elements.adminBulkMigrateButton.disabled = true;
+  try {
+    const payload = await apiFetch('/api/v1/admin/security/migrate-legacy-keys?limit=25', { method: 'POST' });
+    if (elements.adminBulkMigrationStatus) {
+      elements.adminBulkMigrationStatus.textContent = payload.message || `Migradas ${payload.migrated_count || 0} keys.`;
+    }
+    await loadData();
+    setStatus(payload.message || 'Migración legacy completada.', 'success');
+  } catch (error) {
+    setStatus(error.message || 'No se pudo ejecutar la migración legacy.', 'error');
+  } finally {
+    elements.adminBulkMigrateButton.disabled = false;
+  }
+}
 
 function bindActions() {
   elements.refreshButton.addEventListener('click', async () => {
@@ -663,6 +778,21 @@ function bindActions() {
 
   if (elements.adminActivatePremiumButton) {
     elements.adminActivatePremiumButton.addEventListener('click', activatePremiumForSelectedUser);
+  }
+  if (elements.adminActivateTradingButton) {
+    elements.adminActivateTradingButton.addEventListener('click', activateTradingForSelectedUser);
+  }
+  if (elements.adminPauseTradingButton) {
+    elements.adminPauseTradingButton.addEventListener('click', pauseTradingForSelectedUser);
+  }
+  if (elements.adminMigrateKeyButton) {
+    elements.adminMigrateKeyButton.addEventListener('click', migrateKeyForSelectedUser);
+  }
+  if (elements.adminResetStatsButton) {
+    elements.adminResetStatsButton.addEventListener('click', resetStatsForSelectedUser);
+  }
+  if (elements.adminBulkMigrateButton) {
+    elements.adminBulkMigrateButton.addEventListener('click', bulkMigrateLegacyKeys);
   }
 }
 
