@@ -344,13 +344,20 @@
                   <div class="panel-head compact no-margin">
                     <div>
                       <span class="section-tag">SUSCRIPCIÓN MANUAL</span>
-                      <h3>Agregar días Premium</h3>
+                      <h3>Agregar días de plan</h3>
                     </div>
                     <span class="status-pill info">Manual</span>
                   </div>
                   <p id="adminPlanGrantHint" class="admin-subcopy">Carga un usuario para aplicar días exactos sin simular una compra automática.</p>
                   <div id="adminPlanPreviewBox" class="admin-plan-preview">Sin previsualización todavía.</div>
                   <div class="admin-plan-row">
+                    <label class="field-block compact-field">
+                      <span>Plan</span>
+                      <select id="adminPlanSelect">
+                        <option value="premium" selected>Premium</option>
+                        <option value="trial">Prueba</option>
+                      </select>
+                    </label>
                     <label class="field-block compact-field">
                       <span>Días a agregar</span>
                       <input id="adminPlanDaysInput" type="number" min="1" step="1" placeholder="7" inputmode="numeric" />
