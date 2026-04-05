@@ -299,6 +299,10 @@
                 </div>
               </div>
               <div id="adminSecurityStats" class="stats-grid compact"></div>
+              <div class="admin-inline-actions">
+                <button id="adminBulkMigrateButton" class="secondary-button" type="button">Migrar hasta 25 legacy keys</button>
+                <p id="adminBulkMigrationStatus" class="admin-subcopy">Sin migración ejecutada en esta sesión.</p>
+              </div>
             </article>
 
             <article class="glass-card panel-card panel-span-2">
@@ -315,7 +319,7 @@
               <div class="panel-head">
                 <div>
                   <span class="section-tag">ADMIN · OPERACIONES</span>
-                  <h3>Buscar usuario y activar premium</h3>
+                  <h3>Buscar usuario y soporte operativo</h3>
                 </div>
               </div>
 
@@ -336,6 +340,21 @@
                   <button id="adminActivatePremiumButton" class="success-button" type="button">Activar Premium 30d</button>
                 </div>
                 <div id="adminUserStats" class="stats-grid compact"></div>
+                <div class="admin-action-grid">
+                  <button id="adminActivateTradingButton" class="success-button" type="button">Activar trading</button>
+                  <button id="adminPauseTradingButton" class="danger-button" type="button">Pausar trading</button>
+                  <button id="adminMigrateKeyButton" class="secondary-button" type="button">Migrar key legacy</button>
+                  <button id="adminResetStatsButton" class="secondary-button" type="button">Resetear rendimiento</button>
+                </div>
+                <div>
+                  <div class="panel-head compact no-margin">
+                    <div>
+                      <span class="section-tag">USUARIO · PERFORMANCE</span>
+                      <h3>24h · 7d · 30d</h3>
+                    </div>
+                  </div>
+                  <div id="adminUserPerformance" class="stats-grid"></div>
+                </div>
               </div>
             </article>
           </div>
