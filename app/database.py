@@ -12,8 +12,11 @@
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 import os
+import re
 import sys
 import pytz
+
+from app.crypto_utils import decrypt_private_key, encrypt_private_key
 
 # ============================================================
 # CONEXIÓN MONGODB
@@ -100,6 +103,9 @@ def create_user(user_id: int, username: str):
             "username": username,
             "wallet": None,
             "private_key": None,
+            "private_key_encrypted": False,
+            "private_key_version": None,
+            "private_key_updated_at": None,
             "capital": 0.0,
             "trading_status": "inactive",
 
@@ -128,7 +134,18 @@ def save_user_wallet(user_id: int, wallet: str):
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"wallet": wallet}})
 
 def save_user_private_key(user_id: int, pk: str):
-    users_col.update_one({"user_id": int(user_id)}, {"$set": {"private_key": pk}})
+    encrypted_pk, version = encrypt_private_key(pk)
+    users_col.update_one(
+        {"user_id": int(user_id)},
+        {
+            "$set": {
+                "private_key": encrypted_pk,
+                "private_key_encrypted": True,
+                "private_key_version": version,
+                "private_key_updated_at": datetime.utcnow(),
+            }
+        },
+    )
 
 def save_user_capital(user_id: int, capital: float):
     capital = _clamp_non_negative(_safe_float(capital, 0.0))
@@ -219,8 +236,20 @@ def get_user_wallet(user_id: int):
     return u.get("wallet") if u else None
 
 def get_user_private_key(user_id: int):
-    u = users_col.find_one({"user_id": int(user_id)})
-    return u.get("private_key") if u else None
+    u = users_col.find_one(
+        {"user_id": int(user_id)},
+        {"_id": 0, "private_key": 1, "private_key_encrypted": 1, "private_key_version": 1},
+    )
+    if not u:
+        return None
+    value = u.get("private_key")
+    if not value:
+        return None
+    return decrypt_private_key(
+        value,
+        encrypted=bool(u.get("private_key_encrypted", False)),
+        version=u.get("private_key_version"),
+    )
 
 def get_user_capital(user_id: int):
     u = users_col.find_one({"user_id": int(user_id)})
@@ -823,6 +852,9 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
             "username": 1,
             "wallet": 1,
             "private_key": 1,
+            "private_key_encrypted": 1,
+            "private_key_version": 1,
+            "terms_timestamp": 1,
             "trading_status": 1,
             "plan": 1,
             "plan_expires_at": 1,
@@ -843,12 +875,14 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "wallet": u.get("wallet"),
         "wallet_configured": bool(u.get("wallet")),
         "private_key_configured": bool(u.get("private_key")),
+        "private_key_storage": ("encrypted" if bool(u.get("private_key")) and bool(u.get("private_key_encrypted", False)) else ("legacy_plaintext" if bool(u.get("private_key")) else "not_configured")),
         "trading_status": u.get("trading_status") or "inactive",
         "plan": u.get("plan") or "none",
         "plan_expires_at": exp,
         "plan_active": _plan_is_active(u),
         "trial_used": bool(u.get("trial_used", False)),
         "terms_accepted": bool(u.get("terms_accepted", False)),
+        "terms_timestamp": _parse_dt(u.get("terms_timestamp")),
         "referral_valid_count": int(u.get("referral_valid_count", 0) or 0),
         "last_open_at": _parse_dt(u.get("last_open_at")),
         "last_close_at": _parse_dt(u.get("last_close_at")),
@@ -867,3 +901,79 @@ def get_user_trades_limited(user_id: int, limit: int = 20):
         .sort("timestamp", -1)
         .limit(lim)
     )
+
+
+def get_security_overview() -> dict:
+    encrypted_keys = users_col.count_documents({"private_key": {"$ne": None}, "private_key_encrypted": True})
+    legacy_plaintext_keys = users_col.count_documents({
+        "private_key": {"$ne": None},
+        "$or": [
+            {"private_key_encrypted": {"$exists": False}},
+            {"private_key_encrypted": False},
+        ],
+    })
+    users_with_wallet = users_col.count_documents({"wallet": {"$ne": None}})
+    return {
+        "encrypted_private_keys": int(encrypted_keys),
+        "legacy_plaintext_private_keys": int(legacy_plaintext_keys),
+        "wallets_configured": int(users_with_wallet),
+    }
+
+
+def _build_admin_user_projection() -> dict:
+    return {
+        "_id": 0,
+        "user_id": 1,
+        "username": 1,
+        "wallet": 1,
+        "private_key": 1,
+        "private_key_encrypted": 1,
+        "private_key_version": 1,
+        "private_key_updated_at": 1,
+        "trading_status": 1,
+        "plan": 1,
+        "plan_expires_at": 1,
+        "trial_used": 1,
+        "terms_accepted": 1,
+        "terms_timestamp": 1,
+        "referral_valid_count": 1,
+        "last_open_at": 1,
+        "last_close_at": 1,
+    }
+
+
+def get_admin_user_snapshot(user_id: int) -> dict | None:
+    doc = users_col.find_one({"user_id": int(user_id)}, _build_admin_user_projection())
+    if not doc:
+        return None
+    snapshot = get_user_public_snapshot(int(user_id))
+    if not snapshot:
+        return None
+    snapshot.update({
+        "terms_timestamp": _parse_dt(doc.get("terms_timestamp")),
+        "private_key_version": doc.get("private_key_version"),
+        "private_key_updated_at": _parse_dt(doc.get("private_key_updated_at")),
+    })
+    return snapshot
+
+
+def search_users_for_admin(query: str, limit: int = 10) -> list[dict]:
+    query = (query or '').strip()
+    lim = max(1, min(int(limit), 25))
+    if not query:
+        return []
+
+    clauses = []
+    if query.isdigit():
+        clauses.append({"user_id": int(query)})
+
+    safe_pattern = re.escape(query)
+    clauses.append({"username": {"$regex": safe_pattern, "$options": "i"}})
+
+    cursor = users_col.find({"$or": clauses}, _build_admin_user_projection()).sort("user_id", 1).limit(lim)
+    results = []
+    for doc in cursor:
+        snapshot = get_user_public_snapshot(int(doc.get("user_id")))
+        if snapshot:
+            results.append(snapshot)
+    return results
