@@ -147,6 +147,79 @@ def save_user_private_key(user_id: int, pk: str):
         },
     )
 
+def get_raw_user_private_key_record(user_id: int) -> dict | None:
+    return users_col.find_one(
+        {"user_id": int(user_id)},
+        {
+            "_id": 0,
+            "user_id": 1,
+            "private_key": 1,
+            "private_key_encrypted": 1,
+            "private_key_version": 1,
+            "private_key_updated_at": 1,
+        },
+    )
+
+
+def migrate_user_private_key_to_encrypted(user_id: int) -> dict:
+    doc = get_raw_user_private_key_record(int(user_id))
+    if not doc:
+        return {"result": "user_not_found", "changed": False}
+
+    current_value = doc.get("private_key")
+    if not current_value:
+        return {"result": "not_configured", "changed": False}
+
+    if bool(doc.get("private_key_encrypted", False)):
+        return {
+            "result": "already_encrypted",
+            "changed": False,
+            "version": doc.get("private_key_version"),
+        }
+
+    save_user_private_key(int(user_id), str(current_value))
+    return {"result": "migrated", "changed": True, "version": "fernet-v1"}
+
+
+def migrate_legacy_private_keys(limit: int = 25) -> dict:
+    lim = max(1, min(int(limit), 100))
+    cursor = users_col.find(
+        {
+            "private_key": {"$ne": None},
+            "$or": [
+                {"private_key_encrypted": {"$exists": False}},
+                {"private_key_encrypted": False},
+            ],
+        },
+        {"_id": 0, "user_id": 1},
+    ).sort("user_id", 1).limit(lim)
+
+    migrated_user_ids = []
+    skipped_user_ids = []
+    for row in cursor:
+        uid = int(row.get("user_id"))
+        outcome = migrate_user_private_key_to_encrypted(uid)
+        if outcome.get("changed"):
+            migrated_user_ids.append(uid)
+        else:
+            skipped_user_ids.append(uid)
+
+    remaining_legacy = users_col.count_documents({
+        "private_key": {"$ne": None},
+        "$or": [
+            {"private_key_encrypted": {"$exists": False}},
+            {"private_key_encrypted": False},
+        ],
+    })
+
+    return {
+        "requested_limit": lim,
+        "migrated_count": len(migrated_user_ids),
+        "migrated_user_ids": migrated_user_ids,
+        "skipped_user_ids": skipped_user_ids,
+        "remaining_legacy_plaintext_keys": int(remaining_legacy),
+    }
+
 def save_user_capital(user_id: int, capital: float):
     capital = _clamp_non_negative(_safe_float(capital, 0.0))
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"capital": capital}})
@@ -495,6 +568,16 @@ def get_last_operation(user_id: int) -> dict:
         {"_id": 0, "last_open": 1, "last_close": 1}
     )
     return u or {}
+
+def admin_set_user_trading_status(user_id: int, status: str) -> bool:
+    normalized = str(status or '').strip().lower()
+    if normalized not in {'active', 'inactive'}:
+        return False
+    result = users_col.update_one(
+        {"user_id": int(user_id)},
+        {"$set": {"trading_status": normalized}},
+    )
+    return result.matched_count == 1
 
 # ============================================================
 # LEGACY – FEES (DESACTIVADO)
