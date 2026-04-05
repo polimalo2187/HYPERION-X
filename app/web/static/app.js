@@ -70,6 +70,7 @@ const elements = {
   adminPlanDaysInput: $('adminPlanDaysInput'),
   adminGrantPlanButton: $('adminGrantPlanButton'),
   adminPlanGrantHint: $('adminPlanGrantHint'),
+  adminPlanPreviewBox: $('adminPlanPreviewBox'),
   adminActivateTradingButton: $('adminActivateTradingButton'),
   adminPauseTradingButton: $('adminPauseTradingButton'),
   adminMigrateKeyButton: $('adminMigrateKeyButton'),
@@ -373,6 +374,65 @@ function renderAdmin(data) {
   }
 }
 
+function formatDateTimeOrDash(value) {
+  return value ? formatDate(value) : '—';
+}
+
+function renderAdminPlanPreview(preview) {
+  if (!elements.adminPlanPreviewBox) return;
+  if (!preview || !preview.ok) {
+    elements.adminPlanPreviewBox.textContent = 'Sin previsualización todavía.';
+    return;
+  }
+
+  const baseCopy = preview.base_type === 'current_expiry'
+    ? 'La extensión se sumará desde el vencimiento actual.'
+    : 'La extensión empezará desde hoy porque no hay acceso vigente.';
+
+  elements.adminPlanPreviewBox.innerHTML = `
+    <strong>Previsualización antes de aplicar</strong><br />
+    ${baseCopy}
+    <div class="preview-grid">
+      <div class="preview-item">
+        <span class="preview-label">Días vigentes</span>
+        <strong>${preview.previous_days_remaining || 0}</strong>
+      </div>
+      <div class="preview-item">
+        <span class="preview-label">Días resultantes</span>
+        <strong>${preview.new_days_remaining || 0}</strong>
+      </div>
+      <div class="preview-item">
+        <span class="preview-label">Vencimiento actual</span>
+        <strong>${formatDateTimeOrDash(preview.previous_expires_at)}</strong>
+      </div>
+      <div class="preview-item">
+        <span class="preview-label">Nuevo vencimiento</span>
+        <strong>${formatDateTimeOrDash(preview.new_expires_at)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+async function refreshAdminPlanPreview() {
+  const selected = state.adminSelectedUser;
+  if (!selected || !selected.user_id || !elements.adminPlanDaysInput) {
+    renderAdminPlanPreview(null);
+    return;
+  }
+  const rawDays = elements.adminPlanDaysInput.value.trim();
+  const days = Number.parseInt(rawDays, 10);
+  if (!Number.isInteger(days) || days <= 0) {
+    renderAdminPlanPreview(null);
+    return;
+  }
+  try {
+    const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?days=${days}`);
+    renderAdminPlanPreview(payload.preview || null);
+  } catch (error) {
+    elements.adminPlanPreviewBox.textContent = error.message || 'No se pudo calcular la previsualización.';
+  }
+}
+
 function buildAdminSearchResultItem(user) {
   const item = document.createElement('article');
   item.className = 'list-item';
@@ -396,7 +456,9 @@ function renderAdminSelectedUser(user) {
   state.adminSelectedUser = user;
   elements.adminUserDetail.classList.remove('hidden');
   elements.adminUserTitle.textContent = user.username ? `@${user.username}` : `Usuario ${user.user_id}`;
-  elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'}`;
+  const remainingDays = Number(user.plan_days_remaining || 0);
+  const expiryCopy = user.plan_active && user.plan_expires_at ? ` · Vence ${formatDate(user.plan_expires_at)} · ${remainingDays} día(s) restantes` : '';
+  elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'}${expiryCopy} · Trading ${user.trading_status || 'inactive'}`;
   if (elements.adminPlanGrantHint) {
     const baseMessage = user.plan_active
       ? `El usuario tiene acceso vigente hasta ${formatDate(user.plan_expires_at)}. Los días nuevos se sumarán desde ese vencimiento.`
@@ -406,11 +468,12 @@ function renderAdminSelectedUser(user) {
   if (elements.adminPlanDaysInput && !elements.adminPlanDaysInput.value) {
     elements.adminPlanDaysInput.value = '7';
   }
+  void refreshAdminPlanPreview();
   elements.adminUserStats.innerHTML = '';
   elements.adminUserStats.append(
     buildKpiCard('Wallet', user.wallet_configured ? truncateMiddle(user.wallet || '—', 18) : 'Pendiente', 'Estado de wallet.'),
     buildKpiCard('Private key', user.private_key_configured ? 'Configurada' : 'Pendiente', user.private_key_storage || 'not_configured'),
-    buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)}` : 'Sin acceso vigente.'),
+    buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)} · ${user.plan_days_remaining || 0} día(s)` : 'Sin acceso vigente.'),
     buildKpiCard('Términos', user.terms_accepted ? 'Aceptados' : 'Pendientes', user.terms_timestamp ? `TS ${formatDate(user.terms_timestamp)}` : 'Sin aceptación registrada.'),
     buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
     buildKpiCard('Referidos válidos', user.referral_valid_count || 0, user.private_key_version ? `Cipher ${user.private_key_version}` : 'Sin versión de cifrado.')
@@ -675,6 +738,25 @@ async function grantManualPremiumDaysForSelectedUser() {
     return;
   }
 
+  let preview = null;
+  try {
+    const previewPayload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days-preview?days=${days}`);
+    preview = previewPayload.preview || null;
+    renderAdminPlanPreview(preview);
+  } catch (error) {
+    setStatus(error.message || 'No se pudo calcular la previsualización.', 'error');
+    return;
+  }
+
+  const confirmMessage = preview
+    ? `Aplicar ${days} día(s) manuales a ${selected.username ? '@' + selected.username : 'ID ' + selected.user_id}?\n\nVencimiento actual: ${formatDateTimeOrDash(preview.previous_expires_at)}\nNuevo vencimiento: ${formatDateTimeOrDash(preview.new_expires_at)}\nDías resultantes: ${preview.new_days_remaining || 0}`
+    : `Aplicar ${days} día(s) manuales a este usuario?`;
+
+  if (!window.confirm(confirmMessage)) {
+    setStatus('Aplicación manual cancelada.', 'warning');
+    return;
+  }
+
   elements.adminGrantPlanButton.disabled = true;
   try {
     const payload = await apiFetch(`/api/v1/admin/users/${selected.user_id}/plan/manual-days`, {
@@ -800,6 +882,10 @@ function bindActions() {
 
   if (elements.adminGrantPlanButton) {
     elements.adminGrantPlanButton.addEventListener('click', grantManualPremiumDaysForSelectedUser);
+  }
+  if (elements.adminPlanDaysInput) {
+    elements.adminPlanDaysInput.addEventListener('input', () => { void refreshAdminPlanPreview(); });
+    elements.adminPlanDaysInput.addEventListener('change', () => { void refreshAdminPlanPreview(); });
   }
   if (elements.adminActivateTradingButton) {
     elements.adminActivateTradingButton.addEventListener('click', activateTradingForSelectedUser);
