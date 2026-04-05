@@ -133,7 +133,7 @@ body {
   margin-bottom: 4px;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 .primary-button, .secondary-button, .success-button, .danger-button {
   border: none;
   cursor: pointer;
@@ -380,7 +380,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .form-stack { display: grid; gap: 14px; }
 .field-block { display: grid; gap: 8px; }
 .field-block span { font-weight: 600; }
-.field-block input {
+.field-block input,
+.field-block select {
   width: 100%;
   background: rgba(3, 8, 16, 0.55);
   border: 1px solid rgba(255,255,255,0.09);
@@ -389,7 +390,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   padding: 14px 16px;
   outline: none;
 }
-.field-block input:focus {
+.field-block input:focus,
+.field-block select:focus {
   border-color: rgba(99,167,255,0.55);
   box-shadow: 0 0 0 4px rgba(99,167,255,0.12);
 }
@@ -591,7 +593,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   max-width: 220px;
 }
 
-.compact-field input {
+.compact-field input,
+.compact-field select {
   width: 100%;
 }
 
