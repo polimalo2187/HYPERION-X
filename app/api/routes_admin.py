@@ -40,3 +40,31 @@ def admin_user_detail(user_id: int, _: dict = Depends(require_admin_session)) ->
 @router.post('/users/{user_id}/plan/premium')
 def admin_activate_user_premium(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
     return _require_admin_attr('admin_activate_premium')(int(user_id))
+
+
+@router.post('/users/{user_id}/trading/activate')
+def admin_activate_user_trading(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
+    return _require_admin_attr('admin_activate_user_trading')(int(user_id))
+
+
+@router.post('/users/{user_id}/trading/pause')
+def admin_pause_user_trading(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
+    return _require_admin_attr('admin_pause_user_trading')(int(user_id))
+
+
+@router.post('/users/{user_id}/stats/reset')
+def admin_reset_stats(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
+    return _require_admin_attr('admin_reset_user_stats')(int(user_id))
+
+
+@router.post('/users/{user_id}/security/migrate-key')
+def admin_migrate_user_key(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
+    return _require_admin_attr('admin_migrate_user_private_key')(int(user_id))
+
+
+@router.post('/security/migrate-legacy-keys')
+def admin_bulk_migrate_keys(
+    limit: int = Query(default=25, ge=1, le=100),
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_bulk_migrate_legacy_keys')(limit=limit)
