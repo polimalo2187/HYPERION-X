@@ -1,48 +1,63 @@
 const state = {
   token: null,
   telegram: null,
-  session: null,
   isAdmin: false,
+  dashboard: null,
+  control: null,
+  performance: null,
+  operations: null,
+  referrals: null,
+  admin: null,
 };
 
+const $ = (id) => document.getElementById(id);
+
 const elements = {
-  statusBanner: document.getElementById('statusBanner'),
-  refreshButton: document.getElementById('refreshButton'),
-  headerConnectionBadge: document.getElementById('headerConnectionBadge'),
-  heroSignalState: document.getElementById('heroSignalState'),
-  heroPlan: document.getElementById('heroPlan'),
-  heroTrading: document.getElementById('heroTrading'),
-  heroUser: document.getElementById('heroUser'),
-  heroUserSubtext: document.getElementById('heroUserSubtext'),
-  heroWallet: document.getElementById('heroWallet'),
-  heroWalletSubtext: document.getElementById('heroWalletSubtext'),
-  heroKey: document.getElementById('heroKey'),
-  heroKeySubtext: document.getElementById('heroKeySubtext'),
-  heroAccess: document.getElementById('heroAccess'),
-  heroAccessSubtext: document.getElementById('heroAccessSubtext'),
-  userPlanBadge: document.getElementById('userPlanBadge'),
-  userStatusBadge: document.getElementById('userStatusBadge'),
-  walletBadge: document.getElementById('walletBadge'),
-  userIdentity: document.getElementById('userIdentity'),
-  userIdentitySubtext: document.getElementById('userIdentitySubtext'),
-  userTradingStatus: document.getElementById('userTradingStatus'),
-  userReadiness: document.getElementById('userReadiness'),
-  walletConfigured: document.getElementById('walletConfigured'),
-  privateKeyConfigured: document.getElementById('privateKeyConfigured'),
-  dashboardStats: document.getElementById('dashboardStats'),
-  readinessList: document.getElementById('readinessList'),
-  insightAccount: document.getElementById('insightAccount'),
-  insightReadiness: document.getElementById('insightReadiness'),
-  insightAuth: document.getElementById('insightAuth'),
-  insightExpiry: document.getElementById('insightExpiry'),
-  lastOpen: document.getElementById('lastOpen'),
-  lastClose: document.getElementById('lastClose'),
-  operationsCount: document.getElementById('operationsCount'),
-  operationsList: document.getElementById('operationsList'),
-  referralStats: document.getElementById('referralStats'),
-  adminVisualStats: document.getElementById('adminVisualStats'),
-  adminTradeStats: document.getElementById('adminTradeStats'),
-  adminTabButton: document.getElementById('adminTabButton'),
+  statusBanner: $('statusBanner'),
+  refreshButton: $('refreshButton'),
+  connectionBadge: $('connectionBadge'),
+  adminTabButton: $('adminTabButton'),
+  heroSessionPill: $('heroSessionPill'),
+  heroPlanPill: $('heroPlanPill'),
+  heroTradingPill: $('heroTradingPill'),
+  heroUser: $('heroUser'),
+  heroUserSubtext: $('heroUserSubtext'),
+  heroWallet: $('heroWallet'),
+  heroWalletSubtext: $('heroWalletSubtext'),
+  heroKey: $('heroKey'),
+  heroKeySubtext: $('heroKeySubtext'),
+  heroAccess: $('heroAccess'),
+  heroAccessSubtext: $('heroAccessSubtext'),
+  userPlanBadge: $('userPlanBadge'),
+  userReadinessBadge: $('userReadinessBadge'),
+  walletBadge: $('walletBadge'),
+  userIdentity: $('userIdentity'),
+  userIdentitySubtext: $('userIdentitySubtext'),
+  userReadiness: $('userReadiness'),
+  userTradingStatus: $('userTradingStatus'),
+  walletConfigured: $('walletConfigured'),
+  privateKeyConfigured: $('privateKeyConfigured'),
+  dashboardStats: $('dashboardStats'),
+  readinessList: $('readinessList'),
+  performanceGrid: $('performanceGrid'),
+  referralStats: $('referralStats'),
+  controlReadinessBox: $('controlReadinessBox'),
+  controlStats: $('controlStats'),
+  termsStatusText: $('termsStatusText'),
+  walletInput: $('walletInput'),
+  privateKeyInput: $('privateKeyInput'),
+  configurationForm: $('configurationForm'),
+  saveConfigurationButton: $('saveConfigurationButton'),
+  clearConfigurationButton: $('clearConfigurationButton'),
+  acceptTermsButton: $('acceptTermsButton'),
+  activateTradingButton: $('activateTradingButton'),
+  pauseTradingButton: $('pauseTradingButton'),
+  lastOpen: $('lastOpen'),
+  lastClose: $('lastClose'),
+  operationsCount: $('operationsCount'),
+  operationsList: $('operationsList'),
+  adminVisualStats: $('adminVisualStats'),
+  adminTradeStats: $('adminTradeStats'),
 };
 
 function setStatus(message, variant = 'info') {
@@ -52,9 +67,9 @@ function setStatus(message, variant = 'info') {
 
 function pillClass(value) {
   const normalized = String(value || '').toLowerCase();
-  if (['ready', 'active', 'premium', 'configured', 'connected', 'ok', 'sí', 'yes', 'true'].includes(normalized)) return 'success';
-  if (['trial', 'warning', 'partial', 'preview'].includes(normalized)) return 'warning';
-  if (['inactive', 'false', 'not_ready', 'none', 'missing', 'error', 'offline', 'no', 'blocked'].includes(normalized)) return 'danger';
+  if (['ready', 'active', 'premium', 'configured', 'connected', 'ok', 'sí', 'yes', 'true', 'activo'].includes(normalized)) return 'success';
+  if (['trial', 'warning', 'partial', 'preview', 'pendiente'].includes(normalized)) return 'warning';
+  if (['inactive', 'false', 'not_ready', 'none', 'missing', 'error', 'offline', 'no', 'blocked', 'bloqueado'].includes(normalized)) return 'danger';
   if (['info', 'loading'].includes(normalized)) return 'info';
   return 'neutral';
 }
@@ -79,6 +94,12 @@ function pretty(value) {
   } catch {
     return String(value);
   }
+}
+
+function formatNumber(value, digits = 2) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return '0';
+  return numeric.toFixed(digits);
 }
 
 function truncateMiddle(value, max = 18) {
@@ -114,29 +135,62 @@ function buildReadinessItem(label, description, status) {
   return article;
 }
 
+function buildPerformanceCard(windowLabel, stats) {
+  const article = document.createElement('article');
+  article.className = 'performance-card';
+  article.innerHTML = `
+    <span class="kpi-label">Ventana</span>
+    <div class="performance-value">${windowLabel}</div>
+    <div class="performance-subtext">PF ${stats.profit_factor === Infinity ? '∞' : formatNumber(stats.profit_factor, 2)} · Win ${formatNumber(stats.win_rate, 2)}%</div>
+    <div class="performance-metrics">
+      <div class="performance-mini"><span class="mini-label">Trades</span><strong>${stats.total}</strong></div>
+      <div class="performance-mini"><span class="mini-label">PnL</span><strong>${formatNumber(stats.pnl_total, 4)}</strong></div>
+      <div class="performance-mini"><span class="mini-label">Wins</span><strong>${stats.wins}</strong></div>
+      <div class="performance-mini"><span class="mini-label">Losses</span><strong>${stats.losses}</strong></div>
+    </div>
+  `;
+  return article;
+}
+
+function buildControlSummary(control) {
+  const blockers = Array.isArray(control.activation_blockers) && control.activation_blockers.length
+    ? control.activation_blockers.map((item) => `• ${item}`).join('\n')
+    : '• Sin bloqueadores';
+  return [
+    `Wallet: ${control.wallet_configured ? truncateMiddle(control.wallet_masked, 24) : 'pendiente'}`,
+    `Private key: ${control.private_key_configured ? 'configurada' : 'pendiente'}`,
+    `Términos: ${control.terms_accepted ? 'aceptados' : 'pendientes'}`,
+    `Plan: ${control.plan || 'none'} (${control.plan_active ? 'activo' : 'inactivo'})`,
+    `Trading: ${control.trading_status || 'inactive'}`,
+    '',
+    'Bloqueadores:',
+    blockers,
+  ].join('\n');
+}
+
 function renderDashboard(data) {
+  state.dashboard = data;
   const usernameText = data.username ? `@${data.username}` : `ID ${data.user_id || '—'}`;
   const readinessText = data.status_summary || 'not_ready';
   const tradingText = data.trading_status || 'inactive';
   const planText = data.plan || 'none';
   const accessText = data.plan_active ? 'Activo' : 'Bloqueado';
-  const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 16) : 'Pendiente';
-  const authText = state.token ? 'Autenticado' : 'Sin auth';
+  const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 18) : 'Pendiente';
 
-  setPill(elements.headerConnectionBadge, 'Conectado', 'connected');
+  setPill(elements.connectionBadge, 'Conectado', 'connected');
+  setPill(elements.heroSessionPill, data.plan_active ? 'Sesión activa' : 'Acceso limitado', data.plan_active ? 'active' : 'blocked');
+  setPill(elements.heroPlanPill, `Plan ${planText}`, data.plan_active ? planText : 'none');
+  setPill(elements.heroTradingPill, `Trading ${tradingText}`, tradingText);
   setPill(elements.userPlanBadge, planText, data.plan_active ? planText : 'none');
-  setPill(elements.userStatusBadge, readinessText, readinessText);
+  setPill(elements.userReadinessBadge, readinessText, readinessText);
   setPill(elements.walletBadge, data.wallet_configured ? 'Wallet ok' : 'Pendiente', data.wallet_configured ? 'configured' : 'missing');
 
-  elements.heroSignalState.textContent = data.plan_active ? 'Sesión activa' : 'Acceso limitado';
-  elements.heroPlan.textContent = planText;
-  elements.heroTrading.textContent = tradingText;
   elements.heroUser.textContent = usernameText;
-  elements.heroUserSubtext.textContent = data.plan_active ? 'Usuario autenticado correctamente' : 'Sin plan operativo activo';
+  elements.heroUserSubtext.textContent = data.plan_active ? 'Usuario autenticado y con sesión válida' : 'Sin acceso operativo activo';
   elements.heroWallet.textContent = walletText;
-  elements.heroWalletSubtext.textContent = data.wallet_configured ? 'Wallet cargada en backend' : 'Falta configurar wallet';
-  elements.heroKey.textContent = data.private_key_configured ? 'Cargada' : 'Falta';
-  elements.heroKeySubtext.textContent = data.private_key_configured ? 'Llave presente en sistema' : 'Llave privada pendiente';
+  elements.heroWalletSubtext.textContent = data.wallet_configured ? 'Configurada en backend' : 'Todavía falta configurarla';
+  elements.heroKey.textContent = data.private_key_configured ? 'Configurada' : 'Pendiente';
+  elements.heroKeySubtext.textContent = data.private_key_configured ? 'Llave privada presente en sistema' : 'Llave privada faltante';
   elements.heroAccess.textContent = accessText;
   elements.heroAccessSubtext.textContent = formatDate(data.plan_expires_at);
 
@@ -147,31 +201,60 @@ function renderDashboard(data) {
   elements.walletConfigured.textContent = data.wallet_configured ? 'Wallet configurada' : 'Wallet pendiente';
   elements.privateKeyConfigured.textContent = data.private_key_configured ? 'Private key cargada' : 'Private key faltante';
 
-  elements.insightAccount.textContent = usernameText;
-  elements.insightReadiness.textContent = readinessText;
-  elements.insightAuth.textContent = authText;
-  elements.insightExpiry.textContent = formatDate(data.plan_expires_at);
-
   elements.dashboardStats.innerHTML = '';
   elements.dashboardStats.append(
-    buildKpiCard('Plan activo', planText, data.plan_active ? 'El acceso está habilitado.' : 'No hay acceso activo.'),
-    buildKpiCard('Trading status', tradingText, 'Estado operativo reportado por backend.'),
-    buildKpiCard('Balance exchange', data.exchange_balance !== undefined ? data.exchange_balance : 'No consultado', 'Consulta opcional al backend.'),
-    buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Estado actual del usuario.'),
-    buildKpiCard('Trial usado', data.trial_used ? 'Sí' : 'No', 'Controlado por la base del clon.'),
-    buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha registrada para este usuario.')
+    buildKpiCard('Plan', planText, data.plan_active ? 'Acceso operativo habilitado.' : 'Acceso inactivo.'),
+    buildKpiCard('Trading', tradingText, 'Estado reportado por la base.'),
+    buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean la activación si faltan.'),
+    buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
+    buildKpiCard('Private key', data.private_key_configured ? 'Sí' : 'No', 'No se vuelve a exponer por API.'),
+    buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha actual del plan.')
   );
 
   elements.readinessList.innerHTML = '';
   elements.readinessList.append(
-    buildReadinessItem('Wallet', data.wallet_configured ? 'La wallet ya está cargada en el sistema.' : 'Todavía falta configurar la wallet.', data.wallet_configured ? 'configured' : 'missing'),
-    buildReadinessItem('Private key', data.private_key_configured ? 'La private key existe en la configuración.' : 'Aún falta la private key.', data.private_key_configured ? 'configured' : 'missing'),
-    buildReadinessItem('Plan', data.plan_active ? `El usuario tiene acceso ${planText}.` : 'No hay plan activo en este momento.', data.plan_active ? 'active' : 'inactive'),
-    buildReadinessItem('Trading', tradingText === 'active' ? 'El bot reporta trading activo.' : 'El bot no está en estado activo.', tradingText)
+    buildReadinessItem('Wallet', data.wallet_configured ? 'La wallet ya está guardada.' : 'Todavía no existe wallet guardada.', data.wallet_configured ? 'configured' : 'missing'),
+    buildReadinessItem('Private key', data.private_key_configured ? 'La private key ya existe.' : 'Todavía falta private key.', data.private_key_configured ? 'configured' : 'missing'),
+    buildReadinessItem('Términos', data.terms_accepted ? 'Los términos ya fueron aceptados.' : 'Debes aceptar términos para activar trading.', data.terms_accepted ? 'active' : 'warning'),
+    buildReadinessItem('Plan', data.plan_active ? `El plan ${planText} está activo.` : 'No hay acceso operativo vigente.', data.plan_active ? 'active' : 'inactive')
+  );
+}
+
+function renderControl(control) {
+  state.control = control;
+  elements.controlReadinessBox.textContent = buildControlSummary(control);
+  elements.termsStatusText.textContent = control.terms_accepted ? 'Aceptados' : 'Pendientes';
+  elements.acceptTermsButton.disabled = control.terms_accepted;
+  elements.activateTradingButton.disabled = !control.activation_ready;
+  elements.pauseTradingButton.disabled = control.trading_status !== 'active';
+
+  if (!elements.walletInput.value && control.wallet) {
+    elements.walletInput.value = control.wallet;
+  }
+
+  elements.controlStats.innerHTML = '';
+  elements.controlStats.append(
+    buildKpiCard('Wallet', control.wallet_configured ? truncateMiddle(control.wallet_masked, 18) : 'Pendiente', 'Dirección actual del usuario.'),
+    buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', 'Nunca se reexpone por API.'),
+    buildKpiCard('Términos', control.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean activación.'),
+    buildKpiCard('Trading', control.trading_status || 'inactive', 'Se puede pausar desde aquí.'),
+    buildKpiCard('Plan', control.plan || 'none', control.plan_active ? 'Plan vigente.' : 'Sin acceso vigente.'),
+    buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers || []).join(', ') || 'Sin bloqueadores.')
+  );
+}
+
+function renderPerformance(performance) {
+  state.performance = performance;
+  elements.performanceGrid.innerHTML = '';
+  elements.performanceGrid.append(
+    buildPerformanceCard('24h', performance['24h'] || {}),
+    buildPerformanceCard('7d', performance['7d'] || {}),
+    buildPerformanceCard('30d', performance['30d'] || {})
   );
 }
 
 function renderOperations(data) {
+  state.operations = data;
   elements.lastOpen.textContent = pretty(data.last_open);
   elements.lastClose.textContent = pretty(data.last_close);
   elements.operationsCount.textContent = String(data.count || 0);
@@ -205,7 +288,7 @@ function renderOperations(data) {
         <div><span class="metric-label">Entry</span><strong>${trade.entry_price ?? '—'}</strong></div>
         <div><span class="metric-label">Exit</span><strong>${trade.exit_price ?? '—'}</strong></div>
         <div><span class="metric-label">Qty</span><strong>${trade.qty ?? '—'}</strong></div>
-        <div><span class="metric-label">Best score</span><strong>${trade.best_score ?? '—'}</strong></div>
+        <div><span class="metric-label">Score</span><strong>${trade.best_score ?? '—'}</strong></div>
       </div>
     `;
 
@@ -214,32 +297,34 @@ function renderOperations(data) {
 }
 
 function renderReferrals(data) {
+  state.referrals = data;
   elements.referralStats.innerHTML = '';
   elements.referralStats.append(
-    buildKpiCard('Usuario', data.user_id || '—', 'ID autenticado contra el backend.'),
-    buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Contados sobre este clon.')
+    buildKpiCard('Usuario', data.user_id || '—', 'ID autenticado contra backend.'),
+    buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Contados en esta base.')
   );
 }
 
 function renderAdmin(data) {
+  state.admin = data;
   const visual = data.visual || {};
   const tradeStats = data.trade_stats_30d || {};
 
   elements.adminVisualStats.innerHTML = '';
   elements.adminVisualStats.append(
-    buildKpiCard('Usuarios totales', visual.total_users || 0, 'Registrados en esta base.'),
-    buildKpiCard('Free / trial vencido', visual.free_old || 0, 'Usuarios sin premium activo.'),
-    buildKpiCard('Premium activo', visual.premium_active || 0, 'Estado actual en la base.'),
-    buildKpiCard('Premium vencido', visual.premium_expired || 0, 'Usuarios caducados.')
+    buildKpiCard('Usuarios', visual.total_users || 0, 'Registrados en esta DB.'),
+    buildKpiCard('Trial vencido', visual.free_old || 0, 'Sin premium activo.'),
+    buildKpiCard('Premium activo', visual.premium_active || 0, 'Estado actual.'),
+    buildKpiCard('Premium vencido', visual.premium_expired || 0, 'Caducados.')
   );
 
   elements.adminTradeStats.innerHTML = '';
   elements.adminTradeStats.append(
-    buildKpiCard('Total trades', tradeStats.total || 0, 'Últimos 30 días.'),
+    buildKpiCard('Trades 30d', tradeStats.total || 0, 'Global del clon.'),
     buildKpiCard('Wins', tradeStats.wins || 0, `Win rate ${tradeStats.win_rate ?? 0}%`),
     buildKpiCard('Losses', tradeStats.losses || 0, `Decisivas ${tradeStats.win_rate_decisive ?? 0}%`),
-    buildKpiCard('Profit factor', tradeStats.profit_factor ?? 0, `PnL total ${tradeStats.pnl_total ?? 0}`),
-    buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Suma de cierres positivos.'),
+    buildKpiCard('Profit factor', tradeStats.profit_factor === Infinity ? '∞' : tradeStats.profit_factor ?? 0, `PnL ${tradeStats.pnl_total ?? 0}`),
+    buildKpiCard('Gross profit', tradeStats.gross_profit ?? 0, 'Cierres positivos.'),
     buildKpiCard('Gross loss', tradeStats.gross_loss ?? 0, 'Pérdidas acumuladas.')
   );
 }
@@ -254,17 +339,18 @@ async function apiFetch(path, options = {}) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail || `Error HTTP ${response.status}`);
   }
+  if (response.status === 204) return null;
   return response.json();
 }
 
-function setDirectBrowserMode() {
-  setPill(elements.headerConnectionBadge, 'Preview', 'preview');
-  setStatus('Abriste la URL directa. El diseño se puede ver, pero la sesión real solo llega al abrir la MiniApp desde Telegram.', 'warning');
-  elements.heroSignalState.textContent = 'Abrir desde Telegram';
-  elements.heroPlan.textContent = 'Preview';
-  elements.heroTrading.textContent = 'Preview';
+function setPreviewMode() {
+  setPill(elements.connectionBadge, 'Preview', 'preview');
+  setStatus('Abriste la URL directa. La vista carga, pero la sesión real solo llega al abrir la MiniApp desde Telegram.', 'warning');
+  setPill(elements.heroSessionPill, 'Preview', 'preview');
+  setPill(elements.heroPlanPill, 'Plan preview', 'preview');
+  setPill(elements.heroTradingPill, 'Trading preview', 'preview');
   elements.heroUser.textContent = 'Modo visual';
-  elements.heroUserSubtext.textContent = 'La autenticación real llega desde Telegram WebApp';
+  elements.heroUserSubtext.textContent = 'Abre la MiniApp desde Telegram para autenticar';
   elements.heroWallet.textContent = '—';
   elements.heroWalletSubtext.textContent = 'Sin sesión';
   elements.heroKey.textContent = '—';
@@ -272,25 +358,21 @@ function setDirectBrowserMode() {
   elements.heroAccess.textContent = 'Bloqueado';
   elements.heroAccessSubtext.textContent = 'Necesita initData';
   setPill(elements.userPlanBadge, 'Preview', 'preview');
-  setPill(elements.userStatusBadge, 'Sin auth', 'blocked');
+  setPill(elements.userReadinessBadge, 'Sin auth', 'blocked');
   setPill(elements.walletBadge, 'Sin auth', 'blocked');
   elements.userIdentity.textContent = 'Modo visual';
-  elements.userIdentitySubtext.textContent = 'Abre la MiniApp desde Telegram';
+  elements.userIdentitySubtext.textContent = 'Usa el botón desde Telegram';
   elements.userReadiness.textContent = 'Pendiente';
   elements.userTradingStatus.textContent = 'Sin sesión';
   elements.walletConfigured.textContent = 'No disponible';
   elements.privateKeyConfigured.textContent = 'No disponible';
-  elements.insightAccount.textContent = 'Sin sesión';
-  elements.insightReadiness.textContent = 'Preview';
-  elements.insightAuth.textContent = 'Pendiente';
-  elements.insightExpiry.textContent = '—';
   elements.refreshButton.disabled = true;
 }
 
 async function authenticate() {
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   if (!tg) {
-    setDirectBrowserMode();
+    setPreviewMode();
     throw new Error('Telegram WebApp no está disponible.');
   }
 
@@ -298,10 +380,10 @@ async function authenticate() {
   tg.ready();
   tg.expand();
   tg.setHeaderColor('#09111f');
-  tg.setBackgroundColor('#060b16');
+  tg.setBackgroundColor('#050913');
 
   if (!tg.initData) {
-    setDirectBrowserMode();
+    setPreviewMode();
     throw new Error('Abre esta MiniApp desde Telegram para autenticar la sesión.');
   }
 
@@ -311,22 +393,23 @@ async function authenticate() {
   });
 
   state.token = payload.access_token;
-  state.session = payload.user;
 }
 
 async function loadData() {
-  setStatus('Sincronizando panel con el backend...', 'info');
-  const [dashboard, operations, referrals] = await Promise.all([
+  setStatus('Sincronizando datos con el backend...', 'info');
+  const [dashboard, control, performance, operations, referrals] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
+    apiFetch('/api/v1/control'),
+    apiFetch('/api/v1/performance'),
     apiFetch('/api/v1/operations?limit=20'),
     apiFetch('/api/v1/referrals'),
   ]);
 
   renderDashboard(dashboard);
+  renderControl(control);
+  renderPerformance(performance);
   renderOperations(operations);
   renderReferrals(referrals);
-
-  setStatus('MiniApp conectada correctamente al backend.', 'success');
 
   try {
     const admin = await apiFetch('/api/v1/admin/overview');
@@ -336,7 +419,10 @@ async function loadData() {
   } catch {
     elements.adminTabButton.classList.add('hidden');
     state.isAdmin = false;
+    document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
   }
+
+  setStatus('MiniApp sincronizada correctamente.', 'success');
 }
 
 function bindTabs() {
@@ -345,15 +431,95 @@ function bindTabs() {
   buttons.forEach((button) => {
     button.addEventListener('click', () => {
       const target = button.dataset.tab;
+      if (target === 'admin' && !state.isAdmin) return;
       buttons.forEach((item) => item.classList.toggle('is-active', item === button));
       panels.forEach((panel) => panel.classList.toggle('is-active', panel.dataset.panel === target));
     });
   });
 }
 
-async function bootstrap() {
-  bindTabs();
+async function saveConfiguration() {
+  const wallet = elements.walletInput.value.trim();
+  const privateKey = elements.privateKeyInput.value.trim();
+  const payload = {};
+  if (wallet) payload.wallet = wallet;
+  if (privateKey) payload.private_key = privateKey;
 
+  if (!payload.wallet && !payload.private_key) {
+    setStatus('No hay cambios para guardar.', 'warning');
+    return;
+  }
+
+  elements.saveConfigurationButton.disabled = true;
+  try {
+    const control = await apiFetch('/api/v1/control/configuration', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+    renderControl(control);
+    elements.privateKeyInput.value = '';
+    setStatus('Configuración crítica actualizada correctamente.', 'success');
+    await refreshSummaryOnly();
+  } catch (error) {
+    setStatus(error.message || 'No se pudo guardar la configuración.', 'error');
+  } finally {
+    elements.saveConfigurationButton.disabled = false;
+  }
+}
+
+async function acceptTermsAction() {
+  elements.acceptTermsButton.disabled = true;
+  try {
+    const control = await apiFetch('/api/v1/control/terms/accept', { method: 'POST' });
+    renderControl(control);
+    setStatus('Términos aceptados correctamente.', 'success');
+    await refreshSummaryOnly();
+  } catch (error) {
+    setStatus(error.message || 'No se pudieron aceptar los términos.', 'error');
+    elements.acceptTermsButton.disabled = false;
+  }
+}
+
+async function activateTradingAction() {
+  elements.activateTradingButton.disabled = true;
+  try {
+    const payload = await apiFetch('/api/v1/control/trading/activate', { method: 'POST' });
+    renderControl(payload.control);
+    setStatus(payload.message || 'Trading activado.', 'success');
+    await refreshSummaryOnly();
+  } catch (error) {
+    setStatus(error.message || 'No se pudo activar el trading.', 'error');
+  } finally {
+    elements.activateTradingButton.disabled = false;
+  }
+}
+
+async function pauseTradingAction() {
+  elements.pauseTradingButton.disabled = true;
+  try {
+    const payload = await apiFetch('/api/v1/control/trading/pause', { method: 'POST' });
+    renderControl(payload.control);
+    setStatus(payload.message || 'Trading pausado.', 'warning');
+    await refreshSummaryOnly();
+  } catch (error) {
+    setStatus(error.message || 'No se pudo pausar el trading.', 'error');
+  } finally {
+    elements.pauseTradingButton.disabled = false;
+  }
+}
+
+async function refreshSummaryOnly() {
+  const [dashboard, control, performance] = await Promise.all([
+    apiFetch('/api/v1/dashboard?include_balance=false'),
+    apiFetch('/api/v1/control'),
+    apiFetch('/api/v1/performance'),
+  ]);
+  renderDashboard(dashboard);
+  renderControl(control);
+  renderPerformance(performance);
+}
+
+function bindActions() {
   elements.refreshButton.addEventListener('click', async () => {
     elements.refreshButton.disabled = true;
     try {
@@ -364,6 +530,25 @@ async function bootstrap() {
       elements.refreshButton.disabled = false;
     }
   });
+
+  elements.configurationForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await saveConfiguration();
+  });
+
+  elements.clearConfigurationButton.addEventListener('click', () => {
+    elements.walletInput.value = '';
+    elements.privateKeyInput.value = '';
+  });
+
+  elements.acceptTermsButton.addEventListener('click', acceptTermsAction);
+  elements.activateTradingButton.addEventListener('click', activateTradingAction);
+  elements.pauseTradingButton.addEventListener('click', pauseTradingAction);
+}
+
+async function bootstrap() {
+  bindTabs();
+  bindActions();
 
   try {
     await authenticate();
