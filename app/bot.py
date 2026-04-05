@@ -12,6 +12,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
+    WebAppInfo,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -22,7 +23,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.config import TELEGRAM_BOT_TOKEN, BOT_NAME
+from app.config import TELEGRAM_BOT_TOKEN, BOT_NAME, MINIAPP_URL
 
 # ============================================================
 # ENV (Admin / Bot)
@@ -80,7 +81,12 @@ logging.basicConfig(
 def main_menu(user_id: int | None = None):
     is_admin = bool(user_id) and int(user_id) == int(ADMIN_TELEGRAM_ID)
 
-    kb = [
+    kb = []
+
+    if MINIAPP_URL:
+        kb.append([InlineKeyboardButton("🚀 Abrir MiniApp", web_app=WebAppInfo(url=MINIAPP_URL))])
+
+    kb.extend([
         [InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")],
         [
             InlineKeyboardButton("💳 Wallet / Private Key", callback_data="wallet_menu"),
@@ -96,7 +102,7 @@ def main_menu(user_id: int | None = None):
         ],
         [InlineKeyboardButton("📜 Políticas de Uso", callback_data="policies")],
         [InlineKeyboardButton("ℹ️ Información", callback_data="info")],
-    ]
+    ])
 
     if is_admin:
         kb.append([InlineKeyboardButton("🛠 Panel Admin", callback_data="admin_panel")])
@@ -120,9 +126,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ref.isdigit() and int(ref) != user.id:
             set_referrer(user.id, int(ref))
 
+    miniapp_hint = "\n🚀 Usa *Abrir MiniApp* para entrar al panel visual completo." if MINIAPP_URL else ""
+
     await update.message.reply_text(
         f"🤖 Bienvenido a *{BOT_NAME}*.\n"
-        f"Tu bot profesional de trading automático 24/7.\n\n"
+        f"Tu bot profesional de trading automático 24/7.\n"
+        f"{miniapp_hint}\n\n"
         f"Selecciona una opción:",
         reply_markup=main_menu(user_id),
         parse_mode="Markdown"
