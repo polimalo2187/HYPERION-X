@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from app.database import (
     activate_premium_plan,
     grant_manual_premium_days,
+    get_manual_premium_days_preview,
     admin_set_user_trading_status,
     ensure_access_on_activate,
     get_admin_trade_stats,
@@ -65,6 +66,21 @@ def admin_activate_premium(user_id: int) -> dict:
         'result': 'premium_activated',
         'message': 'Premium activado manualmente',
         'user': detail,
+    }
+
+
+def admin_preview_manual_premium_days(user_id: int, days: int) -> dict:
+    if int(days) <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='La cantidad de días debe ser mayor que cero')
+    outcome = get_manual_premium_days_preview(int(user_id), int(days))
+    if not outcome.get('ok'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=outcome.get('message') or 'No se pudo calcular la previsualización')
+    detail = admin_get_user_detail(int(user_id))
+    return {
+        'result': 'manual_premium_days_preview',
+        'message': 'Previsualización calculada',
+        'user': detail,
+        'preview': outcome,
     }
 
 
