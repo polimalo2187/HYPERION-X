@@ -42,6 +42,15 @@ def admin_user_detail(user_id: int, _: dict = Depends(require_admin_session)) ->
     return _require_admin_attr('admin_get_user_detail')(int(user_id))
 
 
+@router.get('/users/{user_id}/plan/manual-days-preview')
+def admin_preview_user_manual_premium_days(
+    user_id: int,
+    days: int = Query(..., ge=1, le=3650),
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_preview_manual_premium_days')(int(user_id), int(days))
+
+
 @router.post('/users/{user_id}/plan/premium')
 def admin_activate_user_premium(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
     return _require_admin_attr('admin_activate_premium')(int(user_id))
