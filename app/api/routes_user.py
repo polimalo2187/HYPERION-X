@@ -12,6 +12,7 @@ from app.services.user_service import (
     get_performance_summary,
     get_recent_operations,
     get_referrals_summary,
+    get_system_runtime_summary,
     get_user_profile,
     pause_user_trading,
     update_user_configuration,
@@ -86,3 +87,8 @@ def operations(
 @router.get('/referrals')
 def referrals(session: dict = Depends(require_session)) -> dict:
     return get_referrals_summary(int(session['user_id']))
+
+
+@router.get('/system/runtime')
+def system_runtime(session: dict = Depends(require_session)) -> dict:
+    return get_system_runtime_summary(int(session['user_id']))
