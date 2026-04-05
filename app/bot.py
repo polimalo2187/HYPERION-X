@@ -58,6 +58,7 @@ from app.database import (
     # Stats por usuario (admin)
     get_user_trade_stats,
     reset_user_trade_stats_epoch,
+    touch_runtime_component,
 )
 
 from app.hyperliquid_client import get_balance
@@ -928,6 +929,18 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # ============================================================
 
+async def bot_runtime_heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    touch_runtime_component(
+        'telegram_bot',
+        'online',
+        metadata={
+            'bot_username': BOT_USERNAME,
+            'miniapp_url_configured': bool(MINIAPP_URL),
+            'admin_telegram_id': int(ADMIN_TELEGRAM_ID or 0),
+        },
+    )
+
+
 def run_bot():
 
     app = (
@@ -944,6 +957,18 @@ def run_bot():
 
     # ✅ CORRECCIÓN CRÍTICA:
     # Se pasa la MISMA Application al trading loop
+    touch_runtime_component(
+        'telegram_bot',
+        'online',
+        metadata={
+            'bot_username': BOT_USERNAME,
+            'miniapp_url_configured': bool(MINIAPP_URL),
+            'admin_telegram_id': int(ADMIN_TELEGRAM_ID or 0),
+            'phase': 'startup',
+        },
+    )
+
+    app.job_queue.run_repeating(bot_runtime_heartbeat, interval=30, first=1)
     app.job_queue.run_once(
         lambda ctx: asyncio.create_task(trading_loop(app)),
         when=3
