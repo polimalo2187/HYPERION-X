@@ -239,9 +239,10 @@ def get_referrals_summary(user_id: int) -> dict:
     }
 
 
-def get_system_runtime_summary(user_id: int) -> dict:
+def get_system_runtime_summary(user_id: int, include_private_details: bool = False) -> dict:
     profile = get_user_profile(int(user_id))
     snapshot = get_system_runtime_snapshot() or {}
+    runtime = dict((snapshot.get('runtime') or {}))
 
     def _serialize_component(item: dict | None) -> dict:
         payload = dict(item or {})
@@ -255,16 +256,51 @@ def get_system_runtime_summary(user_id: int) -> dict:
         payload['at'] = _serialize_dt(payload.get('at'))
         return payload
 
-    latest_manager = (snapshot.get('runtime') or {}).get('latest_trade_manager') or {}
+    latest_manager = runtime.get('latest_trade_manager') or {}
     latest_manager = dict(latest_manager) if latest_manager else None
     if latest_manager and latest_manager.get('manager_heartbeat_at'):
         latest_manager['manager_heartbeat_at'] = _serialize_dt(latest_manager.get('manager_heartbeat_at'))
 
-    return {
+    latest_open = _serialize_activity(runtime.get('latest_open'))
+    latest_close = _serialize_activity(runtime.get('latest_close'))
+
+    if latest_close:
+        recent_activity_label = 'Cierres recientes'
+        recent_activity_detail = 'Se registró actividad reciente de cierre en la plataforma.'
+    elif latest_open:
+        recent_activity_label = 'Actividad de trading'
+        recent_activity_detail = 'Se registró actividad reciente de apertura en la plataforma.'
+    elif runtime.get('scanner_last_event'):
+        recent_activity_label = 'Mercado monitoreado'
+        recent_activity_detail = 'La plataforma sigue procesando actividad de mercado.'
+    else:
+        recent_activity_label = 'Sin actividad reciente'
+        recent_activity_detail = 'Todavía no hay eventos recientes para mostrar.'
+
+    overall_status = snapshot.get('overall_status') or 'unknown'
+    public_summary = {
+        'last_update_at': _serialize_dt(snapshot.get('checked_at')),
+        'connection_label': 'Sincronizada',
+        'active_trades': int(runtime.get('active_trades', 0) or 0),
+        'recent_activity_label': recent_activity_label,
+        'recent_activity_detail': recent_activity_detail,
+        'execution_label': 'Operativa' if overall_status == 'healthy' else ('Atención' if overall_status in {'warning', 'stale'} else 'Incidencia'),
+        'execution_detail': 'La lectura mostrada aquí es una vista resumida para el usuario.',
+        'plan_notice': 'Tu acceso vigente y configuración se muestran en esta sesión.' if profile.get('plan_active') else 'Tu acceso depende del plan activo y la configuración de tu cuenta.',
+    }
+
+    payload = {
         'viewer_user_id': int(profile['user_id']),
         'viewer_plan': profile.get('plan'),
-        'overall_status': snapshot.get('overall_status') or 'unknown',
+        'overall_status': overall_status,
         'checked_at': _serialize_dt(snapshot.get('checked_at')),
+        'public_summary': public_summary,
+    }
+
+    if not include_private_details:
+        return payload
+
+    payload.update({
         'backend': {
             'status': 'online',
             'message': 'El backend web respondió a esta solicitud.',
@@ -276,10 +312,11 @@ def get_system_runtime_summary(user_id: int) -> dict:
             'scanner': _serialize_component((snapshot.get('components') or {}).get('scanner')),
         },
         'runtime': {
-            **(snapshot.get('runtime') or {}),
-            'latest_open': _serialize_activity((snapshot.get('runtime') or {}).get('latest_open')),
-            'latest_close': _serialize_activity((snapshot.get('runtime') or {}).get('latest_close')),
+            **runtime,
+            'latest_open': latest_open,
+            'latest_close': latest_close,
             'latest_trade_manager': latest_manager,
         },
         'issues': snapshot.get('issues') or [],
-    }
+    })
+    return payload
