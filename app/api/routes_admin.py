@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 
 from app.api.dependencies import require_admin_session
 from app.services import admin_service
 
 router = APIRouter(prefix='/api/v1/admin', tags=['admin'])
+
+
+class ManualPremiumDaysPayload(BaseModel):
+    days: int = Field(..., ge=1, le=3650)
 
 
 def _require_admin_attr(name: str):
@@ -40,6 +45,15 @@ def admin_user_detail(user_id: int, _: dict = Depends(require_admin_session)) ->
 @router.post('/users/{user_id}/plan/premium')
 def admin_activate_user_premium(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
     return _require_admin_attr('admin_activate_premium')(int(user_id))
+
+
+@router.post('/users/{user_id}/plan/manual-days')
+def admin_grant_user_manual_premium_days(
+    user_id: int,
+    payload: ManualPremiumDaysPayload,
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_grant_manual_premium_days')(int(user_id), int(payload.days))
 
 
 @router.post('/users/{user_id}/trading/activate')
