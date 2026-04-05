@@ -31,6 +31,7 @@ db = client[DB_NAME]
 users_col = db["users"]
 trades_col = db["trades"]
 settings_col = db["settings"]
+admin_action_logs_col = db["admin_action_logs"]
 
 # ============================================================
 # ZONA HORARIA (CUBA) – vencimientos por medianoche
@@ -77,6 +78,71 @@ def db_log(msg: str):
 # ============================================================
 # UTILIDADES (blindaje)
 # ============================================================
+
+
+
+def _sanitize_admin_reason(reason: str | None) -> str | None:
+    value = str(reason or '').strip()
+    if not value:
+        return None
+    return value[:300]
+
+
+def log_admin_action(
+    actor_user_id: int,
+    actor_username: str | None,
+    action: str,
+    *,
+    target_user_id: int | None = None,
+    target_username: str | None = None,
+    reason: str | None = None,
+    status: str = 'success',
+    message: str | None = None,
+    metadata: dict | None = None,
+) -> bool:
+    try:
+        doc = {
+            'created_at': _now_utc(),
+            'actor_user_id': int(actor_user_id),
+            'actor_username': str(actor_username or '').strip() or None,
+            'action': str(action or '').strip() or 'unknown',
+            'target_user_id': int(target_user_id) if target_user_id is not None else None,
+            'target_username': str(target_username or '').strip() or None,
+            'reason': _sanitize_admin_reason(reason),
+            'status': str(status or 'success').strip() or 'success',
+            'message': str(message or '').strip() or None,
+            'metadata': metadata or {},
+        }
+        admin_action_logs_col.insert_one(doc)
+        return True
+    except Exception as e:
+        db_log(f"⚠ log_admin_action error actor={actor_user_id} action={action}: {e}")
+        return False
+
+
+def get_admin_action_history(limit: int = 20, target_user_id: int | None = None) -> list[dict]:
+    lim = max(1, min(int(limit), 100))
+    query = {}
+    if target_user_id is not None:
+        query['target_user_id'] = int(target_user_id)
+
+    cursor = admin_action_logs_col.find(query, {'_id': 0}).sort('created_at', -1).limit(lim)
+    results = []
+    for row in cursor:
+        created_at = _parse_dt(row.get('created_at'))
+        results.append({
+            'created_at': created_at,
+            'actor_user_id': row.get('actor_user_id'),
+            'actor_username': row.get('actor_username'),
+            'action': row.get('action') or 'unknown',
+            'target_user_id': row.get('target_user_id'),
+            'target_username': row.get('target_username'),
+            'reason': row.get('reason'),
+            'status': row.get('status') or 'success',
+            'message': row.get('message'),
+            'metadata': row.get('metadata') or {},
+        })
+    return results
 
 def _safe_float(x, default: float = 0.0) -> float:
     try:
@@ -1185,6 +1251,7 @@ def get_admin_user_snapshot(user_id: int) -> dict | None:
         "terms_timestamp": _parse_dt(doc.get("terms_timestamp")),
         "private_key_version": doc.get("private_key_version"),
         "private_key_updated_at": _parse_dt(doc.get("private_key_updated_at")),
+        "recent_admin_actions": get_admin_action_history(limit=10, target_user_id=int(user_id)),
     })
     return snapshot
 
