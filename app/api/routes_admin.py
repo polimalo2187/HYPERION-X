@@ -9,7 +9,8 @@ from app.services import admin_service
 router = APIRouter(prefix='/api/v1/admin', tags=['admin'])
 
 
-class ManualPremiumDaysPayload(BaseModel):
+class ManualPlanDaysPayload(BaseModel):
+    plan: str = Field(default='premium', min_length=5, max_length=20)
     days: int = Field(..., ge=1, le=3650)
 
 
@@ -43,12 +44,13 @@ def admin_user_detail(user_id: int, _: dict = Depends(require_admin_session)) ->
 
 
 @router.get('/users/{user_id}/plan/manual-days-preview')
-def admin_preview_user_manual_premium_days(
+def admin_preview_user_manual_plan_days(
     user_id: int,
+    plan: str = Query(default='premium', min_length=5, max_length=20),
     days: int = Query(..., ge=1, le=3650),
     _: dict = Depends(require_admin_session),
 ) -> dict:
-    return _require_admin_attr('admin_preview_manual_premium_days')(int(user_id), int(days))
+    return _require_admin_attr('admin_preview_manual_plan_days')(int(user_id), plan, int(days))
 
 
 @router.post('/users/{user_id}/plan/premium')
@@ -57,12 +59,12 @@ def admin_activate_user_premium(user_id: int, _: dict = Depends(require_admin_se
 
 
 @router.post('/users/{user_id}/plan/manual-days')
-def admin_grant_user_manual_premium_days(
+def admin_grant_user_manual_plan_days(
     user_id: int,
-    payload: ManualPremiumDaysPayload,
+    payload: ManualPlanDaysPayload,
     _: dict = Depends(require_admin_session),
 ) -> dict:
-    return _require_admin_attr('admin_grant_manual_premium_days')(int(user_id), int(payload.days))
+    return _require_admin_attr('admin_grant_manual_plan_days')(int(user_id), payload.plan, int(payload.days))
 
 
 @router.post('/users/{user_id}/trading/activate')
