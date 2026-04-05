@@ -32,6 +32,7 @@ users_col = db["users"]
 trades_col = db["trades"]
 settings_col = db["settings"]
 admin_action_logs_col = db["admin_action_logs"]
+runtime_status_col = db["runtime_status"]
 
 # ============================================================
 # ZONA HORARIA (CUBA) – vencimientos por medianoche
@@ -86,6 +87,207 @@ def _sanitize_admin_reason(reason: str | None) -> str | None:
     if not value:
         return None
     return value[:300]
+
+
+def _serialize_runtime_dt(value: datetime | None) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return None
+
+
+def touch_runtime_component(component: str, state: str = 'online', *, metadata: dict | None = None) -> bool:
+    name = str(component or '').strip().lower()
+    if not name:
+        return False
+    now = _now_utc()
+    payload = {
+        'component': name,
+        'state': str(state or 'online').strip().lower() or 'online',
+        'last_seen_at': now,
+        'updated_at': now,
+        'metadata': metadata or {},
+    }
+    try:
+        runtime_status_col.update_one(
+            {'component': name},
+            {'$set': payload, '$setOnInsert': {'created_at': now}},
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ touch_runtime_component error component={name}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def get_runtime_component(component: str) -> dict | None:
+    name = str(component or '').strip().lower()
+    if not name:
+        return None
+    doc = runtime_status_col.find_one({'component': name}, {'_id': 0})
+    if not doc:
+        return None
+    last_seen = _parse_dt(doc.get('last_seen_at'))
+    updated_at = _parse_dt(doc.get('updated_at'))
+    return {
+        'component': doc.get('component') or name,
+        'state': doc.get('state') or 'unknown',
+        'last_seen_at': last_seen,
+        'updated_at': updated_at,
+        'metadata': doc.get('metadata') or {},
+        'created_at': _parse_dt(doc.get('created_at')),
+    }
+
+
+def _runtime_component_snapshot(component: str, *, warning_after_seconds: int, critical_after_seconds: int) -> dict:
+    now = _now_utc()
+    doc = get_runtime_component(component)
+    if not doc:
+        return {
+            'component': component,
+            'status': 'offline',
+            'last_seen_at': None,
+            'freshness_seconds': None,
+            'state': 'missing',
+            'metadata': {},
+            'message': 'Sin heartbeat registrado todavía.',
+        }
+
+    last_seen = doc.get('last_seen_at')
+    freshness = None
+    if isinstance(last_seen, datetime):
+        freshness = max(0, int((now - last_seen).total_seconds()))
+
+    explicit_state = str(doc.get('state') or 'online').lower()
+    if explicit_state in {'error', 'failed'}:
+        status = 'error'
+        message = 'El componente reportó error en el último heartbeat.'
+    elif freshness is None:
+        status = 'offline'
+        message = 'Heartbeat inválido o sin timestamp.'
+    elif freshness <= int(warning_after_seconds):
+        status = 'online'
+        message = 'Heartbeat reciente.'
+    elif freshness <= int(critical_after_seconds):
+        status = 'stale'
+        message = 'Heartbeat atrasado; revisar proceso.'
+    else:
+        status = 'offline'
+        message = 'Heartbeat demasiado antiguo o proceso detenido.'
+
+    return {
+        'component': component,
+        'status': status,
+        'last_seen_at': last_seen,
+        'freshness_seconds': freshness,
+        'state': explicit_state,
+        'metadata': doc.get('metadata') or {},
+        'message': message,
+    }
+
+
+def get_system_runtime_snapshot() -> dict:
+    now = _now_utc()
+    components = {
+        'telegram_bot': _runtime_component_snapshot('telegram_bot', warning_after_seconds=90, critical_after_seconds=300),
+        'trading_loop': _runtime_component_snapshot('trading_loop', warning_after_seconds=90, critical_after_seconds=300),
+        'scanner': _runtime_component_snapshot('scanner', warning_after_seconds=120, critical_after_seconds=360),
+    }
+
+    plan_active_query = {
+        'plan': {'$in': ['trial', 'premium']},
+        'plan_expires_at': {'$gt': now},
+    }
+    users_with_active_plan = users_col.count_documents(plan_active_query)
+    users_trading_active = users_col.count_documents({'trading_status': 'active'})
+
+    latest_open_doc = users_col.find_one(
+        {'last_open_at': {'$ne': None}},
+        {'_id': 0, 'user_id': 1, 'username': 1, 'last_open_at': 1, 'last_open': 1},
+        sort=[('last_open_at', -1)],
+    )
+    latest_close_doc = users_col.find_one(
+        {'last_close_at': {'$ne': None}},
+        {'_id': 0, 'user_id': 1, 'username': 1, 'last_close_at': 1, 'last_close': 1},
+        sort=[('last_close_at', -1)],
+    )
+
+    active_trades_collection_name = os.getenv('ACTIVE_TRADES_COLLECTION', 'active_trades')
+    active_trades_collection = db[active_trades_collection_name]
+    try:
+        active_trades_count = int(active_trades_collection.count_documents({}))
+    except Exception:
+        active_trades_count = 0
+
+    latest_trade_manager = None
+    try:
+        latest_active_trade = active_trades_collection.find_one(
+            {},
+            {'_id': 0, 'user_id': 1, 'symbol': 1, 'direction': 1, 'manager_heartbeat_ts': 1},
+            sort=[('manager_heartbeat_ts', -1)],
+        )
+        if latest_active_trade:
+            ts = latest_active_trade.get('manager_heartbeat_ts')
+            ts_dt = datetime.utcfromtimestamp(float(ts)) if ts else None
+            latest_trade_manager = {
+                'user_id': latest_active_trade.get('user_id'),
+                'symbol': latest_active_trade.get('symbol'),
+                'direction': latest_active_trade.get('direction'),
+                'manager_heartbeat_at': ts_dt,
+            }
+    except Exception as e:
+        latest_trade_manager = {'error': str(e)}
+
+    scanner_meta = components['scanner'].get('metadata') or {}
+    issues = []
+    for name, snapshot in components.items():
+        if snapshot.get('status') not in {'online'}:
+            issues.append({
+                'component': name,
+                'status': snapshot.get('status'),
+                'message': snapshot.get('message'),
+            })
+
+    statuses = [components['telegram_bot']['status'], components['trading_loop']['status'], components['scanner']['status']]
+    if 'error' in statuses or 'offline' in statuses:
+        overall_status = 'degraded'
+    elif 'stale' in statuses:
+        overall_status = 'warning'
+    else:
+        overall_status = 'healthy'
+
+    def _activity_payload(doc: dict | None, key: str, ts_key: str) -> dict | None:
+        if not doc:
+            return None
+        payload = doc.get(key) or {}
+        return {
+            'user_id': doc.get('user_id'),
+            'username': doc.get('username'),
+            'at': _parse_dt(doc.get(ts_key)),
+            'symbol': payload.get('symbol') if isinstance(payload, dict) else None,
+            'event': payload.get('message') if isinstance(payload, dict) else None,
+            'payload': payload if isinstance(payload, dict) else None,
+        }
+
+    return {
+        'overall_status': overall_status,
+        'checked_at': now,
+        'components': components,
+        'runtime': {
+            'users_with_active_plan': int(users_with_active_plan),
+            'users_trading_active': int(users_trading_active),
+            'active_trades': int(active_trades_count),
+            'latest_trade_manager': latest_trade_manager,
+            'latest_open': _activity_payload(latest_open_doc, 'last_open', 'last_open_at'),
+            'latest_close': _activity_payload(latest_close_doc, 'last_close', 'last_close_at'),
+            'scanner_last_event': scanner_meta.get('last_event'),
+            'scanner_last_symbol': scanner_meta.get('symbol'),
+            'scanner_last_user_id': scanner_meta.get('user_id'),
+        },
+        'issues': issues,
+    }
 
 
 def log_admin_action(
