@@ -337,14 +337,40 @@
                     <h3 id="adminUserTitle">—</h3>
                     <p id="adminUserSubtitle" class="admin-subcopy">—</p>
                   </div>
-                  <button id="adminActivatePremiumButton" class="success-button" type="button">Activar Premium 30d</button>
                 </div>
                 <div id="adminUserStats" class="stats-grid compact"></div>
-                <div class="admin-action-grid">
-                  <button id="adminActivateTradingButton" class="success-button" type="button">Activar trading</button>
-                  <button id="adminPauseTradingButton" class="danger-button" type="button">Pausar trading</button>
-                  <button id="adminMigrateKeyButton" class="secondary-button" type="button">Migrar key legacy</button>
-                  <button id="adminResetStatsButton" class="secondary-button" type="button">Resetear rendimiento</button>
+
+                <div class="glass-subcard admin-plan-card">
+                  <div class="panel-head compact no-margin">
+                    <div>
+                      <span class="section-tag">SUSCRIPCIÓN MANUAL</span>
+                      <h3>Agregar días Premium</h3>
+                    </div>
+                    <span class="status-pill info">Manual</span>
+                  </div>
+                  <p id="adminPlanGrantHint" class="admin-subcopy">Carga un usuario para aplicar días exactos sin simular una compra automática.</p>
+                  <div class="admin-plan-row">
+                    <label class="field-block compact-field">
+                      <span>Días a agregar</span>
+                      <input id="adminPlanDaysInput" type="number" min="1" step="1" placeholder="7" inputmode="numeric" />
+                    </label>
+                    <button id="adminGrantPlanButton" class="success-button" type="button">Aplicar días</button>
+                  </div>
+                </div>
+
+                <div class="glass-subcard admin-ops-card">
+                  <div class="panel-head compact no-margin">
+                    <div>
+                      <span class="section-tag">CONTROL OPERATIVO</span>
+                      <h3>Soporte del bot</h3>
+                    </div>
+                  </div>
+                  <div class="admin-action-grid">
+                    <button id="adminActivateTradingButton" class="success-button" type="button">Reanudar trading</button>
+                    <button id="adminPauseTradingButton" class="danger-button" type="button">Pausar trading</button>
+                    <button id="adminMigrateKeyButton" class="secondary-button" type="button">Migrar key legacy</button>
+                    <button id="adminResetStatsButton" class="secondary-button" type="button">Resetear rendimiento</button>
+                  </div>
                 </div>
                 <div>
                   <div class="panel-head compact no-margin">
