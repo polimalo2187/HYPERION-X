@@ -646,3 +646,108 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
     grid-template-columns: 1fr;
   }
 }
+
+.admin-note-field {
+  margin-top: 12px;
+}
+
+.admin-note-field textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(5, 9, 19, 0.7);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.admin-note-field textarea::placeholder {
+  color: rgba(229, 236, 255, 0.4);
+}
+
+.admin-history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-history-item {
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+}
+
+.admin-history-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.admin-history-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: white;
+}
+
+.admin-history-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.admin-history-body {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-history-reason,
+.admin-history-message {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.admin-history-reason strong,
+.admin-history-message strong {
+  color: white;
+}
+
+@media (max-width: 640px) {
+  .admin-history-head {
+    flex-direction: column;
+  }
+}
+
+
+.runtime-card {
+  position: relative;
+  overflow: hidden;
+}
+.runtime-card.success {
+  border-color: rgba(52, 211, 153, 0.22);
+}
+.runtime-card.warning {
+  border-color: rgba(251, 191, 36, 0.26);
+}
+.runtime-card.danger {
+  border-color: rgba(251, 113, 133, 0.24);
+}
+.runtime-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.compact-list {
+  display: grid;
+  gap: 10px;
+}
+.compact-list .readiness-item {
+  padding: 12px 14px;
+}
