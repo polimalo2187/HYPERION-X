@@ -541,3 +541,32 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
     gap: 12px;
   }
 }
+
+
+.admin-inline-actions {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.admin-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-subcopy {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.no-margin { margin-bottom: 0; }
+
+@media (max-width: 720px) {
+  .admin-action-grid {
+    grid-template-columns: 1fr;
+  }
+}
