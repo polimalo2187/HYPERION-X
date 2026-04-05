@@ -183,8 +183,7 @@ function renderAdminActionHistory(container, items, emptyText) {
 async function requestStrongConfirmation(title, lines = []) {
   const promptText = `${title}
 
-${lines.filter(Boolean).join('
-')}
+${lines.filter(Boolean).join('\n')}
 
 Escribe CONFIRMAR para continuar.`;
   const value = window.prompt(promptText, '');
