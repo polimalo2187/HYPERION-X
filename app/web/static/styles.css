@@ -486,3 +486,58 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   .tabbar { padding: 8px; }
   .tab { flex: 0 0 auto; }
 }
+
+.admin-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.admin-search-row input {
+  width: 100%;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+  padding: 14px 16px;
+  outline: none;
+}
+
+.admin-user-detail {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.admin-user-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.admin-user-head h3 {
+  margin: 6px 0 4px;
+  font-size: 22px;
+}
+
+.admin-subcopy {
+  margin: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 768px) {
+  .admin-search-row,
+  .admin-user-head {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .admin-user-head {
+    gap: 12px;
+  }
+}
