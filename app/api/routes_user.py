@@ -91,4 +91,7 @@ def referrals(session: dict = Depends(require_session)) -> dict:
 
 @router.get('/system/runtime')
 def system_runtime(session: dict = Depends(require_session)) -> dict:
-    return get_system_runtime_summary(int(session['user_id']))
+    return get_system_runtime_summary(
+        int(session['user_id']),
+        include_private_details=bool(session.get('is_admin')),
+    )
