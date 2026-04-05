@@ -82,6 +82,8 @@ def get_user_profile(user_id: int) -> dict:
         'plan_expires_at': _serialize_dt(profile.get('plan_expires_at')),
         'trial_used': bool(profile.get('trial_used')),
         'terms_accepted': bool(profile.get('terms_accepted')),
+        'terms_timestamp': _serialize_dt(profile.get('terms_timestamp')),
+        'private_key_storage': profile.get('private_key_storage', 'not_configured'),
         'referral_valid_count': int(profile.get('referral_valid_count', 0) or 0),
         'last_open_at': _serialize_dt(profile.get('last_open_at')),
         'last_close_at': _serialize_dt(profile.get('last_close_at')),
@@ -113,6 +115,7 @@ def get_control_summary(user_id: int) -> dict:
         **profile,
         'wallet_masked': profile['wallet'],
         'private_key_masked': '******** configurada' if profile['private_key_configured'] else 'No configurada',
+        'security_posture': ('encrypted_at_rest' if profile.get('private_key_storage') == 'encrypted' else ('legacy_plaintext' if profile.get('private_key_storage') == 'legacy_plaintext' else 'not_configured')), 
         'activation_ready': bool(
             profile['wallet_configured']
             and profile['private_key_configured']
