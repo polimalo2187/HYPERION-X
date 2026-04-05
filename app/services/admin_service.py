@@ -4,6 +4,7 @@ from fastapi import HTTPException, status
 
 from app.database import (
     activate_premium_plan,
+    grant_manual_premium_days,
     admin_set_user_trading_status,
     ensure_access_on_activate,
     get_admin_trade_stats,
@@ -62,8 +63,23 @@ def admin_activate_premium(user_id: int) -> dict:
     detail = admin_get_user_detail(int(user_id))
     return {
         'result': 'premium_activated',
-        'message': 'Premium activado por 30 días',
+        'message': 'Premium activado manualmente',
         'user': detail,
+    }
+
+
+def admin_grant_manual_premium_days(user_id: int, days: int) -> dict:
+    if int(days) <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='La cantidad de días debe ser mayor que cero')
+    outcome = grant_manual_premium_days(int(user_id), int(days))
+    if not outcome.get('ok'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=outcome.get('message') or 'No se pudo aplicar la extensión manual')
+    detail = admin_get_user_detail(int(user_id))
+    return {
+        'result': 'manual_premium_days_granted',
+        'message': outcome.get('message') or f'Premium actualizado manualmente por {int(days)} días',
+        'user': detail,
+        'days': int(days),
     }
 
 
