@@ -348,39 +348,68 @@ def _days_remaining_from_exp(exp: datetime | None) -> int:
     return max(1, int((remaining.total_seconds() + 86399) // 86400))
 
 
-def get_manual_premium_days_preview(target_user_id: int, days: int) -> dict:
+MANUAL_PLAN_OPTIONS = {"trial", "premium"}
+
+
+def _normalize_manual_plan(plan: str | None) -> str:
+    normalized = str(plan or '').strip().lower()
+    return normalized if normalized in MANUAL_PLAN_OPTIONS else 'premium'
+
+
+def _manual_plan_label(plan: str | None) -> str:
+    normalized = _normalize_manual_plan(plan)
+    return 'PRUEBA' if normalized == 'trial' else 'PREMIUM'
+
+
+def get_manual_plan_days_preview(target_user_id: int, target_plan: str, days: int) -> dict:
     """
     Previsualiza el efecto de una extensión manual sin persistir cambios.
     """
     try:
         target_user_id = int(target_user_id)
         days = int(days)
+        target_plan = _normalize_manual_plan(target_plan)
         if days <= 0:
             return {"ok": False, "message": "La cantidad de días debe ser mayor que cero"}
 
-        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1})
+        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1, "trial_used": 1})
         if not u:
             return {"ok": False, "message": "Usuario no encontrado"}
 
         previous_plan = (u.get("plan") or "none")
         previous_exp = _parse_dt(u.get("plan_expires_at"))
         has_active_access = _plan_is_active(u)
+
+        if target_plan == 'trial' and has_active_access and previous_plan == 'premium':
+            return {
+                "ok": False,
+                "message": "No se puede aplicar PRUEBA mientras el usuario tenga PREMIUM activo",
+            }
+
         base_type = "current_expiry" if has_active_access and previous_exp else "today"
         exp_utc = _midnight_cuba_after_days_from_base(previous_exp, days)
 
         return {
             "ok": True,
             "days": days,
+            "target_plan": target_plan,
+            "target_plan_label": _manual_plan_label(target_plan),
             "previous_plan": previous_plan,
             "previous_expires_at": previous_exp,
             "previous_days_remaining": _days_remaining_from_exp(previous_exp) if has_active_access else 0,
+            "new_plan": target_plan,
+            "new_plan_label": _manual_plan_label(target_plan),
             "new_expires_at": exp_utc,
             "new_days_remaining": _days_remaining_from_exp(exp_utc),
             "base_type": base_type,
         }
     except Exception as e:
-        db_log(f"❌ Error previsualizando premium manual user={target_user_id}: {e}")
+        db_log(f"❌ Error previsualizando plan manual user={target_user_id} plan={target_plan}: {e}")
         return {"ok": False, "message": "Error interno al calcular la previsualización"}
+
+
+def get_manual_premium_days_preview(target_user_id: int, days: int) -> dict:
+    return get_manual_plan_days_preview(target_user_id, 'premium', days)
 
 
 def user_is_ready(user_id: int) -> bool:
@@ -465,49 +494,70 @@ def _midnight_cuba_after_days_from_base(base_dt: datetime | None, days: int) -> 
     return midnight_local.astimezone(pytz.UTC).replace(tzinfo=None)
 
 
-def grant_manual_premium_days(target_user_id: int, days: int) -> dict:
+def grant_manual_plan_days(target_user_id: int, target_plan: str, days: int) -> dict:
     """
-    Extensión manual de acceso premium por una cantidad exacta de días.
+    Extensión manual de acceso por una cantidad exacta de días.
 
     Reglas:
     - Si el usuario tiene acceso vigente, suma desde el vencimiento actual.
     - Si no tiene acceso vigente, parte desde hoy (hora Cuba).
+    - Si el plan destino es PREMIUM, el usuario queda actualizado inmediatamente a premium.
+    - Si el plan destino es PRUEBA, no se permite degradar un PREMIUM activo.
     - No marca referidos válidos: esto es una extensión/admin reward, no una compra.
     """
     try:
         target_user_id = int(target_user_id)
         days = int(days)
+        target_plan = _normalize_manual_plan(target_plan)
         if days <= 0:
             return {"ok": False, "message": "La cantidad de días debe ser mayor que cero"}
 
-        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1})
+        u = users_col.find_one({"user_id": target_user_id}, {"plan": 1, "plan_expires_at": 1, "trial_used": 1})
         if not u:
             return {"ok": False, "message": "Usuario no encontrado"}
 
         previous_plan = (u.get("plan") or "none")
         previous_exp = _parse_dt(u.get("plan_expires_at"))
+        has_active_access = _plan_is_active(u)
+
+        if target_plan == 'trial' and has_active_access and previous_plan == 'premium':
+            return {"ok": False, "message": "No se puede aplicar PRUEBA mientras el usuario tenga PREMIUM activo"}
+
         exp_utc = _midnight_cuba_after_days_from_base(previous_exp, days)
+        set_fields = {
+            "plan": target_plan,
+            "plan_expires_at": exp_utc,
+            "expiry_notified_on": None,
+        }
+        if target_plan == 'trial':
+            set_fields['trial_used'] = True
 
-        users_col.update_one(
-            {"user_id": target_user_id},
-            {"$set": {"plan": "premium", "plan_expires_at": exp_utc, "expiry_notified_on": None}}
-        )
+        users_col.update_one({"user_id": target_user_id}, {"$set": set_fields})
 
+        plan_label = _manual_plan_label(target_plan)
         db_log(
-            f"💎 Premium manual user={target_user_id} days={days} prev_plan={previous_plan} prev_exp={previous_exp.isoformat() if previous_exp else 'none'} new_exp={exp_utc.isoformat()}"
+            f"🎁 Plan manual user={target_user_id} plan={target_plan} days={days} prev_plan={previous_plan} prev_exp={previous_exp.isoformat() if previous_exp else 'none'} new_exp={exp_utc.isoformat()}"
         )
         return {
             "ok": True,
-            "message": f"Premium actualizado manualmente por {days} días",
+            "message": f"{plan_label} actualizado manualmente por {days} días",
+            "target_plan": target_plan,
+            "target_plan_label": plan_label,
             "previous_plan": previous_plan,
             "previous_expires_at": previous_exp,
+            "new_plan": target_plan,
+            "new_plan_label": plan_label,
             "new_expires_at": exp_utc,
             "new_days_remaining": _days_remaining_from_exp(exp_utc),
             "days": days,
         }
     except Exception as e:
-        db_log(f"❌ Error aplicando premium manual user={target_user_id}: {e}")
+        db_log(f"❌ Error aplicando plan manual user={target_user_id} plan={target_plan}: {e}")
         return {"ok": False, "message": "Error interno al aplicar la extensión manual"}
+
+
+def grant_manual_premium_days(target_user_id: int, days: int) -> dict:
+    return grant_manual_plan_days(target_user_id, 'premium', days)
 
 
 def activate_premium_plan(target_user_id: int) -> bool:
