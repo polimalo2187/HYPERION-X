@@ -124,7 +124,7 @@
 
       <nav class="tabbar glass-card" aria-label="Secciones principales">
         <button class="tab is-active" data-tab="overview" type="button">Resumen</button>
-        <button class="tab" data-tab="system" type="button">Sistema</button>
+        <button class="tab hidden" data-tab="system" id="systemTabButton" type="button">Sistema</button>
         <button class="tab" data-tab="control" type="button">Control</button>
         <button class="tab" data-tab="operations" type="button">Operaciones</button>
         <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">Admin</button>
@@ -137,7 +137,7 @@
               <div class="panel-head">
                 <div>
                   <span class="section-tag">SISTEMA EN VIVO</span>
-                  <h3>Salud operativa del clon</h3>
+                  <h3>Estado del sistema</h3>
                 </div>
               </div>
               <div id="systemHealthGrid" class="stats-grid"></div>
@@ -146,8 +146,8 @@
             <article class="glass-card panel-card">
               <div class="panel-head">
                 <div>
-                  <span class="section-tag">OPERACIÓN</span>
-                  <h3>Resumen runtime</h3>
+                  <span class="section-tag">PLATAFORMA</span>
+                  <h3>Visión general</h3>
                 </div>
               </div>
               <div id="systemRuntimeGrid" class="stats-grid compact"></div>
@@ -201,8 +201,8 @@
             <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
-                  <span class="section-tag">HEALTH CENTER</span>
-                  <h3>Componentes críticos</h3>
+                  <span class="section-tag">OPERACIÓN TÉCNICA</span>
+                  <h3>Servicios internos</h3>
                 </div>
               </div>
               <div id="systemHealthGridPanel" class="stats-grid"></div>
@@ -212,7 +212,7 @@
               <div class="panel-head">
                 <div>
                   <span class="section-tag">BACKEND</span>
-                  <h3>Respuesta actual</h3>
+                  <h3>Respuesta del servicio</h3>
                 </div>
               </div>
               <div id="backendHealthCard" class="stats-grid compact"></div>
@@ -222,7 +222,7 @@
               <div class="panel-head">
                 <div>
                   <span class="section-tag">RUNTIME</span>
-                  <h3>Señales operativas</h3>
+                  <h3>Lectura técnica</h3>
                 </div>
               </div>
               <div id="systemRuntimeGridPanel" class="stats-grid"></div>
@@ -232,7 +232,7 @@
               <div class="panel-head">
                 <div>
                   <span class="section-tag">ACTIVIDAD</span>
-                  <h3>Últimos eventos</h3>
+                  <h3>Eventos recientes</h3>
                 </div>
               </div>
               <div id="systemActivityList" class="list-stack empty-state">Sin actividad cargada todavía.</div>
