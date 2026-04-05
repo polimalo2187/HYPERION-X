@@ -4,8 +4,8 @@ from fastapi import HTTPException, status
 
 from app.database import (
     activate_premium_plan,
-    grant_manual_premium_days,
-    get_manual_premium_days_preview,
+    grant_manual_plan_days,
+    get_manual_plan_days_preview,
     admin_set_user_trading_status,
     ensure_access_on_activate,
     get_admin_trade_stats,
@@ -69,34 +69,43 @@ def admin_activate_premium(user_id: int) -> dict:
     }
 
 
-def admin_preview_manual_premium_days(user_id: int, days: int) -> dict:
+def admin_preview_manual_plan_days(user_id: int, plan: str, days: int) -> dict:
     if int(days) <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='La cantidad de días debe ser mayor que cero')
-    outcome = get_manual_premium_days_preview(int(user_id), int(days))
+    outcome = get_manual_plan_days_preview(int(user_id), str(plan or 'premium'), int(days))
     if not outcome.get('ok'):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=outcome.get('message') or 'No se pudo calcular la previsualización')
     detail = admin_get_user_detail(int(user_id))
     return {
-        'result': 'manual_premium_days_preview',
+        'result': 'manual_plan_days_preview',
         'message': 'Previsualización calculada',
         'user': detail,
         'preview': outcome,
     }
 
 
-def admin_grant_manual_premium_days(user_id: int, days: int) -> dict:
+def admin_grant_manual_plan_days(user_id: int, plan: str, days: int) -> dict:
     if int(days) <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='La cantidad de días debe ser mayor que cero')
-    outcome = grant_manual_premium_days(int(user_id), int(days))
+    outcome = grant_manual_plan_days(int(user_id), str(plan or 'premium'), int(days))
     if not outcome.get('ok'):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=outcome.get('message') or 'No se pudo aplicar la extensión manual')
     detail = admin_get_user_detail(int(user_id))
     return {
-        'result': 'manual_premium_days_granted',
-        'message': outcome.get('message') or f'Premium actualizado manualmente por {int(days)} días',
+        'result': 'manual_plan_days_granted',
+        'message': outcome.get('message') or f'Plan actualizado manualmente por {int(days)} días',
         'user': detail,
+        'plan': outcome.get('target_plan') or str(plan or 'premium'),
         'days': int(days),
     }
+
+
+def admin_preview_manual_premium_days(user_id: int, days: int) -> dict:
+    return admin_preview_manual_plan_days(user_id, 'premium', days)
+
+
+def admin_grant_manual_premium_days(user_id: int, days: int) -> dict:
+    return admin_grant_manual_plan_days(user_id, 'premium', days)
 
 
 def admin_pause_user_trading(user_id: int) -> dict:
