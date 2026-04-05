@@ -7,6 +7,7 @@ const state = {
   performance: null,
   operations: null,
   referrals: null,
+  systemRuntime: null,
   admin: null,
   adminSelectedUser: null,
 };
@@ -42,6 +43,13 @@ const elements = {
   readinessList: $('readinessList'),
   performanceGrid: $('performanceGrid'),
   referralStats: $('referralStats'),
+  systemHealthGrid: $('systemHealthGrid'),
+  systemRuntimeGrid: $('systemRuntimeGrid'),
+  systemRuntimeNotes: $('systemRuntimeNotes'),
+  systemHealthGridPanel: $('systemHealthGridPanel'),
+  backendHealthCard: $('backendHealthCard'),
+  systemRuntimeGridPanel: $('systemRuntimeGridPanel'),
+  systemActivityList: $('systemActivityList'),
   controlReadinessBox: $('controlReadinessBox'),
   controlStats: $('controlStats'),
   termsStatusText: $('termsStatusText'),
@@ -120,6 +128,62 @@ function planLabel(plan) {
   return normalized.toUpperCase();
 }
 
+
+
+function formatFreshness(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '—';
+  if (value < 60) return `${value}s`;
+  if (value < 3600) return `${Math.floor(value / 60)}m`;
+  return `${Math.floor(value / 3600)}h`;
+}
+
+function runtimeStatusLabel(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'healthy') return 'Sano';
+  if (normalized === 'warning' || normalized === 'stale') return 'Atención';
+  if (normalized === 'degraded') return 'Degradado';
+  if (normalized === 'online') return 'Online';
+  if (normalized === 'offline') return 'Offline';
+  if (normalized === 'error') return 'Error';
+  return normalized.toUpperCase() || '—';
+}
+
+function buildSystemComponentCard(label, component = {}) {
+  const status = component.status || 'offline';
+  const freshness = component.freshness_seconds;
+  const article = document.createElement('article');
+  article.className = `kpi-card runtime-card ${pillClass(status)}`;
+  article.innerHTML = `
+    <div class="runtime-card-head">
+      <span class="kpi-label">${label}</span>
+      <span class="status-pill ${pillClass(status)}">${runtimeStatusLabel(status)}</span>
+    </div>
+    <div class="kpi-value">${component.last_seen_at ? formatDate(component.last_seen_at) : 'Sin heartbeat'}</div>
+    <div class="kpi-subtext">${component.message || 'Sin mensaje'} · Frescura ${formatFreshness(freshness)}</div>
+  `;
+  return article;
+}
+
+function buildActivityItem(title, item, emptyCopy) {
+  const article = document.createElement('article');
+  article.className = 'list-item';
+  if (!item) {
+    article.innerHTML = `<div class="list-item-title">${title}</div><div class="list-item-meta">${emptyCopy}</div>`;
+    return article;
+  }
+  article.innerHTML = `
+    <div class="list-item-header">
+      <div>
+        <div class="list-item-title">${title}</div>
+        <div class="list-item-meta">${item.username ? '@' + item.username : 'ID ' + (item.user_id ?? '—')} · ${formatDate(item.at)}</div>
+      </div>
+      <span class="status-pill neutral">${item.symbol || '—'}</span>
+    </div>
+    <div class="list-item-meta">${item.event || 'Sin payload resumido.'}</div>
+  `;
+  return article;
+}
 
 
 function adminActionLabel(action) {
@@ -428,6 +492,72 @@ function renderReferrals(data) {
   );
 }
 
+function renderSystemRuntime(payload) {
+  state.systemRuntime = payload;
+  const components = payload.components || {};
+  const runtime = payload.runtime || {};
+
+  const cards = [
+    buildSystemComponentCard('Backend web', { status: payload.backend?.status || 'online', last_seen_at: payload.backend?.checked_at, message: payload.backend?.message, freshness_seconds: 0 }),
+    buildSystemComponentCard('Bot Telegram', components.telegram_bot || {}),
+    buildSystemComponentCard('Trading loop', components.trading_loop || {}),
+    buildSystemComponentCard('Scanner', components.scanner || {}),
+  ];
+
+  [elements.systemHealthGrid, elements.systemHealthGridPanel].forEach((container) => {
+    if (!container) return;
+    container.innerHTML = '';
+    cards.forEach((card) => container.appendChild(card.cloneNode(true)));
+  });
+
+  const runtimeCards = [
+    buildKpiCard('Estado global', runtimeStatusLabel(payload.overall_status), payload.issues?.length ? `${payload.issues.length} issue(s) detectadas.` : 'Sin alertas críticas ahora mismo.'),
+    buildKpiCard('Usuarios con plan', runtime.users_with_active_plan || 0, 'Acceso vigente en esta DB.'),
+    buildKpiCard('Trading activo', runtime.users_trading_active || 0, 'Usuarios con status active.'),
+    buildKpiCard('Trades activos', runtime.active_trades || 0, 'Documentos activos en runtime.'),
+    buildKpiCard('Scanner último evento', runtime.scanner_last_event || '—', runtime.scanner_last_symbol ? `Símbolo ${runtime.scanner_last_symbol}` : 'Sin símbolo reciente.'),
+    buildKpiCard('Manager heartbeat', runtime.latest_trade_manager?.manager_heartbeat_at ? formatDate(runtime.latest_trade_manager.manager_heartbeat_at) : 'Sin manager', runtime.latest_trade_manager?.symbol ? `${runtime.latest_trade_manager.symbol} · user ${runtime.latest_trade_manager.user_id}` : 'Sin trade activo reciente.'),
+  ];
+
+  [elements.systemRuntimeGrid, elements.systemRuntimeGridPanel].forEach((container) => {
+    if (!container) return;
+    container.innerHTML = '';
+    runtimeCards.forEach((card) => container.appendChild(card.cloneNode(true)));
+  });
+
+  if (elements.backendHealthCard) {
+    elements.backendHealthCard.innerHTML = '';
+    elements.backendHealthCard.append(
+      buildKpiCard('Backend', 'ONLINE', payload.backend?.message || 'El backend respondió.'),
+      buildKpiCard('Chequeado', payload.backend?.checked_at ? formatDate(payload.backend.checked_at) : '—', 'Timestamp de esta respuesta.')
+    );
+  }
+
+  const issues = Array.isArray(payload.issues) ? payload.issues : [];
+  if (elements.systemRuntimeNotes) {
+    elements.systemRuntimeNotes.innerHTML = '';
+    if (!issues.length) {
+      elements.systemRuntimeNotes.className = 'readiness-list compact-list';
+      elements.systemRuntimeNotes.appendChild(buildReadinessItem('Sistema estable', 'No se detectan componentes degradados en este chequeo.', 'active'));
+    } else {
+      elements.systemRuntimeNotes.className = 'readiness-list compact-list';
+      issues.forEach((issue) => {
+        elements.systemRuntimeNotes.appendChild(buildReadinessItem(issue.component || 'issue', issue.message || 'Revisar componente', issue.status || 'warning'));
+      });
+    }
+  }
+
+  if (elements.systemActivityList) {
+    elements.systemActivityList.className = 'list-stack';
+    elements.systemActivityList.innerHTML = '';
+    elements.systemActivityList.append(
+      buildActivityItem('Última apertura', runtime.latest_open, 'No hay aperturas registradas todavía.'),
+      buildActivityItem('Último cierre', runtime.latest_close, 'No hay cierres registrados todavía.'),
+    );
+  }
+}
+
+
 function renderAdmin(data) {
   state.admin = data;
   const visual = data.visual || {};
@@ -668,7 +798,13 @@ function setPreviewMode() {
   elements.walletConfigured.textContent = 'No disponible';
   elements.privateKeyConfigured.textContent = 'No disponible';
   elements.refreshButton.disabled = true;
+  if (elements.systemRuntimeNotes) {
+    elements.systemRuntimeNotes.className = 'readiness-list compact-list';
+    elements.systemRuntimeNotes.innerHTML = '';
+    elements.systemRuntimeNotes.appendChild(buildReadinessItem('Sin runtime', 'El health center solo se resuelve con sesión real desde Telegram.', 'blocked'));
+  }
 }
+
 
 async function authenticate() {
   const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
@@ -698,12 +834,13 @@ async function authenticate() {
 
 async function loadData() {
   setStatus('Sincronizando datos con el backend...', 'info');
-  const [dashboard, control, performance, operations, referrals] = await Promise.all([
+  const [dashboard, control, performance, operations, referrals, systemRuntime] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
     apiFetch('/api/v1/control'),
     apiFetch('/api/v1/performance'),
     apiFetch('/api/v1/operations?limit=20'),
     apiFetch('/api/v1/referrals'),
+    apiFetch('/api/v1/system/runtime'),
   ]);
 
   renderDashboard(dashboard);
@@ -711,6 +848,7 @@ async function loadData() {
   renderPerformance(performance);
   renderOperations(operations);
   renderReferrals(referrals);
+  renderSystemRuntime(systemRuntime);
 
   try {
     const admin = await apiFetch('/api/v1/admin/overview');
@@ -810,14 +948,16 @@ async function pauseTradingAction() {
 }
 
 async function refreshSummaryOnly() {
-  const [dashboard, control, performance] = await Promise.all([
+  const [dashboard, control, performance, systemRuntime] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
     apiFetch('/api/v1/control'),
     apiFetch('/api/v1/performance'),
+    apiFetch('/api/v1/system/runtime'),
   ]);
   renderDashboard(dashboard);
   renderControl(control);
   renderPerformance(performance);
+  renderSystemRuntime(systemRuntime);
 }
 async function loadAdminUserDetail(userId) {
   const detail = await apiFetch(`/api/v1/admin/users/${userId}`);
