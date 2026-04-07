@@ -755,4 +755,5 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 
 .event-summary { display: grid; gap: 10px; }
 .event-summary .list-item { margin: 0; }
+.subtle { opacity: 0.85; }
 .executive-note { font-size: 13px; color: var(--muted); margin-top: 8px; }
