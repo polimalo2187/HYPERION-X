@@ -14,6 +14,7 @@ from app.database import (
     get_last_operation,
     get_referral_valid_count,
     get_system_runtime_snapshot,
+    get_user_activity,
     get_user_public_snapshot,
     get_user_trade_stats,
     get_user_trades_limited,
@@ -298,20 +299,93 @@ def pause_user_trading(user_id: int) -> dict:
     }
 
 
+
+
+def _normalize_trade_row(trade: dict) -> dict:
+    normalized = dict(trade or {})
+    ts = normalized.get('timestamp')
+    normalized['timestamp'] = _serialize_dt(ts)
+    profit_value = _safe_float(normalized.get('profit'), 0.0)
+    meta = _trade_result_meta(profit_value)
+    normalized['profit'] = profit_value
+    normalized['result_label'] = meta['label']
+    normalized['result_tone'] = {'success': 'success', 'danger': 'danger', 'neutral': 'neutral'}.get(meta['tone'], 'neutral')
+    return normalized
+
+
+def _build_operation_summary(trades: list[dict]) -> dict:
+    if not trades:
+        return {
+            'wins': 0,
+            'losses': 0,
+            'net_visible': 0.0,
+            'best_trade_pnl': 0.0,
+            'worst_trade_pnl': 0.0,
+        }
+
+    profits = [_safe_float(item.get('profit'), 0.0) for item in trades]
+    wins = sum(1 for value in profits if value > 0)
+    losses = sum(1 for value in profits if value < 0)
+    net_visible = round(sum(profits), 4)
+    return {
+        'wins': wins,
+        'losses': losses,
+        'net_visible': net_visible,
+        'best_trade_pnl': round(max(profits), 4),
+        'worst_trade_pnl': round(min(profits), 4),
+    }
+
+
+def _build_last_operation_summary(payload: Any, fallback_title: str, empty_detail: str) -> dict | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+    title = payload.get('symbol') or payload.get('coin') or fallback_title
+    side = str(payload.get('side') or payload.get('direction') or '').upper()
+    detail_parts = []
+    if payload.get('entry_price') is not None:
+        detail_parts.append(f"Entrada {payload.get('entry_price')}")
+    if payload.get('exit_price') is not None:
+        detail_parts.append(f"Salida {payload.get('exit_price')}")
+    if payload.get('qty') is not None:
+        detail_parts.append(f"Qty {payload.get('qty')}")
+    if payload.get('profit') is not None:
+        detail_parts.append(f"PnL {round(_safe_float(payload.get('profit'), 0.0), 4)}")
+    if payload.get('message'):
+        detail_parts.append(str(payload.get('message')))
+    return {
+        'title': f"{title} · {side}" if side else str(title),
+        'detail': ' · '.join(detail_parts) if detail_parts else empty_detail,
+    }
+
+
+def _serialize_activity_rows(rows: list[dict]) -> list[dict]:
+    serialized = []
+    for row in rows or []:
+        item = dict(row or {})
+        item['at'] = _serialize_dt(item.get('created_at'))
+        serialized.append({
+            'title': item.get('title') or 'Actividad',
+            'detail': item.get('detail') or 'Sin detalle adicional.',
+            'tone': item.get('tone') or 'info',
+            'event_type': item.get('event_type') or 'info',
+            'at': item.get('at'),
+        })
+    return serialized
+
+
 def get_recent_operations(user_id: int, limit: int = 20) -> dict:
     last_operation = get_last_operation(int(user_id)) or {}
     trades = get_user_trades_limited(int(user_id), limit=limit)
-
-    normalized_trades = []
-    for trade in trades:
-        normalized = dict(trade)
-        ts = normalized.get('timestamp')
-        normalized['timestamp'] = _serialize_dt(ts)
-        normalized_trades.append(normalized)
+    normalized_trades = [_normalize_trade_row(trade) for trade in trades]
+    activity = _serialize_activity_rows(get_user_activity(int(user_id), limit=min(limit, 12)))
 
     return {
         'last_open': last_operation.get('last_open'),
         'last_close': last_operation.get('last_close'),
+        'last_open_summary': _build_last_operation_summary(last_operation.get('last_open'), 'Última apertura', 'Sin aperturas registradas todavía.'),
+        'last_close_summary': _build_last_operation_summary(last_operation.get('last_close'), 'Último cierre', 'Sin cierres registrados todavía.'),
+        'activity': activity,
+        'summary': _build_operation_summary(normalized_trades),
         'trades': normalized_trades,
         'count': len(normalized_trades),
     }
