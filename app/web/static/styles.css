@@ -751,3 +751,8 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .compact-list .readiness-item {
   padding: 12px 14px;
 }
+
+
+.event-summary { display: grid; gap: 10px; }
+.event-summary .list-item { margin: 0; }
+.executive-note { font-size: 13px; color: var(--muted); margin-top: 8px; }
