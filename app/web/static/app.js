@@ -1076,6 +1076,9 @@ async function authenticate() {
   });
 
   state.token = payload.access_token;
+  state.isAdmin = Boolean(payload.is_admin);
+  if (elements.adminTabButton) elements.adminTabButton.classList.toggle('hidden', !state.isAdmin);
+  if (elements.systemTabButton) elements.systemTabButton.classList.toggle('hidden', !state.isAdmin);
 }
 
 async function loadData() {
@@ -1096,17 +1099,24 @@ async function loadData() {
   renderReferrals(referrals);
   renderSystemRuntime(systemRuntime);
 
-  try {
-    const admin = await apiFetch('/api/v1/admin/overview');
-    renderAdmin(admin);
-    if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
-    if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
-    state.isAdmin = true;
-    setSummarySystemVisibility();
-  } catch {
+  if (state.isAdmin) {
+    try {
+      const admin = await apiFetch('/api/v1/admin/overview');
+      renderAdmin(admin);
+      if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
+      if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
+      setSummarySystemVisibility();
+    } catch {
+      if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
+      if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
+      state.isAdmin = false;
+      setSummarySystemVisibility(false);
+      document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
+      document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
+    }
+  } else {
     if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
     if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
-    state.isAdmin = false;
     setSummarySystemVisibility(false);
     document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
     document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
