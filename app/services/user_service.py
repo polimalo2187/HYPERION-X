@@ -33,6 +33,96 @@ def _serialize_dt(value: Any) -> str | None:
         return value.isoformat()
     return None
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _plan_status_label(profile: dict) -> str:
+    if bool(profile.get('plan_active')):
+        return 'active'
+    if str(profile.get('plan') or '').lower() in {'trial', 'premium'}:
+        return 'expired'
+    return 'none'
+
+
+def _access_copy(profile: dict) -> dict:
+    days_remaining = _safe_int(profile.get('plan_days_remaining'), 0)
+    expires_at = profile.get('plan_expires_at')
+    if bool(profile.get('plan_active')):
+        if days_remaining > 0:
+            detail = f'{days_remaining} día(s) restantes'
+        elif expires_at:
+            detail = 'Acceso vigente con vencimiento cercano'
+        else:
+            detail = 'Acceso operativo vigente'
+        return {'label': 'Activo', 'detail': detail, 'tone': 'active'}
+
+    if str(profile.get('plan') or '').lower() in {'trial', 'premium'}:
+        return {'label': 'Vencido', 'detail': 'El acceso existe, pero ya no está vigente', 'tone': 'blocked'}
+
+    return {'label': 'Sin acceso', 'detail': 'Todavía no hay un plan activo', 'tone': 'blocked'}
+
+
+def _readiness_score(profile: dict) -> tuple[int, int]:
+    checks = [
+        bool(profile.get('wallet_configured')),
+        bool(profile.get('private_key_configured')),
+        bool(profile.get('terms_accepted')),
+        bool(profile.get('plan_active')),
+        str(profile.get('trading_status') or '').lower() == 'active',
+    ]
+    total = len(checks)
+    completed = sum(1 for item in checks if item)
+    return completed, total
+
+
+def _trade_result_meta(profit: Any) -> dict:
+    value = _safe_float(profit, 0.0)
+    if value > 0:
+        return {'label': 'Win', 'tone': 'success'}
+    if value < 0:
+        return {'label': 'Loss', 'tone': 'danger'}
+    return {'label': 'Flat', 'tone': 'neutral'}
+
+
+def _build_operation_snapshot(payload: Any, fallback_title: str) -> dict:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    symbol = data.get('symbol') or data.get('coin') or data.get('asset') or '—'
+    side = data.get('side') or data.get('direction') or data.get('signal') or '—'
+    price = data.get('entry_price') or data.get('exit_price') or data.get('price') or data.get('mark_price')
+    quantity = data.get('qty') or data.get('size') or data.get('amount')
+    reason = data.get('reason') or data.get('status') or data.get('result') or data.get('close_reason')
+    summary_parts = []
+    if price is not None:
+        summary_parts.append(f'Precio {price}')
+    if quantity is not None:
+        summary_parts.append(f'Qty {quantity}')
+    if reason:
+        summary_parts.append(str(reason))
+    return {
+        'title': f"{symbol} · {str(side).upper() if side != '—' else fallback_title}",
+        'detail': ' · '.join(summary_parts) if summary_parts else 'Sin detalle adicional disponible.',
+    }
+
+
+def _friendly_blockers(blockers: list[str] | None) -> list[str]:
+    labels = {
+        'wallet_missing': 'Falta configurar la wallet.',
+        'private_key_missing': 'Falta configurar la private key.',
+        'terms_missing': 'Debes aceptar los términos operativos.',
+    }
+    return [labels.get(str(item), str(item)) for item in (blockers or [])]
+
 
 def _clean_wallet(wallet: str) -> str:
     value = (wallet or '').strip()
@@ -80,7 +170,9 @@ def get_user_profile(user_id: int) -> dict:
         'trading_status': profile.get('trading_status', 'inactive'),
         'plan': profile.get('plan', 'none'),
         'plan_active': bool(profile.get('plan_active')),
+        'plan_days_remaining': _safe_int(profile.get('plan_days_remaining'), 0),
         'plan_expires_at': _serialize_dt(profile.get('plan_expires_at')),
+        'access_state': _plan_status_label(profile),
         'trial_used': bool(profile.get('trial_used')),
         'terms_accepted': bool(profile.get('terms_accepted')),
         'terms_timestamp': _serialize_dt(profile.get('terms_timestamp')),
@@ -100,9 +192,16 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
         and profile['plan_active']
         and profile['terms_accepted']
     )
+    completed, total = _readiness_score(profile)
+    access = _access_copy(profile)
     payload = {
         **profile,
         'status_summary': 'ready' if ready else 'not_ready',
+        'readiness_completed': completed,
+        'readiness_total': total,
+        'access_label': access['label'],
+        'access_detail': access['detail'],
+        'access_tone': access['tone'],
     }
     if include_balance:
         payload['exchange_balance'] = float(get_balance(int(user_id)) or 0.0)
@@ -112,11 +211,12 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
 def get_control_summary(user_id: int) -> dict:
     profile = get_user_profile(int(user_id))
     terms_accepted = bool(profile['terms_accepted'])
+    completed, total = _readiness_score(profile)
     return {
         **profile,
         'wallet_masked': profile['wallet'],
         'private_key_masked': '******** configurada' if profile['private_key_configured'] else 'No configurada',
-        'security_posture': ('encrypted_at_rest' if profile.get('private_key_storage') == 'encrypted' else ('legacy_plaintext' if profile.get('private_key_storage') == 'legacy_plaintext' else 'not_configured')), 
+        'security_posture': ('encrypted_at_rest' if profile.get('private_key_storage') == 'encrypted' else ('legacy_plaintext' if profile.get('private_key_storage') == 'legacy_plaintext' else 'not_configured')),
         'activation_ready': bool(
             profile['wallet_configured']
             and profile['private_key_configured']
@@ -131,7 +231,18 @@ def get_control_summary(user_id: int) -> dict:
             )
             if is_missing
         ],
+        'activation_blockers_copy': _friendly_blockers([
+            blocker
+            for blocker, is_missing in (
+                ('wallet_missing', not profile['wallet_configured']),
+                ('private_key_missing', not profile['private_key_configured']),
+                ('terms_missing', not terms_accepted),
+            )
+            if is_missing
+        ]),
         'support_contact': ADMIN_WHATSAPP_LINK or None,
+        'readiness_completed': completed,
+        'readiness_total': total,
     }
 
 
@@ -207,12 +318,48 @@ def get_recent_operations(user_id: int, limit: int = 20) -> dict:
 
 
 def get_performance_summary(user_id: int) -> dict:
-    return {
-        '24h': _normalize_trade_stats(get_user_trade_stats(int(user_id), 24) or {}),
-        '7d': _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 7) or {}),
-        '30d': _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 30) or {}),
-    }
+    stats_24h = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24) or {})
+    stats_7d = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 7) or {})
+    stats_30d = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 30) or {})
 
+    windows = {'24h': stats_24h, '7d': stats_7d, '30d': stats_30d}
+    candidates = [(label, payload) for label, payload in windows.items() if int(payload.get('total', 0) or 0) > 0]
+    best_window = max(candidates, key=lambda item: _safe_float(item[1].get('pnl_total'), 0.0), default=None)
+
+    edge_tone = 'warning'
+    edge_label = 'Sin suficiente muestra'
+    edge_detail = 'Todavía no hay suficientes cierres para leer una ventaja estable.'
+    if stats_7d.get('total', 0) >= 3:
+        pf = _safe_float(stats_7d.get('profit_factor'), 0.0)
+        wr = _safe_float(stats_7d.get('win_rate'), 0.0)
+        if pf >= 1.3 and wr >= 55:
+            edge_tone = 'success'
+            edge_label = 'Ventaja favorable'
+            edge_detail = 'La ventana de 7d mantiene profit factor y win rate aceptables.'
+        elif pf >= 1.0 and wr >= 45:
+            edge_tone = 'warning'
+            edge_label = 'Ventaja mixta'
+            edge_detail = 'Hay señal operativa, pero todavía no es una lectura contundente.'
+        else:
+            edge_tone = 'danger'
+            edge_label = 'Requiere ajuste'
+            edge_detail = 'La ventana de 7d todavía no sostiene una ventaja operativa clara.'
+
+    return {
+        '24h': stats_24h,
+        '7d': stats_7d,
+        '30d': stats_30d,
+        'executive': {
+            'best_window': best_window[0] if best_window else None,
+            'best_window_pnl': _safe_float(best_window[1].get('pnl_total'), 0.0) if best_window else 0.0,
+            'edge_label': edge_label,
+            'edge_tone': edge_tone,
+            'edge_detail': edge_detail,
+            'trades_30d': _safe_int(stats_30d.get('total'), 0),
+            'decisive_30d': _safe_int(stats_30d.get('decisive_trades'), 0),
+            'cadence_30d': round(_safe_int(stats_30d.get('total'), 0) / 30.0, 2),
+        },
+    }
 
 def _normalize_trade_stats(payload: dict) -> dict:
     return {
