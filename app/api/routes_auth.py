@@ -29,5 +29,6 @@ def auth_with_telegram(payload: TelegramAuthRequest) -> dict:
         'access_token': token,
         'token_type': 'bearer',
         'expires_in': int(WEBAPP_SESSION_TTL_SECONDS),
+        'is_admin': bool(verified.get('is_admin')),
         'user': get_user_profile(int(verified['user_id'])),
     }
