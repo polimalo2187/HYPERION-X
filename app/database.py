@@ -33,6 +33,7 @@ trades_col = db["trades"]
 settings_col = db["settings"]
 admin_action_logs_col = db["admin_action_logs"]
 runtime_status_col = db["runtime_status"]
+user_activity_col = db["user_activity"]
 
 # ============================================================
 # ZONA HORARIA (CUBA) – vencimientos por medianoche
@@ -346,6 +347,71 @@ def get_admin_action_history(limit: int = 20, target_user_id: int | None = None)
         })
     return results
 
+
+
+def log_user_activity(
+    user_id: int,
+    title: str,
+    detail: str | None = None,
+    *,
+    tone: str = 'info',
+    event_type: str = 'info',
+    metadata: dict | None = None,
+    occurred_at: datetime | None = None,
+) -> bool:
+    try:
+        uid = int(user_id)
+        title_value = str(title or '').strip()[:120]
+        if not title_value:
+            return False
+        detail_value = str(detail or '').strip()[:500] or None
+        event_value = str(event_type or 'info').strip().lower()[:40] or 'info'
+        tone_value = str(tone or 'info').strip().lower()[:20] or 'info'
+        now = occurred_at if isinstance(occurred_at, datetime) else _now_utc()
+        user_doc = users_col.find_one({'user_id': uid}, {'_id': 0, 'username': 1}) or {}
+        user_activity_col.insert_one({
+            'user_id': uid,
+            'username': user_doc.get('username'),
+            'title': title_value,
+            'detail': detail_value,
+            'tone': tone_value,
+            'event_type': event_value,
+            'metadata': metadata or {},
+            'created_at': now,
+        })
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ log_user_activity error user_id={user_id}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def get_user_activity(user_id: int, limit: int = 12):
+    try:
+        uid = int(user_id)
+        lim = max(1, min(int(limit), 50))
+    except Exception:
+        return []
+
+    try:
+        return list(
+            user_activity_col.find(
+                {'user_id': uid},
+                {'_id': 0},
+            )
+            .sort('created_at', -1)
+            .limit(lim)
+        )
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_user_activity error user_id={user_id}: {e}")
+        except Exception:
+            pass
+        return []
+
+
 def _safe_float(x, default: float = 0.0) -> float:
     try:
         if x is None:
@@ -400,6 +466,7 @@ def get_all_users():
 
 def save_user_wallet(user_id: int, wallet: str):
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"wallet": wallet}})
+    log_user_activity(int(user_id), 'Wallet actualizada', 'La wallet operativa fue actualizada desde la plataforma.', tone='info', event_type='wallet_updated', metadata={'wallet_masked': str(wallet)[:8] + '...' + str(wallet)[-6:] if wallet else None})
 
 def save_user_private_key(user_id: int, pk: str):
     encrypted_pk, version = encrypt_private_key(pk)
@@ -414,6 +481,7 @@ def save_user_private_key(user_id: int, pk: str):
             }
         },
     )
+    log_user_activity(int(user_id), 'Clave operativa actualizada', 'La private key quedó registrada de forma segura.', tone='info', event_type='private_key_updated')
 
 def get_raw_user_private_key_record(user_id: int) -> dict | None:
     return users_col.find_one(
@@ -493,7 +561,12 @@ def save_user_capital(user_id: int, capital: float):
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"capital": capital}})
 
 def set_trading_status(user_id: int, status: str):
-    users_col.update_one({"user_id": int(user_id)}, {"$set": {"trading_status": status}})
+    normalized = str(status or '').strip().lower() or 'inactive'
+    users_col.update_one({"user_id": int(user_id)}, {"$set": {"trading_status": normalized}})
+    if normalized == 'active':
+        log_user_activity(int(user_id), 'Trading activado', 'El motor quedó habilitado para operar con tu configuración actual.', tone='success', event_type='trading_activated')
+    else:
+        log_user_activity(int(user_id), 'Trading pausado', 'El motor quedó pausado para esta cuenta.', tone='warning', event_type='trading_paused')
 
 
 # ============================================================
@@ -960,20 +1033,52 @@ def save_last_open(user_id: int, open_data: dict):
     Guarda la información de la última operación ABIERTA.
     Se sobreescribe siempre (solo informativo).
     """
+    now = datetime.utcnow()
+    payload = dict(open_data or {})
     users_col.update_one(
         {"user_id": int(user_id)},
-        {"$set": {"last_open": open_data, "last_open_at": datetime.utcnow()}}
+        {"$set": {"last_open": payload, "last_open_at": now}}
     )
+    symbol = payload.get('symbol') or payload.get('coin') or 'Operación'
+    side = str(payload.get('side') or payload.get('direction') or '').upper()
+    detail_parts = []
+    if payload.get('entry_price') is not None:
+        detail_parts.append(f"Entrada {payload.get('entry_price')}")
+    if payload.get('qty') is not None:
+        detail_parts.append(f"Qty {payload.get('qty')}")
+    if payload.get('message'):
+        detail_parts.append(str(payload.get('message')))
+    detail = ' · '.join(detail_parts) if detail_parts else 'Se registró una nueva apertura en el bot.'
+    title = f"Apertura {symbol}" if not side else f"Apertura {symbol} · {side}"
+    log_user_activity(int(user_id), title, detail, tone='info', event_type='trade_opened', metadata={'symbol': symbol, 'side': side or None}, occurred_at=now)
 
 def save_last_close(user_id: int, close_data: dict):
     """
     Guarda la información de la última operación CERRADA.
     Se sobreescribe siempre (solo informativo).
     """
+    now = datetime.utcnow()
+    payload = dict(close_data or {})
     users_col.update_one(
         {"user_id": int(user_id)},
-        {"$set": {"last_close": close_data, "last_close_at": datetime.utcnow()}}
+        {"$set": {"last_close": payload, "last_close_at": now}}
     )
+    symbol = payload.get('symbol') or payload.get('coin') or 'Operación'
+    side = str(payload.get('side') or payload.get('direction') or '').upper()
+    pnl = _safe_float(payload.get('profit'), 0.0) if payload.get('profit') is not None else None
+    tone = 'success' if pnl is not None and pnl > 0 else ('danger' if pnl is not None and pnl < 0 else 'info')
+    detail_parts = []
+    if payload.get('entry_price') is not None:
+        detail_parts.append(f"Entrada {payload.get('entry_price')}")
+    if payload.get('exit_price') is not None:
+        detail_parts.append(f"Salida {payload.get('exit_price')}")
+    if pnl is not None:
+        detail_parts.append(f"PnL {round(pnl, 4)}")
+    if payload.get('message'):
+        detail_parts.append(str(payload.get('message')))
+    detail = ' · '.join(detail_parts) if detail_parts else 'Se registró un cierre en el bot.'
+    title = f"Cierre {symbol}" if not side else f"Cierre {symbol} · {side}"
+    log_user_activity(int(user_id), title, detail, tone=tone, event_type='trade_closed', metadata={'symbol': symbol, 'side': side or None, 'profit': pnl}, occurred_at=now)
 
 def get_last_operation(user_id: int) -> dict:
     """
@@ -1310,11 +1415,13 @@ def accept_terms(user_id: int) -> bool:
     """Marca aceptación de términos y guarda timestamp UTC."""
     try:
         from datetime import datetime
+        ts = datetime.utcnow()
         users_col.update_one(
             {"user_id": int(user_id)},
-            {"$set": {"terms_accepted": True, "terms_timestamp": datetime.utcnow()}},
+            {"$set": {"terms_accepted": True, "terms_timestamp": ts}},
             upsert=False,
         )
+        log_user_activity(int(user_id), 'Términos aceptados', 'La cuenta ya puede habilitar el trading cuando la configuración esté completa.', tone='success', event_type='terms_accepted', occurred_at=ts)
         return True
     except Exception:
         return False
