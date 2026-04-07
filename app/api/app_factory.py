@@ -50,7 +50,7 @@ def create_app() -> FastAPI:
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers['x-request-id'] = request_id
         response.headers['x-response-time-ms'] = str(elapsed_ms)
-        if request.url.path in {'/', '/app'} or request.url.path.startswith('/static/'):
+        if request.url.path in {'/', '/app', '/favicon.ico'} or request.url.path.startswith('/static/'):
             response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
             response.headers['Pragma'] = 'no-cache'
             response.headers['Expires'] = '0'
@@ -78,6 +78,10 @@ def create_app() -> FastAPI:
         @app.get('/app', include_in_schema=False)
         def app_entry() -> FileResponse:
             return _index_response()
+
+        @app.get('/favicon.ico', include_in_schema=False)
+        def favicon() -> FileResponse:
+            return FileResponse(WEB_STATIC_DIR / 'favicon.ico', media_type='image/x-icon')
     else:
         @app.get('/')
         def root() -> dict:
