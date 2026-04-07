@@ -120,10 +120,9 @@ function setPill(element, label, valueForClass = label) {
   element.className = `status-pill ${pillClass(valueForClass)}`;
 }
 
-function setSummarySystemVisibility(isVisible) {
-  const visible = Boolean(isVisible);
-  if (elements.summarySystemStatusPanel) elements.summarySystemStatusPanel.classList.toggle('hidden', !visible);
-  if (elements.summarySystemOverviewPanel) elements.summarySystemOverviewPanel.classList.toggle('hidden', !visible);
+function setSummarySystemVisibility() {
+  if (elements.summarySystemStatusPanel) elements.summarySystemStatusPanel.classList.add('hidden');
+  if (elements.summarySystemOverviewPanel) elements.summarySystemOverviewPanel.classList.add('hidden');
 }
 
 function formatDate(value) {
@@ -713,7 +712,7 @@ function renderReferrals(data) {
 function renderSystemRuntime(payload) {
   state.systemRuntime = payload;
   renderPublicSystemOverview(payload);
-  setSummarySystemVisibility(state.isAdmin);
+  setSummarySystemVisibility();
 
   const hasTechnicalDetails = Boolean(payload.components && Object.keys(payload.components).length);
 
@@ -1043,7 +1042,7 @@ async function loadData() {
     if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
     if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
     state.isAdmin = true;
-    setSummarySystemVisibility(true);
+    setSummarySystemVisibility();
   } catch {
     if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
     if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
