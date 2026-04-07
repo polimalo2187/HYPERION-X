@@ -18,6 +18,7 @@ from app.database import (
     get_user_activity,
     get_user_public_snapshot,
     get_user_trade_stats,
+    get_user_track_record_summary,
     get_user_trades_limited,
     has_accepted_terms,
     save_user_private_key,
@@ -462,6 +463,70 @@ def _build_timeline_summary(activity: list[dict], trades: list[dict], active_tra
     }
 
 
+def _visible_streak(trades: list[dict]) -> dict:
+    streak_type = None
+    streak_count = 0
+    for trade in trades:
+        profit = _safe_float(trade.get('profit'), 0.0)
+        if profit > 0:
+            current = 'win'
+        elif profit < 0:
+            current = 'loss'
+        else:
+            break
+        if streak_type is None:
+            streak_type = current
+            streak_count = 1
+        elif streak_type == current:
+            streak_count += 1
+        else:
+            break
+    return {'type': streak_type or 'none', 'count': streak_count}
+
+
+def _visible_dominant_symbol(trades: list[dict]) -> dict:
+    symbol_map: dict[str, dict] = {}
+    for trade in trades:
+        symbol = str(trade.get('symbol') or '—')
+        row = symbol_map.setdefault(symbol, {'count': 0, 'pnl': 0.0})
+        row['count'] += 1
+        row['pnl'] += _safe_float(trade.get('profit'), 0.0)
+    if not symbol_map:
+        return {'symbol': None, 'count': 0, 'pnl': 0.0}
+    symbol, meta = sorted(symbol_map.items(), key=lambda item: (item[1]['count'], item[1]['pnl']), reverse=True)[0]
+    return {'symbol': symbol, 'count': int(meta['count']), 'pnl': round(_safe_float(meta['pnl']), 4)}
+
+
+def _recent_form_compact(trades: list[dict], limit: int = 8) -> str:
+    if not trades:
+        return '—'
+    symbols = []
+    for trade in trades[:max(1, int(limit))]:
+        profit = _safe_float(trade.get('profit'), 0.0)
+        if profit > 0:
+            symbols.append('W')
+        elif profit < 0:
+            symbols.append('L')
+        else:
+            symbols.append('F')
+    return ' '.join(symbols) if symbols else '—'
+
+
+def _augment_visible_summary(summary: dict, trades: list[dict]) -> dict:
+    payload = dict(summary or {})
+    count = len(trades or [])
+    payload['avg_trade_visible'] = round((_safe_float(payload.get('net_visible'), 0.0) / count), 4) if count > 0 else 0.0
+    streak = _visible_streak(trades or [])
+    payload['current_streak_type'] = streak['type']
+    payload['current_streak_count'] = streak['count']
+    dominant = _visible_dominant_symbol(trades or [])
+    payload['dominant_symbol'] = dominant['symbol']
+    payload['dominant_symbol_count'] = dominant['count']
+    payload['dominant_symbol_pnl'] = dominant['pnl']
+    payload['recent_form_visible'] = _recent_form_compact(trades or [])
+    return payload
+
+
 def get_recent_operations(user_id: int, limit: int = 20) -> dict:
     last_operation = get_last_operation(int(user_id)) or {}
     active_trade = get_user_active_trade_snapshot(int(user_id)) or {}
@@ -469,6 +534,7 @@ def get_recent_operations(user_id: int, limit: int = 20) -> dict:
     normalized_trades = [_normalize_trade_row(trade) for trade in trades]
     activity = _serialize_activity_rows(get_user_activity(int(user_id), limit=max(min(limit, 20), 12)))
     active_trade_summary = _build_active_trade_summary(active_trade)
+    visible_summary = _augment_visible_summary(_build_operation_summary(normalized_trades), normalized_trades)
 
     return {
         'last_open': last_operation.get('last_open'),
@@ -479,16 +545,27 @@ def get_recent_operations(user_id: int, limit: int = 20) -> dict:
         'last_close_summary': _build_last_operation_summary(last_operation.get('last_close'), 'Último cierre', 'Sin cierres registrados todavía.'),
         'activity': activity,
         'timeline_summary': _build_timeline_summary(activity, normalized_trades, active_trade_summary),
-        'summary': _build_operation_summary(normalized_trades),
+        'summary': visible_summary,
         'trades': normalized_trades,
         'count': len(normalized_trades),
     }
+
+
+def _track_record_streak_label(track_record: dict) -> str:
+    streak_type = str(track_record.get('current_streak_type') or 'none')
+    streak_count = _safe_int(track_record.get('current_streak_count'), 0)
+    if streak_type == 'win' and streak_count > 0:
+        return f'Racha win x{streak_count}'
+    if streak_type == 'loss' and streak_count > 0:
+        return f'Racha loss x{streak_count}'
+    return 'Sin racha decisiva'
 
 
 def get_performance_summary(user_id: int) -> dict:
     stats_24h = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24) or {})
     stats_7d = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 7) or {})
     stats_30d = _normalize_trade_stats(get_user_trade_stats(int(user_id), 24 * 30) or {})
+    track_record = get_user_track_record_summary(int(user_id)) or {}
 
     windows = {'24h': stats_24h, '7d': stats_7d, '30d': stats_30d}
     candidates = [(label, payload) for label, payload in windows.items() if int(payload.get('total', 0) or 0) > 0]
@@ -513,20 +590,57 @@ def get_performance_summary(user_id: int) -> dict:
             edge_label = 'Requiere ajuste'
             edge_detail = 'La ventana de 7d todavía no sostiene una ventaja operativa clara.'
 
+    executive = {
+        'best_window': best_window[0] if best_window else None,
+        'best_window_pnl': _safe_float(best_window[1].get('pnl_total'), 0.0) if best_window else 0.0,
+        'edge_label': edge_label,
+        'edge_tone': edge_tone,
+        'edge_detail': edge_detail,
+        'trades_30d': _safe_int(stats_30d.get('total'), 0),
+        'decisive_30d': _safe_int(stats_30d.get('decisive_trades'), 0),
+        'cadence_30d': round(_safe_int(stats_30d.get('total'), 0) / 30.0, 2),
+        'expectancy': _safe_float(track_record.get('expectancy'), 0.0),
+        'avg_win': _safe_float(track_record.get('avg_win'), 0.0),
+        'avg_loss': _safe_float(track_record.get('avg_loss'), 0.0),
+        'streak_label': _track_record_streak_label(track_record),
+        'streak_best_win': _safe_int(track_record.get('best_win_streak'), 0),
+        'streak_best_loss': _safe_int(track_record.get('best_loss_streak'), 0),
+        'recent_form_compact': track_record.get('recent_form_compact') or '—',
+        'dominant_symbol': track_record.get('dominant_symbol'),
+        'dominant_symbol_count': _safe_int(track_record.get('dominant_symbol_count'), 0),
+    }
+
     return {
         '24h': stats_24h,
         '7d': stats_7d,
         '30d': stats_30d,
-        'executive': {
-            'best_window': best_window[0] if best_window else None,
-            'best_window_pnl': _safe_float(best_window[1].get('pnl_total'), 0.0) if best_window else 0.0,
-            'edge_label': edge_label,
-            'edge_tone': edge_tone,
-            'edge_detail': edge_detail,
-            'trades_30d': _safe_int(stats_30d.get('total'), 0),
-            'decisive_30d': _safe_int(stats_30d.get('decisive_trades'), 0),
-            'cadence_30d': round(_safe_int(stats_30d.get('total'), 0) / 30.0, 2),
+        'track_record': {
+            'total': _safe_int(track_record.get('total'), 0),
+            'wins': _safe_int(track_record.get('wins'), 0),
+            'losses': _safe_int(track_record.get('losses'), 0),
+            'break_evens': _safe_int(track_record.get('break_evens'), 0),
+            'net_pnl': _safe_float(track_record.get('net_pnl'), 0.0),
+            'profit_factor': track_record.get('profit_factor', 0.0),
+            'win_rate': _safe_float(track_record.get('win_rate'), 0.0),
+            'avg_pnl': _safe_float(track_record.get('avg_pnl'), 0.0),
+            'expectancy': _safe_float(track_record.get('expectancy'), 0.0),
+            'avg_win': _safe_float(track_record.get('avg_win'), 0.0),
+            'avg_loss': _safe_float(track_record.get('avg_loss'), 0.0),
+            'best_trade': _safe_float(track_record.get('best_trade'), 0.0),
+            'worst_trade': _safe_float(track_record.get('worst_trade'), 0.0),
+            'current_streak_type': track_record.get('current_streak_type') or 'none',
+            'current_streak_count': _safe_int(track_record.get('current_streak_count'), 0),
+            'best_win_streak': _safe_int(track_record.get('best_win_streak'), 0),
+            'best_loss_streak': _safe_int(track_record.get('best_loss_streak'), 0),
+            'recent_form': track_record.get('recent_form') or [],
+            'recent_form_compact': track_record.get('recent_form_compact') or '—',
+            'dominant_symbol': track_record.get('dominant_symbol'),
+            'dominant_symbol_count': _safe_int(track_record.get('dominant_symbol_count'), 0),
+            'dominant_symbol_pnl': _safe_float(track_record.get('dominant_symbol_pnl'), 0.0),
+            'first_trade_at': _serialize_dt(track_record.get('first_trade_at')),
+            'last_trade_at': _serialize_dt(track_record.get('last_trade_at')),
         },
+        'executive': executive,
     }
 
 def _normalize_trade_stats(payload: dict) -> dict:
