@@ -630,11 +630,17 @@ function renderPerformance(performance) {
 
   if (elements.performanceExecutiveGrid) {
     const executive = performance.executive || {};
+    const track = performance.track_record || {};
     elements.performanceExecutiveGrid.innerHTML = '';
     elements.performanceExecutiveGrid.append(
       buildKpiCard('Mejor ventana', executive.best_window || 'Sin muestra', executive.best_window ? `PnL ${formatNumber(executive.best_window_pnl || 0, 4)}` : 'Todavía no hay una ventana con trades suficientes.'),
       buildKpiCard('Lectura actual', executive.edge_label || 'Sin lectura', executive.edge_detail || 'Sin lectura ejecutiva disponible.'),
       buildKpiCard('Trades 30d', executive.trades_30d || 0, `Cadencia ${formatNumber(executive.cadence_30d || 0, 2)} trades/día · Decisivos ${executive.decisive_30d || 0}`),
+      buildKpiCard('Expectativa', formatNumber(executive.expectancy || track.expectancy || 0, 4), `Avg win ${formatNumber(executive.avg_win || track.avg_win || 0, 4)} · Avg loss ${formatNumber(executive.avg_loss || track.avg_loss || 0, 4)}`),
+      buildKpiCard('Racha actual', executive.streak_label || 'Sin racha', `Mejor win x${executive.streak_best_win || 0} · Mejor loss x${executive.streak_best_loss || 0}`),
+      buildKpiCard('Forma reciente', executive.recent_form_compact || track.recent_form_compact || '—', executive.dominant_symbol ? `${executive.dominant_symbol} · ${executive.dominant_symbol_count || 0} trade(s)` : 'Sin símbolo dominante todavía.'),
+      buildKpiCard('Track record', track.total || 0, `Win ${formatNumber(track.win_rate || 0, 2)}% · PF ${track.profit_factor === Infinity ? '∞' : formatNumber(track.profit_factor || 0, 2)}`),
+      buildKpiCard('Extremos', `${formatNumber(track.best_trade || 0, 4)} / ${formatNumber(track.worst_trade || 0, 4)}`, track.last_trade_at ? `Último cierre ${formatDate(track.last_trade_at)}` : 'Sin cierres históricos todavía.')
     );
   }
 }
@@ -654,6 +660,10 @@ function renderOperations(data) {
       buildKpiCard('Wins visibles', summary.wins || 0, 'Trades ganadores en la lista visible.'),
       buildKpiCard('Losses visibles', summary.losses || 0, 'Trades perdedores en la lista visible.'),
       buildKpiCard('Neto visible', formatNumber(summary.net_visible || 0, 4), 'Suma del PnL en la muestra actual.'),
+      buildKpiCard('Expectativa visible', formatNumber(summary.avg_trade_visible || 0, 4), 'Promedio de PnL por trade en la muestra visible.'),
+      buildKpiCard('Racha visible', summary.current_streak_count ? `${String(summary.current_streak_type || '').toUpperCase()} x${summary.current_streak_count}` : 'Sin racha', 'Cuenta consecutiva desde el trade más reciente.'),
+      buildKpiCard('Forma reciente', summary.recent_form_visible || '—', summary.dominant_symbol ? `${summary.dominant_symbol} · ${summary.dominant_symbol_count || 0} trade(s)` : 'Sin símbolo dominante visible.'),
+      buildKpiCard('Símbolo dominante', summary.dominant_symbol || '—', summary.dominant_symbol ? `PnL ${formatNumber(summary.dominant_symbol_pnl || 0, 4)}` : 'La muestra visible todavía es muy corta.'),
       buildKpiCard('Mejor / peor', `${formatNumber(summary.best_trade_pnl || 0, 4)} / ${formatNumber(summary.worst_trade_pnl || 0, 4)}`, 'Extremos dentro de la lista visible.'),
     );
   }
@@ -757,6 +767,8 @@ function renderOperations(data) {
         <div><span class="metric-label">Exit</span><strong>${trade.exit_price ?? '—'}</strong></div>
         <div><span class="metric-label">Qty</span><strong>${trade.qty ?? '—'}</strong></div>
         <div><span class="metric-label">Score</span><strong>${trade.best_score ?? '—'}</strong></div>
+        <div><span class="metric-label">Razón</span><strong>${trade.exit_reason || trade.close_source || '—'}</strong></div>
+        <div><span class="metric-label">Fuente</span><strong>${trade.pnl_source || '—'}</strong></div>
       </div>
     `;
 
