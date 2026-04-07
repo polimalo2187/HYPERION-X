@@ -47,6 +47,8 @@ const elements = {
   referralStats: $('referralStats'),
   accessStatsGrid: $('accessStatsGrid'),
   userActivityList: $('userActivityList'),
+  summarySystemStatusPanel: $('summarySystemStatusPanel'),
+  summarySystemOverviewPanel: $('summarySystemOverviewPanel'),
   systemHealthGrid: $('systemHealthGrid'),
   systemRuntimeGrid: $('systemRuntimeGrid'),
   systemRuntimeNotes: $('systemRuntimeNotes'),
@@ -116,6 +118,12 @@ function setPill(element, label, valueForClass = label) {
   if (!element) return;
   element.textContent = label;
   element.className = `status-pill ${pillClass(valueForClass)}`;
+}
+
+function setSummarySystemVisibility(isVisible) {
+  const visible = Boolean(isVisible);
+  if (elements.summarySystemStatusPanel) elements.summarySystemStatusPanel.classList.toggle('hidden', !visible);
+  if (elements.summarySystemOverviewPanel) elements.summarySystemOverviewPanel.classList.toggle('hidden', !visible);
 }
 
 function formatDate(value) {
@@ -705,6 +713,7 @@ function renderReferrals(data) {
 function renderSystemRuntime(payload) {
   state.systemRuntime = payload;
   renderPublicSystemOverview(payload);
+  setSummarySystemVisibility(state.isAdmin);
 
   const hasTechnicalDetails = Boolean(payload.components && Object.keys(payload.components).length);
 
@@ -969,6 +978,7 @@ function setPreviewMode() {
   elements.refreshButton.disabled = true;
   if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
   if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
+  setSummarySystemVisibility(false);
   if (elements.accessStatsGrid) elements.accessStatsGrid.innerHTML = '';
   if (elements.performanceExecutiveGrid) elements.performanceExecutiveGrid.innerHTML = '';
   if (elements.userActivityList) { elements.userActivityList.className = 'list-stack empty-state'; elements.userActivityList.textContent = 'Abre la MiniApp desde Telegram para ver actividad real.'; }
@@ -1033,10 +1043,12 @@ async function loadData() {
     if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
     if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
     state.isAdmin = true;
+    setSummarySystemVisibility(true);
   } catch {
     if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
     if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
     state.isAdmin = false;
+    setSummarySystemVisibility(false);
     document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
     document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
   }
@@ -1341,6 +1353,7 @@ function bindActions() {
     elements.refreshButton.disabled = true;
   if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
   if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
+  setSummarySystemVisibility(false);
     try {
       await loadData();
     } catch (error) {
