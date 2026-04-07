@@ -193,6 +193,36 @@
               </div>
               <div id="referralStats" class="stats-grid compact"></div>
             </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">ACCESO Y VIGENCIA</span>
+                  <h3>Lectura de plan y continuidad</h3>
+                </div>
+              </div>
+              <div id="accessStatsGrid" class="stats-grid"></div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">LECTURA EJECUTIVA</span>
+                  <h3>Rendimiento y actividad</h3>
+                </div>
+              </div>
+              <div id="performanceExecutiveGrid" class="stats-grid"></div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">ACTIVIDAD DEL USUARIO</span>
+                  <h3>Últimos movimientos</h3>
+                </div>
+              </div>
+              <div id="userActivityList" class="list-stack empty-state">Sin actividad reciente.</div>
+            </article>
           </div>
         </section>
 
@@ -314,22 +344,32 @@
               <div class="panel-head compact">
                 <div>
                   <span class="section-tag">ÚLTIMA APERTURA</span>
-                  <h3>Open payload</h3>
+                  <h3>Resumen de entrada</h3>
                 </div>
                 <span class="status-pill neutral">OPEN</span>
               </div>
-              <pre id="lastOpen" class="json-box">Sin datos</pre>
+              <div id="latestOpenSummary" class="list-stack empty-state">Sin aperturas registradas.</div>
             </article>
 
             <article class="glass-card panel-card">
               <div class="panel-head compact">
                 <div>
                   <span class="section-tag">ÚLTIMO CIERRE</span>
-                  <h3>Close payload</h3>
+                  <h3>Resumen de salida</h3>
                 </div>
                 <span class="status-pill neutral">CLOSE</span>
               </div>
-              <pre id="lastClose" class="json-box">Sin datos</pre>
+              <div id="latestCloseSummary" class="list-stack empty-state">Sin cierres registrados.</div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head compact">
+                <div>
+                  <span class="section-tag">RESUMEN RECIENTE</span>
+                  <h3>Lectura del track record visible</h3>
+                </div>
+              </div>
+              <div id="operationsSummaryGrid" class="stats-grid compact"></div>
             </article>
 
             <article class="glass-card panel-card panel-span-2">
