@@ -43,7 +43,10 @@ const elements = {
   dashboardStats: $('dashboardStats'),
   readinessList: $('readinessList'),
   performanceGrid: $('performanceGrid'),
+  performanceExecutiveGrid: $('performanceExecutiveGrid'),
   referralStats: $('referralStats'),
+  accessStatsGrid: $('accessStatsGrid'),
+  userActivityList: $('userActivityList'),
   systemHealthGrid: $('systemHealthGrid'),
   systemRuntimeGrid: $('systemRuntimeGrid'),
   systemRuntimeNotes: $('systemRuntimeNotes'),
@@ -62,8 +65,9 @@ const elements = {
   acceptTermsButton: $('acceptTermsButton'),
   activateTradingButton: $('activateTradingButton'),
   pauseTradingButton: $('pauseTradingButton'),
-  lastOpen: $('lastOpen'),
-  lastClose: $('lastClose'),
+  latestOpenSummary: $('latestOpenSummary'),
+  latestCloseSummary: $('latestCloseSummary'),
+  operationsSummaryGrid: $('operationsSummaryGrid'),
   operationsCount: $('operationsCount'),
   operationsList: $('operationsList'),
   adminVisualStats: $('adminVisualStats'),
@@ -129,7 +133,42 @@ function planLabel(plan) {
   return normalized.toUpperCase();
 }
 
+function accessLabel(data) {
+  return data.access_label || (data.plan_active ? 'Activo' : 'Sin acceso');
+}
 
+function accessDetail(data) {
+  if (data.access_detail) return data.access_detail;
+  if (data.plan_active && data.plan_days_remaining > 0) return `${data.plan_days_remaining} día(s) restantes`;
+  return data.plan_active ? 'Acceso vigente' : 'Sin acceso vigente';
+}
+
+function renderEventSummary(container, title, summary, emptyCopy) {
+  if (!container) return;
+  if (!summary || (!summary.title && !summary.detail)) {
+    container.className = 'list-stack empty-state';
+    container.textContent = emptyCopy;
+    return;
+  }
+  container.className = 'event-summary';
+  container.innerHTML = '';
+  const item = document.createElement('article');
+  item.className = 'list-item';
+  item.innerHTML = `
+    <div class="list-item-title">${summary.title || title}</div>
+    <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+  `;
+  container.appendChild(item);
+}
+
+function formatBlockers(list) {
+  const rows = Array.isArray(list) ? list.filter(Boolean) : [];
+  return rows.length ? rows.map((item) => `• ${item}`).join('\n') : '• Sin bloqueadores';
+}
+
+function formatActivityDetail(item) {
+  return item?.detail || 'Sin detalle adicional.';
+}
 
 function formatFreshness(seconds) {
   const value = Number(seconds);
@@ -213,6 +252,12 @@ function renderPublicSystemOverview(payload) {
     overviewCards.forEach((card) => elements.systemRuntimeGrid.appendChild(card));
   }
 
+  if (elements.accessStatsGrid) elements.accessStatsGrid.innerHTML = '';
+  if (elements.performanceExecutiveGrid) elements.performanceExecutiveGrid.innerHTML = '';
+  if (elements.userActivityList) { elements.userActivityList.className = 'list-stack empty-state'; elements.userActivityList.textContent = 'Abre la MiniApp desde Telegram para ver actividad real.'; }
+  if (elements.operationsSummaryGrid) elements.operationsSummaryGrid.innerHTML = '';
+  renderEventSummary(elements.latestOpenSummary, 'Última apertura', null, 'Abre la MiniApp desde Telegram para ver aperturas reales.');
+  renderEventSummary(elements.latestCloseSummary, 'Último cierre', null, 'Abre la MiniApp desde Telegram para ver cierres reales.');
   if (elements.systemRuntimeNotes) {
     elements.systemRuntimeNotes.innerHTML = '';
     elements.systemRuntimeNotes.className = 'readiness-list compact-list';
@@ -444,15 +489,15 @@ function buildAdminPerformanceCard(windowLabel, stats = {}) {
 }
 
 function buildControlSummary(control) {
-  const blockers = Array.isArray(control.activation_blockers) && control.activation_blockers.length
-    ? control.activation_blockers.map((item) => `• ${item}`).join('\n')
-    : '• Sin bloqueadores';
+  const blockers = formatBlockers(control.activation_blockers_copy || control.activation_blockers);
   return [
     `Wallet: ${control.wallet_configured ? truncateMiddle(control.wallet_masked, 24) : 'pendiente'}`,
     `Private key: ${control.private_key_configured ? 'configurada' : 'pendiente'}`,
     `Términos: ${control.terms_accepted ? 'aceptados' : 'pendientes'}`,
-    `Plan: ${control.plan || 'none'} (${control.plan_active ? 'activo' : 'inactivo'})`,
+    `Plan: ${planLabel(control.plan)} (${control.plan_active ? 'activo' : 'inactivo'})`,
+    `Días restantes: ${control.plan_days_remaining ?? 0}`,
     `Trading: ${control.trading_status || 'inactive'}`,
+    `Preparación: ${control.readiness_completed ?? 0}/${control.readiness_total ?? 5}`,
     '',
     'Bloqueadores:',
     blockers,
@@ -464,26 +509,26 @@ function renderDashboard(data) {
   const usernameText = data.username ? `@${data.username}` : `ID ${data.user_id || '—'}`;
   const readinessText = data.status_summary || 'not_ready';
   const tradingText = data.trading_status || 'inactive';
-  const planText = data.plan || 'none';
-  const accessText = data.plan_active ? 'Activo' : 'Bloqueado';
+  const planText = planLabel(data.plan);
+  const accessText = accessLabel(data);
   const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 18) : 'Pendiente';
 
   setPill(elements.connectionBadge, 'Conectado', 'connected');
   setPill(elements.heroSessionPill, data.plan_active ? 'Sesión activa' : 'Acceso limitado', data.plan_active ? 'active' : 'blocked');
-  setPill(elements.heroPlanPill, `Plan ${planText}`, data.plan_active ? planText : 'none');
+  setPill(elements.heroPlanPill, `Plan ${planText}`, data.plan_active ? data.plan : 'none');
   setPill(elements.heroTradingPill, `Trading ${tradingText}`, tradingText);
-  setPill(elements.userPlanBadge, planText, data.plan_active ? planText : 'none');
+  setPill(elements.userPlanBadge, planText, data.plan_active ? data.plan : 'none');
   setPill(elements.userReadinessBadge, readinessText, readinessText);
   setPill(elements.walletBadge, data.wallet_configured ? 'Wallet ok' : 'Pendiente', data.wallet_configured ? 'configured' : 'missing');
 
   elements.heroUser.textContent = usernameText;
-  elements.heroUserSubtext.textContent = data.plan_active ? 'Usuario autenticado y con sesión válida' : 'Sin acceso operativo activo';
+  elements.heroUserSubtext.textContent = data.plan_active ? `Usuario autenticado · preparación ${data.readiness_completed || 0}/${data.readiness_total || 5}` : 'Sin acceso operativo activo';
   elements.heroWallet.textContent = walletText;
   elements.heroWalletSubtext.textContent = data.wallet_configured ? 'Configurada en backend' : 'Todavía falta configurarla';
   elements.heroKey.textContent = data.private_key_configured ? 'Configurada' : 'Pendiente';
   elements.heroKeySubtext.textContent = data.private_key_configured ? 'Llave privada presente en sistema' : 'Llave privada faltante';
   elements.heroAccess.textContent = accessText;
-  elements.heroAccessSubtext.textContent = formatDate(data.plan_expires_at);
+  elements.heroAccessSubtext.textContent = `${accessDetail(data)}${data.plan_expires_at ? ' · vence ' + formatDate(data.plan_expires_at) : ''}`;
 
   elements.userIdentity.textContent = usernameText;
   elements.userIdentitySubtext.textContent = data.user_id ? `Telegram ID ${data.user_id}` : 'Usuario no resuelto';
@@ -495,6 +540,7 @@ function renderDashboard(data) {
   elements.dashboardStats.innerHTML = '';
   elements.dashboardStats.append(
     buildKpiCard('Plan', planText, data.plan_active ? 'Acceso operativo habilitado.' : 'Acceso inactivo.'),
+    buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Se calculan sobre el vencimiento actual.' : 'Sin días vigentes.'),
     buildKpiCard('Trading', tradingText, 'Estado reportado por la base.'),
     buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean la activación si faltan.'),
     buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
@@ -509,6 +555,15 @@ function renderDashboard(data) {
     buildReadinessItem('Términos', data.terms_accepted ? 'Los términos ya fueron aceptados.' : 'Debes aceptar términos para activar trading.', data.terms_accepted ? 'active' : 'warning'),
     buildReadinessItem('Plan', data.plan_active ? `El plan ${planText} está activo.` : 'No hay acceso operativo vigente.', data.plan_active ? 'active' : 'inactive')
   );
+
+  if (elements.accessStatsGrid) {
+    elements.accessStatsGrid.innerHTML = '';
+    elements.accessStatsGrid.append(
+      buildKpiCard('Estado de acceso', accessText, accessDetail(data)),
+      buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Continuidad actual del plan.' : 'No hay días vigentes.'),
+      buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), data.plan_active ? 'Fecha actual del acceso.' : 'No existe acceso operativo vigente.'),
+    );
+  }
 }
 
 function renderControl(control) {
@@ -530,8 +585,9 @@ function renderControl(control) {
     buildKpiCard('Seguridad', control.security_posture === 'encrypted_at_rest' ? 'Cifrada' : (control.security_posture === 'legacy_plaintext' ? 'Legacy' : 'Sin key'), control.security_posture === 'legacy_plaintext' ? 'Requiere rotación para endurecer.' : 'Estado del almacenamiento sensible.'),
     buildKpiCard('Términos', control.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean activación.'),
     buildKpiCard('Trading', control.trading_status || 'inactive', 'Se puede pausar desde aquí.'),
-    buildKpiCard('Plan', control.plan || 'none', control.plan_active ? 'Plan vigente.' : 'Sin acceso vigente.'),
-    buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers || []).join(', ') || 'Sin bloqueadores.')
+    buildKpiCard('Plan', planLabel(control.plan), control.plan_active ? `Plan vigente · ${control.plan_days_remaining || 0} día(s) restantes.` : 'Sin acceso vigente.'),
+    buildKpiCard('Preparación', `${control.readiness_completed || 0}/${control.readiness_total || 5}`, 'Lectura global de requisitos cumplidos.'),
+    buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers_copy || []).join(' ') || 'Sin bloqueadores.')
   );
 }
 
@@ -543,12 +599,61 @@ function renderPerformance(performance) {
     buildPerformanceCard('7d', performance['7d'] || {}),
     buildPerformanceCard('30d', performance['30d'] || {})
   );
+
+  if (elements.performanceExecutiveGrid) {
+    const executive = performance.executive || {};
+    elements.performanceExecutiveGrid.innerHTML = '';
+    elements.performanceExecutiveGrid.append(
+      buildKpiCard('Mejor ventana', executive.best_window || 'Sin muestra', executive.best_window ? `PnL ${formatNumber(executive.best_window_pnl || 0, 4)}` : 'Todavía no hay una ventana con trades suficientes.'),
+      buildKpiCard('Lectura actual', executive.edge_label || 'Sin lectura', executive.edge_detail || 'Sin lectura ejecutiva disponible.'),
+      buildKpiCard('Trades 30d', executive.trades_30d || 0, `Cadencia ${formatNumber(executive.cadence_30d || 0, 2)} trades/día · Decisivos ${executive.decisive_30d || 0}`),
+    );
+  }
 }
 
 function renderOperations(data) {
   state.operations = data;
-  elements.lastOpen.textContent = pretty(data.last_open);
-  elements.lastClose.textContent = pretty(data.last_close);
+  const summary = data.summary || {};
+
+  if (elements.operationsSummaryGrid) {
+    elements.operationsSummaryGrid.innerHTML = '';
+    elements.operationsSummaryGrid.append(
+      buildKpiCard('Wins visibles', summary.wins || 0, 'Trades ganadores en la lista visible.'),
+      buildKpiCard('Losses visibles', summary.losses || 0, 'Trades perdedores en la lista visible.'),
+      buildKpiCard('Neto visible', formatNumber(summary.net_visible || 0, 4), 'Suma del PnL en la muestra actual.'),
+      buildKpiCard('Mejor / peor', `${formatNumber(summary.best_trade_pnl || 0, 4)} / ${formatNumber(summary.worst_trade_pnl || 0, 4)}`, 'Extremos dentro de la lista visible.'),
+    );
+  }
+
+  renderEventSummary(elements.latestOpenSummary, 'Última apertura', data.last_open_summary, 'Sin aperturas registradas.');
+  renderEventSummary(elements.latestCloseSummary, 'Último cierre', data.last_close_summary, 'Sin cierres registrados.');
+
+  if (elements.userActivityList) {
+    const activity = Array.isArray(data.activity) ? data.activity : [];
+    if (!activity.length) {
+      elements.userActivityList.className = 'list-stack empty-state';
+      elements.userActivityList.textContent = 'Sin actividad reciente.';
+    } else {
+      elements.userActivityList.className = 'list-stack';
+      elements.userActivityList.innerHTML = '';
+      activity.forEach((item) => {
+        const article = document.createElement('article');
+        article.className = 'list-item';
+        article.innerHTML = `
+          <div class="list-item-header">
+            <div>
+              <div class="list-item-title">${item.title || 'Actividad'}</div>
+              <div class="list-item-meta">${item.at ? formatDate(item.at) : 'Sin timestamp'}</div>
+            </div>
+            <span class="status-pill ${pillClass(item.tone || 'neutral')}">${item.tone === 'success' ? 'WIN' : (item.tone === 'danger' ? 'LOSS' : 'INFO')}</span>
+          </div>
+          <div class="list-item-meta">${formatActivityDetail(item)}</div>
+        `;
+        elements.userActivityList.appendChild(article);
+      });
+    }
+  }
+
   elements.operationsCount.textContent = String(data.count || 0);
 
   if (!Array.isArray(data.trades) || data.trades.length === 0) {
@@ -566,13 +671,13 @@ function renderOperations(data) {
 
     const profit = Number(trade.profit || 0);
     const profitLabel = Number.isFinite(profit) ? profit.toFixed(4) : String(trade.profit || '0');
-    const badgeClass = profit > 0 ? 'success' : (profit < 0 ? 'danger' : 'neutral');
+    const badgeClass = trade.result_tone || (profit > 0 ? 'success' : (profit < 0 ? 'danger' : 'neutral'));
 
     item.innerHTML = `
       <div class="list-item-header">
         <div>
           <div class="list-item-title">${trade.symbol || 'Trade'} · ${trade.side || 'N/A'}</div>
-          <div class="list-item-meta">${formatDate(trade.timestamp)}</div>
+          <div class="list-item-meta">${formatDate(trade.timestamp)} · ${trade.result_label || 'Trade'}</div>
         </div>
         <span class="status-pill ${badgeClass}">${profitLabel}</span>
       </div>
@@ -864,6 +969,12 @@ function setPreviewMode() {
   elements.refreshButton.disabled = true;
   if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
   if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
+  if (elements.accessStatsGrid) elements.accessStatsGrid.innerHTML = '';
+  if (elements.performanceExecutiveGrid) elements.performanceExecutiveGrid.innerHTML = '';
+  if (elements.userActivityList) { elements.userActivityList.className = 'list-stack empty-state'; elements.userActivityList.textContent = 'Abre la MiniApp desde Telegram para ver actividad real.'; }
+  if (elements.operationsSummaryGrid) elements.operationsSummaryGrid.innerHTML = '';
+  renderEventSummary(elements.latestOpenSummary, 'Última apertura', null, 'Abre la MiniApp desde Telegram para ver aperturas reales.');
+  renderEventSummary(elements.latestCloseSummary, 'Último cierre', null, 'Abre la MiniApp desde Telegram para ver cierres reales.');
   if (elements.systemRuntimeNotes) {
     elements.systemRuntimeNotes.className = 'readiness-list compact-list';
     elements.systemRuntimeNotes.innerHTML = '';
