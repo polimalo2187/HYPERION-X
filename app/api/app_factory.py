@@ -50,6 +50,10 @@ def create_app() -> FastAPI:
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         response.headers['x-request-id'] = request_id
         response.headers['x-response-time-ms'] = str(elapsed_ms)
+        if request.url.path in {'/', '/app'} or request.url.path.startswith('/static/'):
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
         logger.info('API %s %s -> %s in %sms request_id=%s', request.method, request.url.path, response.status_code, elapsed_ms, request_id)
         return response
 
@@ -60,13 +64,20 @@ def create_app() -> FastAPI:
     if WEB_STATIC_DIR.exists():
         app.mount('/static', StaticFiles(directory=str(WEB_STATIC_DIR)), name='static')
 
+        def _index_response() -> FileResponse:
+            response = FileResponse(WEB_STATIC_DIR / 'index.html')
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
+
         @app.get('/', include_in_schema=False)
         def root() -> FileResponse:
-            return FileResponse(WEB_STATIC_DIR / 'index.html')
+            return _index_response()
 
         @app.get('/app', include_in_schema=False)
         def app_entry() -> FileResponse:
-            return FileResponse(WEB_STATIC_DIR / 'index.html')
+            return _index_response()
     else:
         @app.get('/')
         def root() -> dict:
