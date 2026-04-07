@@ -67,9 +67,14 @@ const elements = {
   acceptTermsButton: $('acceptTermsButton'),
   activateTradingButton: $('activateTradingButton'),
   pauseTradingButton: $('pauseTradingButton'),
+  activeTradeBadge: $('activeTradeBadge'),
+  activeTradeSummary: $('activeTradeSummary'),
   latestOpenSummary: $('latestOpenSummary'),
   latestCloseSummary: $('latestCloseSummary'),
   operationsSummaryGrid: $('operationsSummaryGrid'),
+  timelineCount: $('timelineCount'),
+  operationsTimelineGrid: $('operationsTimelineGrid'),
+  operationsTimelineList: $('operationsTimelineList'),
   operationsCount: $('operationsCount'),
   operationsList: $('operationsList'),
   adminVisualStats: $('adminVisualStats'),
@@ -164,6 +169,26 @@ function renderEventSummary(container, title, summary, emptyCopy) {
   item.innerHTML = `
     <div class="list-item-title">${summary.title || title}</div>
     <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+  `;
+  container.appendChild(item);
+}
+
+
+function renderLiveTradeSummary(container, summary, emptyCopy) {
+  if (!container) return;
+  if (!summary) {
+    container.className = 'list-stack empty-state';
+    container.textContent = emptyCopy;
+    return;
+  }
+  container.className = 'event-summary';
+  container.innerHTML = '';
+  const item = document.createElement('article');
+  item.className = 'list-item';
+  item.innerHTML = `
+    <div class="list-item-title">${summary.title || 'Operación activa'}</div>
+    <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+    <div class="list-item-meta subtle">${summary.started_at ? `Abierta ${formatDate(summary.started_at)}` : 'Sin timestamp de apertura.'}</div>
   `;
   container.appendChild(item);
 }
@@ -617,6 +642,11 @@ function renderPerformance(performance) {
 function renderOperations(data) {
   state.operations = data;
   const summary = data.summary || {};
+  const timeline = Array.isArray(data.activity) ? data.activity : [];
+  const timelineSummary = data.timeline_summary || {};
+
+  setPill(elements.activeTradeBadge, data.active_trade_summary ? 'LIVE' : 'IDLE', data.active_trade_summary ? 'active' : 'neutral');
+  renderLiveTradeSummary(elements.activeTradeSummary, data.active_trade_summary, 'No hay una operación activa registrada ahora mismo.');
 
   if (elements.operationsSummaryGrid) {
     elements.operationsSummaryGrid.innerHTML = '';
@@ -628,18 +658,27 @@ function renderOperations(data) {
     );
   }
 
+  if (elements.operationsTimelineGrid) {
+    elements.operationsTimelineGrid.innerHTML = '';
+    elements.operationsTimelineGrid.append(
+      buildKpiCard('Eventos visibles', timelineSummary.total_visible_events || 0, 'Actividad reciente registrada para esta cuenta.'),
+      buildKpiCard('Trading', timelineSummary.trading_events || 0, 'Aperturas y cierres visibles en el feed.'),
+      buildKpiCard('Cuenta', timelineSummary.account_events || 0, 'Cambios de wallet, key, términos o acceso.'),
+      buildKpiCard('Control', timelineSummary.control_events || 0, timelineSummary.live_trade ? 'Hay una operación viva registrada.' : 'Sin operación activa ahora mismo.'),
+    );
+  }
+
   renderEventSummary(elements.latestOpenSummary, 'Última apertura', data.last_open_summary, 'Sin aperturas registradas.');
   renderEventSummary(elements.latestCloseSummary, 'Último cierre', data.last_close_summary, 'Sin cierres registrados.');
 
   if (elements.userActivityList) {
-    const activity = Array.isArray(data.activity) ? data.activity : [];
-    if (!activity.length) {
+    if (!timeline.length) {
       elements.userActivityList.className = 'list-stack empty-state';
       elements.userActivityList.textContent = 'Sin actividad reciente.';
     } else {
       elements.userActivityList.className = 'list-stack';
       elements.userActivityList.innerHTML = '';
-      activity.forEach((item) => {
+      timeline.slice(0, 6).forEach((item) => {
         const article = document.createElement('article');
         article.className = 'list-item';
         article.innerHTML = `
@@ -648,11 +687,40 @@ function renderOperations(data) {
               <div class="list-item-title">${item.title || 'Actividad'}</div>
               <div class="list-item-meta">${item.at ? formatDate(item.at) : 'Sin timestamp'}</div>
             </div>
-            <span class="status-pill ${pillClass(item.tone || 'neutral')}">${item.tone === 'success' ? 'WIN' : (item.tone === 'danger' ? 'LOSS' : 'INFO')}</span>
+            <span class="status-pill ${pillClass(item.tone || 'neutral')}">${item.badge || 'INFO'}</span>
           </div>
           <div class="list-item-meta">${formatActivityDetail(item)}</div>
         `;
         elements.userActivityList.appendChild(article);
+      });
+    }
+  }
+
+  if (elements.timelineCount) {
+    elements.timelineCount.textContent = String(timeline.length || 0);
+  }
+
+  if (elements.operationsTimelineList) {
+    if (!timeline.length) {
+      elements.operationsTimelineList.className = 'list-stack empty-state';
+      elements.operationsTimelineList.textContent = 'Sin actividad reciente.';
+    } else {
+      elements.operationsTimelineList.className = 'list-stack';
+      elements.operationsTimelineList.innerHTML = '';
+      timeline.forEach((item) => {
+        const article = document.createElement('article');
+        article.className = 'list-item';
+        article.innerHTML = `
+          <div class="list-item-header">
+            <div>
+              <div class="list-item-title">${item.title || 'Actividad'}</div>
+              <div class="list-item-meta">${item.at ? formatDate(item.at) : 'Sin timestamp'} · ${item.family || 'info'}</div>
+            </div>
+            <span class="status-pill ${pillClass(item.tone || 'neutral')}">${item.badge || 'INFO'}</span>
+          </div>
+          <div class="list-item-meta">${formatActivityDetail(item)}</div>
+        `;
+        elements.operationsTimelineList.appendChild(article);
       });
     }
   }
