@@ -319,6 +319,17 @@
 
         <section class="panel" data-panel="operations">
           <div class="operations-grid">
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head compact">
+                <div>
+                  <span class="section-tag">OPERACIÓN EN CURSO</span>
+                  <h3>Lectura viva del bot</h3>
+                </div>
+                <span id="activeTradeBadge" class="status-pill neutral">LIVE</span>
+              </div>
+              <div id="activeTradeSummary" class="list-stack empty-state">No hay una operación activa registrada ahora mismo.</div>
+            </article>
+
             <article class="glass-card panel-card">
               <div class="panel-head compact">
                 <div>
@@ -349,6 +360,18 @@
                 </div>
               </div>
               <div id="operationsSummaryGrid" class="stats-grid compact"></div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head compact">
+                <div>
+                  <span class="section-tag">TIMELINE</span>
+                  <h3>Actividad real del usuario</h3>
+                </div>
+                <span id="timelineCount" class="status-pill neutral">0</span>
+              </div>
+              <div id="operationsTimelineGrid" class="stats-grid compact"></div>
+              <div id="operationsTimelineList" class="list-stack empty-state">Sin actividad reciente.</div>
             </article>
 
             <article class="glass-card panel-card panel-span-2">
