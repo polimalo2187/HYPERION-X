@@ -169,6 +169,7 @@ def admin_reset_user_stats(user_id: int, actor_user_id: int | None = None, actor
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No se pudo resetear el rendimiento del usuario')
     detail = admin_get_user_detail(int(user_id))
     message = 'Rendimiento del usuario reseteado desde este momento'
+    log_user_activity(int(user_id), 'Rendimiento reiniciado', 'El historial estadístico fue reiniciado por soporte administrativo.', tone='warning', event_type='stats_reset')
     _log_action('reset_user_stats', actor_user_id, actor_username, detail, reason=reason, message=message)
     return {
         'result': 'stats_reset',
@@ -190,6 +191,8 @@ def admin_migrate_user_private_key(user_id: int, actor_user_id: int | None = Non
         'migrated': 'Private key legacy migrada a cifrado',
     }
     message = messages.get(result, 'Operación completada')
+    if result == 'migrated':
+        log_user_activity(int(user_id), 'Clave operativa endurecida', 'La private key fue migrada a almacenamiento cifrado.', tone='success', event_type='private_key_hardened')
     _log_action('migrate_user_private_key', actor_user_id, actor_username, detail, reason=reason, message=message, metadata={'migration_result': result})
     return {
         'result': result,
