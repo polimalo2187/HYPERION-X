@@ -12,6 +12,7 @@ from app.database import (
     create_user,
     ensure_access_on_activate,
     get_last_operation,
+    get_user_active_trade_snapshot,
     get_referral_valid_count,
     get_system_runtime_snapshot,
     get_user_activity,
@@ -358,33 +359,126 @@ def _build_last_operation_summary(payload: Any, fallback_title: str, empty_detai
     }
 
 
+def _activity_family(event_type: str | None) -> str:
+    normalized = str(event_type or '').strip().lower()
+    if normalized in {'trade_opened', 'trade_closed'}:
+        return 'trading'
+    if normalized in {'wallet_updated', 'private_key_updated', 'terms_accepted', 'access_updated', 'private_key_hardened'}:
+        return 'account'
+    if normalized in {'trading_activated', 'trading_paused', 'stats_reset'}:
+        return 'control'
+    return 'info'
+
+
+def _activity_badge(event_type: str | None, tone: str | None) -> str:
+    normalized = str(event_type or '').strip().lower()
+    if normalized == 'trade_opened':
+        return 'OPEN'
+    if normalized == 'trade_closed':
+        return 'CLOSE'
+    if normalized == 'trading_activated':
+        return 'ON'
+    if normalized == 'trading_paused':
+        return 'PAUSE'
+    if normalized == 'wallet_updated':
+        return 'WALLET'
+    if normalized == 'private_key_updated':
+        return 'KEY'
+    if normalized == 'terms_accepted':
+        return 'TERMS'
+    if normalized == 'access_updated':
+        return 'PLAN'
+    if normalized == 'private_key_hardened':
+        return 'HARDEN'
+    if normalized == 'stats_reset':
+        return 'RESET'
+    tone_normalized = str(tone or '').lower()
+    if tone_normalized == 'success':
+        return 'OK'
+    if tone_normalized == 'danger':
+        return 'ALERT'
+    return 'INFO'
+
+
 def _serialize_activity_rows(rows: list[dict]) -> list[dict]:
     serialized = []
     for row in rows or []:
         item = dict(row or {})
+        event_type = item.get('event_type') or 'info'
+        tone = item.get('tone') or 'info'
         item['at'] = _serialize_dt(item.get('created_at'))
         serialized.append({
             'title': item.get('title') or 'Actividad',
             'detail': item.get('detail') or 'Sin detalle adicional.',
-            'tone': item.get('tone') or 'info',
-            'event_type': item.get('event_type') or 'info',
+            'tone': tone,
+            'event_type': event_type,
+            'family': _activity_family(event_type),
+            'badge': _activity_badge(event_type, tone),
             'at': item.get('at'),
         })
     return serialized
 
 
+def _build_active_trade_summary(payload: Any) -> dict | None:
+    if not isinstance(payload, dict) or not payload:
+        return None
+
+    symbol = payload.get('symbol') or payload.get('coin') or 'Operación activa'
+    side = str(payload.get('side') or payload.get('direction') or '').upper()
+    entry = payload.get('entry_price')
+    last_price = payload.get('last_price')
+    pnl = payload.get('last_pnl_pct')
+    qty = payload.get('qty_coin_for_log') or payload.get('qty') or payload.get('size')
+    detail_parts = []
+    if entry is not None:
+        detail_parts.append(f'Entrada {entry}')
+    if last_price is not None:
+        detail_parts.append(f'Último precio {last_price}')
+    if qty is not None:
+        detail_parts.append(f'Qty {qty}')
+    if pnl is not None:
+        detail_parts.append(f'PnL vivo {round(_safe_float(pnl, 0.0), 4)}%')
+    return {
+        'title': f"{symbol} · {side}" if side else str(symbol),
+        'detail': ' · '.join(detail_parts) if detail_parts else 'Hay una operación activa registrada en este momento.',
+        'started_at': payload.get('started_at') or payload.get('persisted_at'),
+        'symbol': symbol,
+        'side': side,
+    }
+
+
+def _build_timeline_summary(activity: list[dict], trades: list[dict], active_trade: dict | None) -> dict:
+    trading_events = sum(1 for item in activity if item.get('family') == 'trading')
+    account_events = sum(1 for item in activity if item.get('family') == 'account')
+    control_events = sum(1 for item in activity if item.get('family') == 'control')
+    total_visible = len(activity)
+    return {
+        'total_visible_events': total_visible,
+        'trading_events': trading_events,
+        'account_events': account_events,
+        'control_events': control_events,
+        'recent_trades_visible': len(trades),
+        'live_trade': bool(active_trade),
+    }
+
+
 def get_recent_operations(user_id: int, limit: int = 20) -> dict:
     last_operation = get_last_operation(int(user_id)) or {}
+    active_trade = get_user_active_trade_snapshot(int(user_id)) or {}
     trades = get_user_trades_limited(int(user_id), limit=limit)
     normalized_trades = [_normalize_trade_row(trade) for trade in trades]
-    activity = _serialize_activity_rows(get_user_activity(int(user_id), limit=min(limit, 12)))
+    activity = _serialize_activity_rows(get_user_activity(int(user_id), limit=max(min(limit, 20), 12)))
+    active_trade_summary = _build_active_trade_summary(active_trade)
 
     return {
         'last_open': last_operation.get('last_open'),
         'last_close': last_operation.get('last_close'),
+        'active_trade': active_trade if active_trade_summary else None,
+        'active_trade_summary': active_trade_summary,
         'last_open_summary': _build_last_operation_summary(last_operation.get('last_open'), 'Última apertura', 'Sin aperturas registradas todavía.'),
         'last_close_summary': _build_last_operation_summary(last_operation.get('last_close'), 'Último cierre', 'Sin cierres registrados todavía.'),
         'activity': activity,
+        'timeline_summary': _build_timeline_summary(activity, normalized_trades, active_trade_summary),
         'summary': _build_operation_summary(normalized_trades),
         'trades': normalized_trades,
         'count': len(normalized_trades),
