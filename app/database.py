@@ -1442,6 +1442,173 @@ def get_user_trade_stats(user_id: int, hours: int) -> dict:
             pass
         return _empty_trade_stats(real_since=real_since, epoch=epoch, user_id=uid, error=str(e))
 
+
+
+def get_user_track_record_summary(user_id: int, recent_form_limit: int = 12) -> dict:
+    """
+    Resume el track record completo del usuario respetando epochs de reset.
+    Diseñado para MiniApp / panel de rendimiento.
+    """
+    try:
+        uid = int(user_id)
+    except Exception:
+        uid = 0
+
+    epoch = get_admin_trade_stats_epoch()
+    user_epoch = get_user_trade_stats_epoch(uid)
+    real_since = datetime.utcnow() - timedelta(days=3650)
+    if isinstance(epoch, datetime) and epoch > real_since:
+        real_since = epoch
+    if isinstance(user_epoch, datetime) and user_epoch > real_since:
+        real_since = user_epoch
+
+    payload = {
+        'total': 0,
+        'wins': 0,
+        'losses': 0,
+        'break_evens': 0,
+        'decisive_trades': 0,
+        'net_pnl': 0.0,
+        'gross_profit': 0.0,
+        'gross_loss': 0.0,
+        'avg_pnl': 0.0,
+        'avg_win': 0.0,
+        'avg_loss': 0.0,
+        'expectancy': 0.0,
+        'best_trade': 0.0,
+        'worst_trade': 0.0,
+        'profit_factor': 0.0,
+        'win_rate': 0.0,
+        'current_streak_type': 'none',
+        'current_streak_count': 0,
+        'best_win_streak': 0,
+        'best_loss_streak': 0,
+        'recent_form': [],
+        'recent_form_compact': '—',
+        'dominant_symbol': None,
+        'dominant_symbol_count': 0,
+        'dominant_symbol_pnl': 0.0,
+        'first_trade_at': None,
+        'last_trade_at': None,
+        'since': real_since,
+        'epoch': epoch,
+        'user_id': uid,
+    }
+
+    try:
+        cursor = trades_col.find(
+            {'user_id': uid, 'timestamp': {'$gte': real_since}},
+            {'_id': 0, 'symbol': 1, 'profit': 1, 'timestamp': 1},
+        ).sort('timestamp', 1)
+
+        prev_streak = None
+        current_streak_count = 0
+        form = []
+        symbol_stats: dict[str, dict] = {}
+
+        for trade in cursor:
+            profit = _safe_float((trade or {}).get('profit'), 0.0)
+            ts = _parse_dt((trade or {}).get('timestamp'))
+            symbol = str((trade or {}).get('symbol') or '—')
+
+            payload['total'] += 1
+            payload['net_pnl'] += profit
+            payload['best_trade'] = profit if payload['total'] == 1 else max(payload['best_trade'], profit)
+            payload['worst_trade'] = profit if payload['total'] == 1 else min(payload['worst_trade'], profit)
+
+            if payload['first_trade_at'] is None:
+                payload['first_trade_at'] = ts
+            payload['last_trade_at'] = ts
+
+            symbol_row = symbol_stats.setdefault(symbol, {'count': 0, 'net_pnl': 0.0})
+            symbol_row['count'] += 1
+            symbol_row['net_pnl'] += profit
+
+            if profit > 0:
+                payload['wins'] += 1
+                payload['gross_profit'] += profit
+                result = 'win'
+                form.append('W')
+            elif profit < 0:
+                payload['losses'] += 1
+                payload['gross_loss'] += abs(profit)
+                result = 'loss'
+                form.append('L')
+            else:
+                payload['break_evens'] += 1
+                result = 'flat'
+                form.append('F')
+
+            if result in {'win', 'loss'}:
+                if prev_streak == result:
+                    current_streak_count += 1
+                else:
+                    current_streak_count = 1
+                    prev_streak = result
+                if result == 'win':
+                    payload['best_win_streak'] = max(payload['best_win_streak'], current_streak_count)
+                else:
+                    payload['best_loss_streak'] = max(payload['best_loss_streak'], current_streak_count)
+            else:
+                prev_streak = None
+                current_streak_count = 0
+
+        payload['decisive_trades'] = payload['wins'] + payload['losses']
+        if payload['total'] > 0:
+            payload['avg_pnl'] = payload['net_pnl'] / payload['total']
+            payload['expectancy'] = payload['avg_pnl']
+            payload['win_rate'] = (payload['wins'] / payload['total']) * 100.0
+        if payload['wins'] > 0:
+            payload['avg_win'] = payload['gross_profit'] / payload['wins']
+        if payload['losses'] > 0:
+            payload['avg_loss'] = -(payload['gross_loss'] / payload['losses'])
+        if payload['gross_loss'] > 0:
+            payload['profit_factor'] = payload['gross_profit'] / payload['gross_loss']
+        else:
+            payload['profit_factor'] = float('inf') if payload['gross_profit'] > 0 else 0.0
+
+        if prev_streak is not None and current_streak_count > 0:
+            payload['current_streak_type'] = prev_streak
+            payload['current_streak_count'] = current_streak_count
+
+        if symbol_stats:
+            dominant_symbol, dominant_stats = sorted(
+                symbol_stats.items(),
+                key=lambda item: (item[1]['count'], item[1]['net_pnl']),
+                reverse=True,
+            )[0]
+            payload['dominant_symbol'] = dominant_symbol
+            payload['dominant_symbol_count'] = int(dominant_stats['count'])
+            payload['dominant_symbol_pnl'] = float(dominant_stats['net_pnl'])
+
+        recent = form[-max(1, int(recent_form_limit)):]
+        recent.reverse()
+        payload['recent_form'] = recent
+        payload['recent_form_compact'] = ' '.join(recent) if recent else '—'
+
+        payload['net_pnl'] = round(payload['net_pnl'], 6)
+        payload['gross_profit'] = round(payload['gross_profit'], 6)
+        payload['gross_loss'] = round(payload['gross_loss'], 6)
+        payload['avg_pnl'] = round(payload['avg_pnl'], 6)
+        payload['expectancy'] = round(payload['expectancy'], 6)
+        payload['avg_win'] = round(payload['avg_win'], 6)
+        payload['avg_loss'] = round(payload['avg_loss'], 6)
+        payload['best_trade'] = round(payload['best_trade'], 6)
+        payload['worst_trade'] = round(payload['worst_trade'], 6)
+        payload['win_rate'] = round(payload['win_rate'], 2)
+        payload['dominant_symbol_pnl'] = round(payload['dominant_symbol_pnl'], 6)
+        if payload['profit_factor'] != float('inf'):
+            payload['profit_factor'] = round(payload['profit_factor'], 4)
+        return payload
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_user_track_record_summary error user_id={user_id}: {e}")
+        except Exception:
+            pass
+        payload['error'] = str(e)
+        return payload
+
+
 # ============================================================
 # TÉRMINOS Y CONDICIONES
 # ============================================================
