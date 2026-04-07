@@ -261,10 +261,6 @@ function renderPublicSystemOverview(payload) {
 
   if (elements.accessStatsGrid) elements.accessStatsGrid.innerHTML = '';
   if (elements.performanceExecutiveGrid) elements.performanceExecutiveGrid.innerHTML = '';
-  if (elements.userActivityList) { elements.userActivityList.className = 'list-stack empty-state'; elements.userActivityList.textContent = 'Abre la MiniApp desde Telegram para ver actividad real.'; }
-  if (elements.operationsSummaryGrid) elements.operationsSummaryGrid.innerHTML = '';
-  renderEventSummary(elements.latestOpenSummary, 'Última apertura', null, 'Abre la MiniApp desde Telegram para ver aperturas reales.');
-  renderEventSummary(elements.latestCloseSummary, 'Último cierre', null, 'Abre la MiniApp desde Telegram para ver cierres reales.');
   if (elements.systemRuntimeNotes) {
     elements.systemRuntimeNotes.innerHTML = '';
     elements.systemRuntimeNotes.className = 'readiness-list compact-list';
@@ -980,10 +976,6 @@ function setPreviewMode() {
   setSummarySystemVisibility(false);
   if (elements.accessStatsGrid) elements.accessStatsGrid.innerHTML = '';
   if (elements.performanceExecutiveGrid) elements.performanceExecutiveGrid.innerHTML = '';
-  if (elements.userActivityList) { elements.userActivityList.className = 'list-stack empty-state'; elements.userActivityList.textContent = 'Abre la MiniApp desde Telegram para ver actividad real.'; }
-  if (elements.operationsSummaryGrid) elements.operationsSummaryGrid.innerHTML = '';
-  renderEventSummary(elements.latestOpenSummary, 'Última apertura', null, 'Abre la MiniApp desde Telegram para ver aperturas reales.');
-  renderEventSummary(elements.latestCloseSummary, 'Último cierre', null, 'Abre la MiniApp desde Telegram para ver cierres reales.');
   if (elements.systemRuntimeNotes) {
     elements.systemRuntimeNotes.className = 'readiness-list compact-list';
     elements.systemRuntimeNotes.innerHTML = '';
