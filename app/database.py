@@ -412,6 +412,28 @@ def get_user_activity(user_id: int, limit: int = 12):
         return []
 
 
+def get_user_active_trade_snapshot(user_id: int) -> dict | None:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return None
+
+    try:
+        active_trades_collection_name = os.getenv('ACTIVE_TRADES_COLLECTION', 'active_trades')
+        active_trades_collection = db[active_trades_collection_name]
+        doc = active_trades_collection.find_one({'user_id': uid})
+        if not isinstance(doc, dict):
+            return None
+        doc.pop('_id', None)
+        return doc
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_user_active_trade_snapshot error user_id={user_id}: {e}")
+        except Exception:
+            pass
+        return None
+
+
 def _safe_float(x, default: float = 0.0) -> float:
     try:
         if x is None:
@@ -879,6 +901,19 @@ def grant_manual_plan_days(target_user_id: int, target_plan: str, days: int) -> 
         db_log(
             f"🎁 Plan manual user={target_user_id} plan={target_plan} days={days} prev_plan={previous_plan} prev_exp={previous_exp.isoformat() if previous_exp else 'none'} new_exp={exp_utc.isoformat()}"
         )
+        log_user_activity(
+            int(target_user_id),
+            f"Acceso actualizado · {plan_label}",
+            f"Tu acceso fue extendido manualmente por {days} día(s). Nuevo vencimiento {exp_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC.",
+            tone='success',
+            event_type='access_updated',
+            occurred_at=_now_utc(),
+            metadata={
+                'plan': target_plan,
+                'days': int(days),
+                'new_expires_at': exp_utc.isoformat(),
+            },
+        )
         return {
             "ok": True,
             "message": f"{plan_label} actualizado manualmente por {days} días",
@@ -1094,11 +1129,11 @@ def admin_set_user_trading_status(user_id: int, status: str) -> bool:
     normalized = str(status or '').strip().lower()
     if normalized not in {'active', 'inactive'}:
         return False
-    result = users_col.update_one(
-        {"user_id": int(user_id)},
-        {"$set": {"trading_status": normalized}},
-    )
-    return result.matched_count == 1
+    doc = users_col.find_one({"user_id": int(user_id)}, {"_id": 1})
+    if not doc:
+        return False
+    set_trading_status(int(user_id), normalized)
+    return True
 
 # ============================================================
 # LEGACY – FEES (DESACTIVADO)
