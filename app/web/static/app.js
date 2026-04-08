@@ -1406,19 +1406,27 @@ async function loadData(options = {}) {
   renderBilling(billing);
 
   if (state.isAdmin) {
+    if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
+    if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
     try {
       const admin = await apiFetch('/api/v1/admin/overview');
       renderAdmin(admin);
-      if (elements.adminTabButton) elements.adminTabButton.classList.remove('hidden');
-      if (elements.systemTabButton) elements.systemTabButton.classList.remove('hidden');
       setSummarySystemVisibility();
-    } catch {
-      if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
-      if (elements.systemTabButton) elements.systemTabButton.classList.add('hidden');
-      state.isAdmin = false;
-      setSummarySystemVisibility(false);
-      document.querySelectorAll('[data-panel="admin"]').forEach((panel) => panel.classList.remove('is-active'));
-      document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
+      if (admin && admin.partial) {
+        setStatus('Admin cargado con incidencias parciales. Algunas métricas técnicas pueden estar incompletas.', 'warning');
+      }
+    } catch (error) {
+      const fallbackAdmin = state.admin || {
+        visual: {},
+        trade_stats_30d: {},
+        security: {},
+        recent_actions: [],
+        monitor: { events: [], active_positions: [], counts: { events: 0, active_positions: 0, trade_events: 0, payment_events: 0 } },
+        partial: true,
+      };
+      renderAdmin(fallbackAdmin);
+      setSummarySystemVisibility();
+      setStatus(error?.message || 'El módulo admin tuvo una incidencia, pero la sesión sigue en modo administrador.', 'warning');
     }
   } else {
     if (elements.adminTabButton) elements.adminTabButton.classList.add('hidden');
