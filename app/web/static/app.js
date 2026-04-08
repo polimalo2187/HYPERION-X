@@ -573,6 +573,7 @@ function buildPaymentPlanCard(option, canCreate = true) {
 
 function renderBilling(data) {
   state.billing = data || null;
+  const config = data?.configuration || {};
   const catalog = Array.isArray(data?.catalog?.premium) ? data.catalog.premium : [];
   if (elements.billingCatalogGrid) {
     elements.billingCatalogGrid.innerHTML = '';
@@ -583,7 +584,6 @@ function renderBilling(data) {
     }
   }
 
-  const config = data?.configuration || {};
   if (elements.billingConfigGrid) {
     const missing = Array.isArray(config.missing_keys) ? config.missing_keys : [];
     elements.billingConfigGrid.innerHTML = '';
