@@ -693,16 +693,28 @@ function renderBilling(data) {
 
   const canConfirm = !!order && ['awaiting_payment', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
   const canCancel = !!order && ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
-  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = !canConfirm;
-  if (elements.billingCancelButton) elements.billingCancelButton.disabled = !canCancel;
+  if (elements.billingConfirmButton) {
+    elements.billingConfirmButton.disabled = !canConfirm;
+    elements.billingConfirmButton.hidden = !order;
+  }
+  if (elements.billingCancelButton) {
+    elements.billingCancelButton.disabled = !canCancel;
+    elements.billingCancelButton.hidden = !order;
+  }
 }
 
 function syncBillingActionButtons() {
   const order = state.billing?.active_order || null;
   const canConfirm = !!order && ['awaiting_payment', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
   const canCancel = !!order && ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
-  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = !canConfirm;
-  if (elements.billingCancelButton) elements.billingCancelButton.disabled = !canCancel;
+  if (elements.billingConfirmButton) {
+    elements.billingConfirmButton.disabled = !canConfirm;
+    elements.billingConfirmButton.hidden = !order;
+  }
+  if (elements.billingCancelButton) {
+    elements.billingCancelButton.disabled = !canCancel;
+    elements.billingCancelButton.hidden = !order;
+  }
 }
 
 function buildControlSummary(control) {
@@ -1423,6 +1435,8 @@ async function pauseTradingAction() {
 
 
 async function createPaymentOrderAction(days) {
+  const planButtons = Array.from(document.querySelectorAll('.payment-plan-card .primary-button'));
+  planButtons.forEach((button) => { button.disabled = true; });
   try {
     const payload = await apiFetch('/api/v1/billing/order', {
       method: 'POST',
@@ -1434,6 +1448,10 @@ async function createPaymentOrderAction(days) {
     renderBilling(fresh);
   } catch (error) {
     setStatus(error.message || 'No se pudo generar la orden de pago.', 'error');
+    const fresh = await apiFetch('/api/v1/billing').catch(() => null);
+    if (fresh) renderBilling(fresh);
+  } finally {
+    planButtons.forEach((button) => { button.disabled = false; });
   }
 }
 
