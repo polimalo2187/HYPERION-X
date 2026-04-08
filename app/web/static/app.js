@@ -521,7 +521,7 @@ function buildControlSummary(control) {
   return [
     `Wallet: ${control.wallet_configured ? truncateMiddle(control.wallet_masked, 24) : 'pendiente'}`,
     `Private key: ${control.private_key_configured ? 'configurada' : 'pendiente'}`,
-    `Términos: ${control.terms_accepted ? 'aceptados' : 'pendientes'}`,
+    `Políticas: ${control.terms_accepted ? 'confirmadas' : 'pendientes de confirmación'}`,
     `Plan: ${planLabel(control.plan)} (${control.plan_active ? 'activo' : 'inactivo'})`,
     `Días restantes: ${control.plan_days_remaining ?? 0}`,
     `Solicitud del usuario: ${control.trading_status || 'inactive'}`,
@@ -577,7 +577,7 @@ function renderDashboard(data) {
     buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Se calculan sobre el vencimiento actual.' : 'Sin días vigentes.'),
     buildKpiCard('Trading solicitado', tradingText, 'Estado deseado guardado por el usuario.'),
     buildKpiCard('Motor real', operationalLabel, data.operational_detail || 'Lectura operativa del motor.'),
-    buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean la activación si faltan.'),
+    buildKpiCard('Políticas', data.terms_accepted ? 'Confirmadas' : 'Pendientes', 'Bloquean la activación si falta la confirmación.'),
     buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
     buildKpiCard('Private key', data.private_key_configured ? 'Sí' : 'No', 'No se vuelve a exponer por API.'),
     buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha actual del plan.')
@@ -587,7 +587,7 @@ function renderDashboard(data) {
   elements.readinessList.append(
     buildReadinessItem('Wallet', data.wallet_configured ? 'La wallet ya está guardada.' : 'Todavía no existe wallet guardada.', data.wallet_configured ? 'configured' : 'missing'),
     buildReadinessItem('Private key', data.private_key_configured ? 'La private key ya existe.' : 'Todavía falta private key.', data.private_key_configured ? 'configured' : 'missing'),
-    buildReadinessItem('Términos', data.terms_accepted ? 'Los términos ya fueron aceptados.' : 'Debes aceptar términos para activar trading.', data.terms_accepted ? 'active' : 'warning'),
+    buildReadinessItem('Políticas', data.terms_accepted ? 'La confirmación de políticas ya fue registrada.' : 'Debes confirmar la aceptación de políticas para activar trading.', data.terms_accepted ? 'active' : 'warning'),
     buildReadinessItem('Plan', data.plan_active ? `El plan ${planText} está activo.` : 'No hay acceso operativo vigente.', data.plan_active ? 'active' : 'inactive')
   );
 
@@ -604,7 +604,7 @@ function renderDashboard(data) {
 function renderControl(control) {
   state.control = control;
   elements.controlReadinessBox.textContent = buildControlSummary(control);
-  elements.termsStatusText.textContent = control.terms_accepted ? 'Aceptados' : 'Pendientes';
+  elements.termsStatusText.textContent = control.terms_accepted ? 'Confirmadas' : 'Pendientes de confirmación';
   elements.acceptTermsButton.disabled = control.terms_accepted;
   elements.activateTradingButton.disabled = !control.activation_ready || control.trading_status === 'active';
   elements.pauseTradingButton.disabled = control.trading_status !== 'active';
@@ -618,7 +618,7 @@ function renderControl(control) {
     buildKpiCard('Wallet', control.wallet_configured ? truncateMiddle(control.wallet_masked, 18) : 'Pendiente', 'Dirección actual del usuario.'),
     buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', control.security_posture === 'encrypted_at_rest' ? 'Cifrada en reposo.' : 'Nunca se reexpone por API.'),
     buildKpiCard('Seguridad', control.security_posture === 'encrypted_at_rest' ? 'Cifrada' : (control.security_posture === 'legacy_plaintext' ? 'Legacy' : 'Sin key'), control.security_posture === 'legacy_plaintext' ? 'Requiere rotación para endurecer.' : 'Estado del almacenamiento sensible.'),
-    buildKpiCard('Términos', control.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean activación.'),
+    buildKpiCard('Políticas', control.terms_accepted ? 'Confirmadas' : 'Pendientes', 'Bloquean la activación si falta la confirmación.'),
     buildKpiCard('Solicitud', control.trading_status || 'inactive', 'Estado deseado por el usuario desde la MiniApp.'),
     buildKpiCard('Estado real', control.operational_label || 'Sin lectura', control.operational_detail || 'Lectura operativa actual.'),
     buildKpiCard('Modo operativo', control.operational_mode || 'unknown', control.operational_live_trade ? `Trade vivo ${control.operational_active_symbol || ''}`.trim() : 'Sin trade activo gestionado ahora mismo.'),
@@ -683,7 +683,7 @@ function renderOperations(data) {
     elements.operationsTimelineGrid.append(
       buildKpiCard('Eventos visibles', timelineSummary.total_visible_events || 0, 'Actividad reciente registrada para esta cuenta.'),
       buildKpiCard('Trading', timelineSummary.trading_events || 0, 'Aperturas y cierres visibles en el feed.'),
-      buildKpiCard('Cuenta', timelineSummary.account_events || 0, 'Cambios de wallet, key, términos o acceso.'),
+      buildKpiCard('Cuenta', timelineSummary.account_events || 0, 'Cambios de wallet, key, políticas o acceso.'),
       buildKpiCard('Control', timelineSummary.control_events || 0, timelineSummary.live_trade ? 'Hay una operación viva registrada.' : 'Sin operación activa ahora mismo.'),
     );
   }
@@ -991,7 +991,7 @@ function renderAdminSelectedUser(user) {
     buildKpiCard('Wallet', user.wallet_configured ? truncateMiddle(user.wallet || '—', 18) : 'Pendiente', 'Estado de wallet.'),
     buildKpiCard('Private key', user.private_key_configured ? 'Configurada' : 'Pendiente', user.private_key_storage || 'not_configured'),
     buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)} · ${user.plan_days_remaining || 0} día(s)` : 'Sin acceso vigente.'),
-    buildKpiCard('Términos', user.terms_accepted ? 'Aceptados' : 'Pendientes', user.terms_timestamp ? `TS ${formatDate(user.terms_timestamp)}` : 'Sin aceptación registrada.'),
+    buildKpiCard('Políticas', user.terms_accepted ? 'Confirmadas' : 'Pendientes', user.terms_timestamp ? `Confirmadas ${formatDate(user.terms_timestamp)}` : 'Sin confirmación registrada.'),
     buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
     buildKpiCard('Referidos válidos', user.referral_valid_count || 0, user.private_key_version ? `Cipher ${user.private_key_version}` : 'Sin versión de cifrado.')
   );
@@ -1194,10 +1194,10 @@ async function acceptTermsAction() {
   try {
     const control = await apiFetch('/api/v1/control/terms/accept', { method: 'POST' });
     renderControl(control);
-    setStatus('Términos aceptados correctamente.', 'success');
+    setStatus('Confirmación de políticas registrada correctamente.', 'success');
     await refreshSummaryOnly();
   } catch (error) {
-    setStatus(error.message || 'No se pudieron aceptar los términos.', 'error');
+    setStatus(error.message || 'No se pudo registrar la confirmación de políticas.', 'error');
     elements.acceptTermsButton.disabled = false;
   }
 }
