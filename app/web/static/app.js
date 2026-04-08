@@ -1304,8 +1304,9 @@ async function authenticate() {
   if (elements.systemTabButton) elements.systemTabButton.classList.toggle('hidden', !state.isAdmin);
 }
 
-async function loadData() {
-  setStatus('Sincronizando datos con el backend...', 'info');
+async function loadData(options = {}) {
+  const showStatus = options.showStatus !== false;
+  if (showStatus) setStatus('Sincronizando datos con el backend...', 'info');
   const [dashboard, control, performance, operations, referrals, systemRuntime, billing] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
     apiFetch('/api/v1/control'),
@@ -1347,7 +1348,7 @@ async function loadData() {
     document.querySelectorAll('[data-panel="system"]').forEach((panel) => panel.classList.remove('is-active'));
   }
 
-  setStatus('MiniApp sincronizada correctamente.', 'success');
+  if (showStatus) setStatus('MiniApp sincronizada correctamente.', 'success');
 }
 
 function bindTabs() {
@@ -1461,7 +1462,16 @@ async function confirmPaymentAction() {
     setStatus('No hay una orden activa para confirmar.', 'warning');
     return;
   }
-  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = true;
+  const originalConfirmText = elements.billingConfirmButton ? elements.billingConfirmButton.textContent : 'Confirmar pago';
+  const originalCancelText = elements.billingCancelButton ? elements.billingCancelButton.textContent : 'Cancelar orden';
+  if (elements.billingConfirmButton) {
+    elements.billingConfirmButton.disabled = true;
+    elements.billingConfirmButton.textContent = 'Verificando...';
+  }
+  if (elements.billingCancelButton) {
+    elements.billingCancelButton.disabled = true;
+    elements.billingCancelButton.textContent = 'Bloqueado';
+  }
   try {
     const payload = await apiFetch('/api/v1/billing/order/confirm', {
       method: 'POST',
@@ -1469,10 +1479,16 @@ async function confirmPaymentAction() {
     });
     const isSuccess = Boolean(payload.ok);
     setStatus(payload.message || paymentReasonLabel(payload.reason), isSuccess ? 'success' : 'warning');
-    await loadData();
+    const fresh = await apiFetch('/api/v1/billing');
+    renderBilling(fresh);
+    await refreshSummaryOnly();
   } catch (error) {
     setStatus(error.message || 'No se pudo confirmar el pago en este momento.', 'error');
+    const fresh = await apiFetch('/api/v1/billing').catch(() => null);
+    if (fresh) renderBilling(fresh);
   } finally {
+    if (elements.billingConfirmButton) elements.billingConfirmButton.textContent = originalConfirmText;
+    if (elements.billingCancelButton) elements.billingCancelButton.textContent = originalCancelText;
     syncBillingActionButtons();
   }
 }
@@ -1483,7 +1499,11 @@ async function cancelPaymentAction() {
     setStatus('No hay una orden activa para cancelar.', 'warning');
     return;
   }
-  if (elements.billingCancelButton) elements.billingCancelButton.disabled = true;
+  const originalCancelText = elements.billingCancelButton ? elements.billingCancelButton.textContent : 'Cancelar orden';
+  if (elements.billingCancelButton) {
+    elements.billingCancelButton.disabled = true;
+    elements.billingCancelButton.textContent = 'Cancelando...';
+  }
   try {
     const payload = await apiFetch('/api/v1/billing/order/cancel', {
       method: 'POST',
@@ -1496,6 +1516,7 @@ async function cancelPaymentAction() {
   } catch (error) {
     setStatus(error.message || 'No se pudo cancelar la orden en este momento.', 'error');
   } finally {
+    if (elements.billingCancelButton) elements.billingCancelButton.textContent = originalCancelText;
     syncBillingActionButtons();
   }
 }
