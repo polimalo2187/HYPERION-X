@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
@@ -9,6 +11,7 @@ from app.services.billing_service import get_billing_overview, serialize_order_p
 from app.services.user_service import get_user_profile
 
 router = APIRouter(prefix='/api/v1/billing', tags=['billing'])
+logger = logging.getLogger(__name__)
 
 
 class PaymentOrderCreateRequest(BaseModel):
@@ -45,7 +48,12 @@ def billing_create_order(payload: PaymentOrderCreateRequest, session: dict = Dep
 
 @router.post('/order/confirm')
 def billing_confirm_order(payload: PaymentOrderActionRequest, session: dict = Depends(require_session)) -> dict:
-    result = confirm_payment_order(payload.order_id, int(session['user_id']))
+    try:
+        result = confirm_payment_order(payload.order_id, int(session['user_id']))
+    except Exception as exc:
+        logger.exception('billing_confirm_order failed for user_id=%s order_id=%s', session.get('user_id'), payload.order_id)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='No se pudo verificar la orden en este momento') from exc
+
     order = result.get('order')
     verification = result.get('verification') or {}
     response = {
@@ -62,7 +70,11 @@ def billing_confirm_order(payload: PaymentOrderActionRequest, session: dict = De
 
 @router.post('/order/cancel')
 def billing_cancel_order(payload: PaymentOrderActionRequest, session: dict = Depends(require_session)) -> dict:
-    cancelled = cancel_payment_order(payload.order_id, int(session['user_id']))
+    try:
+        cancelled = cancel_payment_order(payload.order_id, int(session['user_id']))
+    except Exception as exc:
+        logger.exception('billing_cancel_order failed for user_id=%s order_id=%s', session.get('user_id'), payload.order_id)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail='No se pudo cancelar la orden en este momento') from exc
     if not cancelled:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='No se pudo cancelar la orden')
     return {'ok': True, 'message': 'Orden cancelada correctamente'}
