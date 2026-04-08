@@ -35,6 +35,9 @@ admin_action_logs_col = db["admin_action_logs"]
 runtime_status_col = db["runtime_status"]
 user_runtime_col = db["user_runtime"]
 user_activity_col = db["user_activity"]
+payment_orders_col = db["payment_orders"]
+payment_verification_logs_col = db["payment_verification_logs"]
+subscription_events_col = db["subscription_events"]
 
 # ============================================================
 # ZONA HORARIA (CUBA) – vencimientos por medianoche
@@ -77,6 +80,20 @@ def _parse_dt(x):
 def db_log(msg: str):
     ts = _now_utc().isoformat()
     print(f"[DB {ts}] {msg}", file=sys.stdout, flush=True)
+
+
+try:
+    payment_orders_col.create_index('order_id', unique=True)
+    payment_orders_col.create_index('user_id')
+    payment_orders_col.create_index('status')
+    payment_orders_col.create_index('expires_at')
+    payment_orders_col.create_index('matched_tx_hash', unique=True, sparse=True)
+    payment_verification_logs_col.create_index('order_id')
+    payment_verification_logs_col.create_index('user_id')
+    subscription_events_col.create_index('user_id')
+    subscription_events_col.create_index('order_id')
+except Exception as _payment_index_exc:
+    print(f"[DB {_now_utc().isoformat()}] ⚠ payment index init error: {_payment_index_exc}", file=sys.stdout, flush=True)
 
 # ============================================================
 # UTILIDADES (blindaje)
@@ -2007,3 +2024,151 @@ def search_users_for_admin(query: str, limit: int = 10) -> list[dict]:
         if snapshot:
             results.append(snapshot)
     return results
+
+
+# ============================================================
+# PAGOS AUTOMÁTICOS – PREMIUM 15D / 30D
+# ============================================================
+
+def get_payment_order_by_id(order_id: str, *, user_id: int | None = None) -> dict | None:
+    query = {'order_id': str(order_id)}
+    if user_id is not None:
+        query['user_id'] = int(user_id)
+    return payment_orders_col.find_one(query)
+
+
+def get_active_payment_order_for_user(user_id: int) -> dict | None:
+    return payment_orders_col.find_one(
+        {
+            'user_id': int(user_id),
+            'status': {'$in': ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed']},
+        },
+        sort=[('created_at', -1)],
+    )
+
+
+def cancel_open_payment_orders_for_user(user_id: int, *, reason: str = 'cancelled_by_system') -> int:
+    now = _now_utc()
+    result = payment_orders_col.update_many(
+        {
+            'user_id': int(user_id),
+            'status': {'$in': ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed']},
+        },
+        {'$set': {'status': 'cancelled', 'last_verification_reason': str(reason), 'updated_at': now}},
+    )
+    return int(result.modified_count or 0)
+
+
+def log_subscription_event(
+    user_id: int,
+    event_type: str,
+    *,
+    plan: str,
+    days: int,
+    source: str,
+    before_plan: str | None = None,
+    before_expires_at: datetime | None = None,
+    after_plan: str | None = None,
+    after_expires_at: datetime | None = None,
+    order_id: str | None = None,
+    metadata: dict | None = None,
+) -> bool:
+    try:
+        now = _now_utc()
+        subscription_events_col.insert_one({
+            'user_id': int(user_id),
+            'event_type': str(event_type),
+            'plan': str(plan),
+            'days': int(days),
+            'source': str(source),
+            'before_plan': before_plan,
+            'before_expires_at': before_expires_at,
+            'after_plan': after_plan,
+            'after_expires_at': after_expires_at,
+            'order_id': order_id,
+            'metadata': metadata or {},
+            'created_at': now,
+            'updated_at': now,
+        })
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ log_subscription_event error user_id={user_id}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def apply_payment_premium_purchase(user_id: int, days: int, *, order_id: str, tx_hash: str | None = None, amount_usdt: float | None = None, metadata: dict | None = None) -> dict:
+    try:
+        uid = int(user_id)
+        day_value = int(days)
+    except Exception:
+        return {'ok': False, 'message': 'Datos de compra inválidos'}
+
+    if day_value not in (15, 30):
+        return {'ok': False, 'message': 'Duración premium inválida'}
+
+    u = users_col.find_one({'user_id': uid}, {'plan': 1, 'plan_expires_at': 1, 'trial_used': 1, 'username': 1})
+    if not u:
+        return {'ok': False, 'message': 'Usuario no encontrado'}
+
+    previous_plan = (u.get('plan') or 'none')
+    previous_exp = _parse_dt(u.get('plan_expires_at'))
+    exp_utc = _midnight_cuba_after_days_from_base(previous_exp, day_value)
+    now = _now_utc()
+    set_fields = {
+        'plan': 'premium',
+        'plan_expires_at': exp_utc,
+        'expiry_notified_on': None,
+        'last_purchase_at': now,
+        'last_purchase_days': day_value,
+        'last_purchase_plan': 'premium',
+        'last_purchase_source': 'payment_bep20',
+        'last_payment_order_id': str(order_id),
+        'last_payment_tx_hash': str(tx_hash or '') or None,
+        'last_payment_amount_usdt': float(amount_usdt) if amount_usdt is not None else None,
+    }
+    users_col.update_one({'user_id': uid}, {'$set': set_fields})
+
+    log_subscription_event(
+        uid,
+        'purchase',
+        plan='premium',
+        days=day_value,
+        source='payment_bep20',
+        before_plan=previous_plan,
+        before_expires_at=previous_exp,
+        after_plan='premium',
+        after_expires_at=exp_utc,
+        order_id=str(order_id),
+        metadata={
+            **(metadata or {}),
+            'tx_hash': tx_hash,
+            'amount_usdt': float(amount_usdt) if amount_usdt is not None else None,
+        },
+    )
+    log_user_activity(
+        uid,
+        'Pago premium confirmado',
+        f'Tu acceso premium fue activado por {day_value} día(s). Nuevo vencimiento {exp_utc.strftime("%Y-%m-%d %H:%M:%S")} UTC.',
+        tone='success',
+        event_type='payment_confirmed',
+        metadata={
+            'order_id': str(order_id),
+            'days': day_value,
+            'amount_usdt': float(amount_usdt) if amount_usdt is not None else None,
+            'tx_hash': tx_hash,
+        },
+        occurred_at=now,
+    )
+    return {
+        'ok': True,
+        'message': f'Premium activado por {day_value} días',
+        'plan': 'premium',
+        'days': day_value,
+        'previous_plan': previous_plan,
+        'previous_expires_at': previous_exp,
+        'new_expires_at': exp_utc,
+        'new_days_remaining': _days_remaining_from_exp(exp_utc),
+    }
