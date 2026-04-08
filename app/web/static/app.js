@@ -90,6 +90,8 @@ const elements = {
   adminRecentActions: $('adminRecentActions'),
   adminMonitorStats: $('adminMonitorStats'),
   adminMonitorFeed: $('adminMonitorFeed'),
+  adminClearMonitorButton: $('adminClearMonitorButton'),
+  adminClearMonitorStatus: $('adminClearMonitorStatus'),
   adminLivePositions: $('adminLivePositions'),
   adminSearchForm: $('adminSearchForm'),
   adminSearchInput: $('adminSearchInput'),
@@ -1833,6 +1835,45 @@ async function resetStatsForSelectedUser() {
   );
 }
 
+async function clearAdminMonitorFeed() {
+  if (!elements.adminClearMonitorButton) return;
+  const confirmed = await requestStrongConfirmation(
+    'Limpiar feed operativo',
+    [
+      'Esto ocultará del monitor admin los eventos ya revisados.',
+      'La actividad del usuario no se elimina.',
+      'Las posiciones vivas no se tocan.',
+    ],
+  );
+  if (!confirmed) return;
+
+  elements.adminClearMonitorButton.disabled = true;
+  if (elements.adminClearMonitorStatus) {
+    elements.adminClearMonitorStatus.textContent = 'Limpiando feed operativo...';
+  }
+  try {
+    const payload = await apiFetch('/api/v1/admin/monitor/clear', {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'Limpieza manual del feed operativo' }),
+    });
+    if (elements.adminClearMonitorStatus) {
+      elements.adminClearMonitorStatus.textContent = payload.message || 'Feed operativo limpiado.';
+    }
+    setStatus(payload.message || 'Feed operativo limpiado.', 'success');
+    if (state.isAdmin) {
+      const admin = await apiFetch('/api/v1/admin/overview');
+      renderAdmin(admin || {});
+    }
+  } catch (error) {
+    if (elements.adminClearMonitorStatus) {
+      elements.adminClearMonitorStatus.textContent = error.message || 'No se pudo limpiar el feed operativo.';
+    }
+    setStatus(error.message || 'No se pudo limpiar el feed operativo.', 'error');
+  } finally {
+    elements.adminClearMonitorButton.disabled = false;
+  }
+}
+
 async function bulkMigrateLegacyKeys() {
   if (!elements.adminBulkMigrateButton) return;
   const reason = getAdminActionReason();
@@ -1935,6 +1976,9 @@ function bindActions() {
   }
   if (elements.adminBulkMigrateButton) {
     elements.adminBulkMigrateButton.addEventListener('click', bulkMigrateLegacyKeys);
+  }
+  if (elements.adminClearMonitorButton) {
+    elements.adminClearMonitorButton.addEventListener('click', clearAdminMonitorFeed);
   }
 }
 
