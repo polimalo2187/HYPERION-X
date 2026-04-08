@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=phase29-policy-confirmation" />
+    <link rel="stylesheet" href="/static/styles.css?v=phase30-payments" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -127,6 +127,7 @@
         <button class="tab is-active" data-tab="overview" type="button">Resumen</button>
         <button class="tab hidden" data-tab="system" id="systemTabButton" type="button">Sistema</button>
         <button class="tab" data-tab="control" type="button">Control</button>
+        <button class="tab" data-tab="billing" type="button">Pagos</button>
         <button class="tab" data-tab="operations" type="button">Operaciones</button>
         <button class="tab hidden" data-tab="admin" id="adminTabButton" type="button">Admin</button>
       </nav>
@@ -314,6 +315,57 @@
                 </div>
               </div>
               <div id="controlStats" class="stats-grid"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="billing">
+          <div class="dashboard-grid">
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">SUSCRIPCIÓN PREMIUM</span>
+                  <h3>Planes automáticos</h3>
+                </div>
+              </div>
+              <div class="info-banner muted">
+                Genera una orden única en USDT BEP-20 y confirma el pago desde la MiniApp. Solo existen dos planes premium: 15 días por 5 USDT y 30 días por 10 USDT.
+              </div>
+              <div id="billingCatalogGrid" class="stats-grid"></div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">ORDEN ACTIVA</span>
+                  <h3>Pago pendiente o en verificación</h3>
+                </div>
+              </div>
+              <div id="billingOrderBox" class="list-stack empty-state">No hay una orden de pago activa ahora mismo.</div>
+              <div class="button-row stacked-mobile">
+                <button id="billingConfirmButton" class="success-button" type="button">Confirmar pago</button>
+                <button id="billingCancelButton" class="secondary-button" type="button">Cancelar orden</button>
+              </div>
+            </article>
+
+            <article class="glass-card panel-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">CONFIGURACIÓN</span>
+                  <h3>Estado del sistema de cobro</h3>
+                </div>
+              </div>
+              <div id="billingConfigGrid" class="stats-grid compact"></div>
+            </article>
+
+            <article class="glass-card panel-card">
+              <div class="panel-head">
+                <div>
+                  <span class="section-tag">INSTRUCCIONES</span>
+                  <h3>Cómo completar el pago</h3>
+                </div>
+              </div>
+              <div id="billingHelpList" class="list-stack"></div>
             </article>
           </div>
         </section>
@@ -529,6 +581,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=phase29-policy-confirmation"></script>
+    <script src="/static/app.js?v=phase30-payments"></script>
   </body>
 </html>
