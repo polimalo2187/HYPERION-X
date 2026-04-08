@@ -157,3 +157,95 @@ MINIAPP_ALLOWED_ORIGINS = [
     for origin in os.getenv("MINIAPP_ALLOWED_ORIGINS", "*").split(",")
     if origin.strip()
 ]
+
+
+# ============================================================
+# PAGOS AUTOMÁTICOS USDT BEP-20
+# ============================================================
+
+def get_payment_network() -> str:
+    return os.getenv("PAYMENT_NETWORK", "bep20").strip().lower() or "bep20"
+
+
+def get_payment_token_symbol() -> str:
+    return os.getenv("PAYMENT_TOKEN_SYMBOL", "USDT").strip().upper() or "USDT"
+
+
+def get_payment_token_contract() -> str:
+    return os.getenv("PAYMENT_TOKEN_CONTRACT", "").strip().lower()
+
+
+def get_payment_receiver_address() -> str:
+    return os.getenv("PAYMENT_RECEIVER_ADDRESS", "").strip().lower()
+
+
+def get_bsc_rpc_http_url() -> str:
+    return os.getenv("BSC_RPC_HTTP_URL", "").strip()
+
+
+def get_payment_min_confirmations() -> int:
+    try:
+        return max(int(os.getenv("PAYMENT_MIN_CONFIRMATIONS", "3")), 1)
+    except Exception:
+        return 3
+
+
+def get_payment_order_ttl_minutes() -> int:
+    try:
+        return max(int(os.getenv("PAYMENT_ORDER_TTL_MINUTES", "30")), 5)
+    except Exception:
+        return 30
+
+
+def get_payment_unique_max_delta() -> float:
+    try:
+        value = float(os.getenv("PAYMENT_UNIQUE_MAX_DELTA", "0.150"))
+    except Exception:
+        return 0.150
+    return max(0.001, min(value, 0.150))
+
+
+def get_payment_token_decimals() -> int:
+    try:
+        return max(int(os.getenv("PAYMENT_TOKEN_DECIMALS", "18")), 0)
+    except Exception:
+        return 18
+
+
+def get_payment_lookback_blocks() -> int:
+    try:
+        return max(int(os.getenv("PAYMENT_LOOKBACK_BLOCKS", "2500")), 100)
+    except Exception:
+        return 2500
+
+
+def get_payment_configuration_status() -> dict:
+    checks = [
+        {
+            "key": "BSC_RPC_HTTP_URL",
+            "label": "RPC BSC",
+            "value_present": bool(get_bsc_rpc_http_url()),
+        },
+        {
+            "key": "PAYMENT_TOKEN_CONTRACT",
+            "label": "Contrato del token",
+            "value_present": bool(get_payment_token_contract()),
+        },
+        {
+            "key": "PAYMENT_RECEIVER_ADDRESS",
+            "label": "Wallet receptora",
+            "value_present": bool(get_payment_receiver_address()),
+        },
+    ]
+    missing = [item["key"] for item in checks if not item["value_present"]]
+    return {
+        "ready": not missing,
+        "checks": checks,
+        "missing_keys": missing,
+        "network": get_payment_network(),
+        "token_symbol": get_payment_token_symbol(),
+    }
+
+
+def is_payment_configuration_ready() -> bool:
+    return bool(get_payment_configuration_status().get("ready"))
