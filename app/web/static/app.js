@@ -1042,6 +1042,49 @@ function renderSystemRuntime(payload) {
 }
 
 
+
+function renderActivityList(container, items, emptyText, options = {}) {
+  if (!container) return;
+  const rows = Array.isArray(items) ? items : [];
+  if (!rows.length) {
+    const emptyTitle = options.emptyTitle || 'Sin actividad';
+    const emptyDetail = options.emptyDetail || emptyText || 'No hay elementos para mostrar.';
+    container.className = 'list-stack empty-state';
+    container.innerHTML = `<div class="empty-title">${emptyTitle}</div><div class="empty-detail">${emptyDetail}</div>`;
+    return;
+  }
+
+  container.className = 'list-stack';
+  container.innerHTML = '';
+  rows.forEach((row) => {
+    const article = document.createElement('article');
+    article.className = 'activity-item';
+
+    const tone = String(row?.tone || row?.status || row?.event_type || 'info').toLowerCase();
+    const username = row?.username ? `@${row.username}` : (row?.user_id ? `Usuario ${row.user_id}` : 'Sistema');
+    const title = row?.title || row?.message || row?.action || row?.event_type || 'Evento';
+    const target = row?.target_username ? ` · @${row.target_username}` : (row?.target_user_id ? ` · Usuario ${row.target_user_id}` : '');
+    const detailParts = [];
+    if (row?.detail) detailParts.push(row.detail);
+    if (row?.reason) detailParts.push(`Motivo: ${row.reason}`);
+    if (row?.metadata?.symbol) detailParts.push(`Símbolo ${row.metadata.symbol}`);
+    if (row?.metadata?.result) detailParts.push(`Resultado ${row.metadata.result}`);
+    if (!detailParts.length && row?.event_type) detailParts.push(`Tipo ${row.event_type}`);
+    const detail = detailParts.join(' · ') || 'Sin detalle adicional.';
+    const when = row?.created_at || row?.occurred_at || row?.opened_at || row?.timestamp;
+
+    article.innerHTML = `
+      <div class="activity-dot ${pillClass(tone)}"></div>
+      <div class="activity-copy">
+        <div class="activity-title">${title} · ${username}${target}</div>
+        <div class="activity-detail">${detail}</div>
+      </div>
+      <div class="activity-time">${formatDate(when)}</div>
+    `;
+    container.appendChild(article);
+  });
+}
+
 function renderAdminMonitorFeed(rows) {
   renderActivityList(
     elements.adminMonitorFeed,
