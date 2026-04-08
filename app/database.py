@@ -87,7 +87,25 @@ try:
     payment_orders_col.create_index('user_id')
     payment_orders_col.create_index('status')
     payment_orders_col.create_index('expires_at')
-    payment_orders_col.create_index('matched_tx_hash', unique=True, sparse=True)
+
+    # Limpieza defensiva: documentos viejos con matched_tx_hash=None rompen la unicidad
+    # porque Mongo considera null como valor indexable.
+    try:
+        payment_orders_col.update_many({'matched_tx_hash': None}, {'$unset': {'matched_tx_hash': ''}})
+    except Exception as _payment_null_cleanup_exc:
+        print(f"[DB {_now_utc().isoformat()}] ⚠ payment null cleanup error: {_payment_null_cleanup_exc}", file=sys.stdout, flush=True)
+
+    try:
+        payment_orders_col.drop_index('matched_tx_hash_1')
+    except Exception:
+        pass
+
+    payment_orders_col.create_index(
+        'matched_tx_hash',
+        unique=True,
+        partialFilterExpression={'matched_tx_hash': {'$type': 'string'}},
+    )
+
     payment_verification_logs_col.create_index('order_id')
     payment_verification_logs_col.create_index('user_id')
     subscription_events_col.create_index('user_id')
