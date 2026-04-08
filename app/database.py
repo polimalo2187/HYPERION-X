@@ -448,6 +448,94 @@ def get_user_activity(user_id: int, limit: int = 12):
         return []
 
 
+
+def get_admin_monitor_feed(limit: int = 30, event_types: list[str] | None = None):
+    try:
+        lim = max(1, min(int(limit), 100))
+    except Exception:
+        lim = 30
+
+    default_types = [
+        'trade_opened',
+        'trade_closed',
+        'payment_confirmed',
+        'trading_activated',
+        'trading_paused',
+        'stats_reset',
+        'private_key_hardened',
+        'wallet_updated',
+        'private_key_updated',
+    ]
+    normalized = [str(x).strip().lower() for x in (event_types or default_types) if str(x).strip()]
+    query = {'event_type': {'$in': normalized}} if normalized else {}
+    try:
+        return list(
+            user_activity_col.find(query, {'_id': 0})
+            .sort('created_at', -1)
+            .limit(lim)
+        )
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_admin_monitor_feed error: {e}")
+        except Exception:
+            pass
+        return []
+
+
+def get_admin_active_positions(limit: int = 20) -> list[dict]:
+    try:
+        lim = max(1, min(int(limit), 50))
+    except Exception:
+        lim = 20
+
+    try:
+        active_trades_collection_name = os.getenv('ACTIVE_TRADES_COLLECTION', 'active_trades')
+        active_trades_collection = db[active_trades_collection_name]
+        cursor = active_trades_collection.find({}, {'_id': 0}).sort('manager_heartbeat_ts', -1).limit(lim)
+        items = []
+        for doc in cursor:
+            user_id = int(doc.get('user_id') or 0) if doc.get('user_id') is not None else None
+            user_doc = users_col.find_one({'user_id': user_id}, {'_id': 0, 'username': 1, 'plan': 1, 'trading_status': 1}) if user_id else {}
+            items.append({
+                'user_id': user_id,
+                'username': user_doc.get('username'),
+                'plan': user_doc.get('plan') or 'none',
+                'trading_status': user_doc.get('trading_status') or 'inactive',
+                'symbol': doc.get('symbol'),
+                'direction': doc.get('direction'),
+                'side': doc.get('side'),
+                'entry_price': _safe_float(doc.get('entry_price'), 0.0) if doc.get('entry_price') is not None else None,
+                'qty_coin': _safe_float(doc.get('qty_coin'), 0.0) if doc.get('qty_coin') is not None else None,
+                'qty_usdc': _safe_float(doc.get('qty_usdc'), 0.0) if doc.get('qty_usdc') is not None else None,
+                'opened_at': _parse_dt(doc.get('opened_at')),
+                'last_price': _safe_float(doc.get('last_price'), 0.0) if doc.get('last_price') is not None else None,
+                'peak_price': _safe_float(doc.get('peak_price'), 0.0) if doc.get('peak_price') is not None else None,
+                'manager_heartbeat_ts': float(doc.get('manager_heartbeat_ts') or 0.0),
+                'manager_heartbeat_at': datetime.utcfromtimestamp(float(doc.get('manager_heartbeat_ts'))) if doc.get('manager_heartbeat_ts') else None,
+            })
+        return items
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_admin_active_positions error: {e}")
+        except Exception:
+            pass
+        return []
+
+
+def get_admin_live_monitor_snapshot(limit_events: int = 30, limit_positions: int = 20) -> dict:
+    events = get_admin_monitor_feed(limit=limit_events)
+    active_positions = get_admin_active_positions(limit=limit_positions)
+    return {
+        'events': events,
+        'active_positions': active_positions,
+        'counts': {
+            'events': len(events),
+            'active_positions': len(active_positions),
+            'trade_events': len([x for x in events if str((x or {}).get('event_type') or '').lower() in {'trade_opened', 'trade_closed'}]),
+            'payment_events': len([x for x in events if str((x or {}).get('event_type') or '').lower() == 'payment_confirmed']),
+        },
+    }
+
 def get_user_active_trade_snapshot(user_id: int) -> dict | None:
     try:
         uid = int(user_id)
