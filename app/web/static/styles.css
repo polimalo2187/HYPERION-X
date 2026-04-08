@@ -762,3 +762,21 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 .event-summary .list-item { margin: 0; }
 .subtle { opacity: 0.85; }
 .executive-note { font-size: 13px; color: var(--muted); margin-top: 8px; }
+
+.payment-plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.payment-plan-card .button-row {
+  margin-top: auto;
+}
+
+.payment-order-detail {
+  word-break: break-word;
+}
+
+.payment-order-actions {
+  margin-top: 16px;
+}
