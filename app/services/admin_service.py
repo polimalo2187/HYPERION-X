@@ -9,6 +9,7 @@ from app.database import (
     get_admin_action_history,
     get_admin_trade_stats,
     get_admin_live_monitor_snapshot,
+    clear_admin_monitor_feed as clear_admin_monitor_feed_db,
     get_admin_user_snapshot,
     get_admin_visual_stats,
     get_manual_plan_days_preview,
@@ -51,6 +52,28 @@ def _with_user_performance(detail: dict) -> dict:
     }
     return enriched
 
+
+
+
+def admin_clear_monitor_feed(actor_user_id: int | None = None, actor_username: str | None = None, reason: str | None = None) -> dict:
+    outcome = clear_admin_monitor_feed_db()
+    if not outcome.get('ok'):
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=outcome.get('message') or 'No se pudo limpiar el feed operativo')
+    message = f"Feed operativo limpiado: {int(outcome.get('hidden_count') or 0)} evento(s) ocultados"
+    _log_action(
+        'clear_admin_monitor_feed',
+        actor_user_id,
+        actor_username,
+        None,
+        reason=reason,
+        message=message,
+        metadata={'hidden_count': int(outcome.get('hidden_count') or 0)},
+    )
+    return {
+        'result': 'monitor_feed_cleared',
+        'message': message,
+        'hidden_count': int(outcome.get('hidden_count') or 0),
+    }
 
 def get_admin_overview() -> dict:
     section_errors: list[str] = []
