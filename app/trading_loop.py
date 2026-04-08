@@ -23,9 +23,10 @@ from app.database import (
     touch_runtime_component,
     get_user_cycle_policy,
     touch_user_operational_state,
+    get_user_public_snapshot,
 )
 from app.trading_engine import execute_trade_cycle
-from app.config import SCAN_INTERVAL
+from app.config import SCAN_INTERVAL, ADMIN_TELEGRAM_ID
 
 # ============================================================
 # CONFIG BANK GRADE
@@ -103,11 +104,83 @@ async def send_message_safe(app: Application, user_id: int, text: str):
     except Exception as e:
         log(f"Error Telegram usuario {user_id}: {e}", "ERROR")
 
+
+_admin_push_last_sent: dict[str, float] = {}
+
+def _admin_user_label(user_id: int) -> str:
+    try:
+        snap = get_user_public_snapshot(int(user_id)) or {}
+        if snap.get('username'):
+            return f"@{snap['username']}"
+    except Exception:
+        pass
+    return f"user_id={int(user_id)}"
+
+
+async def send_admin_push_safe(app: Application, text: str, *, dedupe_key: str | None = None, cooldown_seconds: int = 0):
+    try:
+        admin_id = int(ADMIN_TELEGRAM_ID or 0)
+    except Exception:
+        admin_id = 0
+    if admin_id <= 0:
+        return
+
+    if dedupe_key and cooldown_seconds > 0:
+        now_ts = time.time()
+        last_ts = float(_admin_push_last_sent.get(dedupe_key) or 0.0)
+        if now_ts - last_ts < float(cooldown_seconds):
+            return
+        _admin_push_last_sent[dedupe_key] = now_ts
+
+    try:
+        await app.bot.send_message(chat_id=admin_id, text=text)
+    except tg_error.RetryAfter as e:
+        await asyncio.sleep(int(e.retry_after) + 1)
+        try:
+            await app.bot.send_message(chat_id=admin_id, text=text)
+        except Exception as inner_e:
+            log(f"Error admin push retry: {inner_e}", "ERROR")
+    except Exception as e:
+        log(f"Error admin push: {e}", "ERROR")
+
+
+def _compose_admin_open_message(user_id: int, open_data: dict) -> str:
+    symbol = (open_data or {}).get('symbol') or (open_data or {}).get('coin') or '—'
+    side = str((open_data or {}).get('side') or (open_data or {}).get('direction') or '—').upper()
+    entry = (open_data or {}).get('entry_price')
+    qty = (open_data or {}).get('qty')
+    bits = ["🟢 Nueva operación abierta", f"Usuario: {_admin_user_label(user_id)}", f"Símbolo: {symbol}", f"Lado: {side}"]
+    if entry is not None:
+        bits.append(f"Entry: {entry}")
+    if qty is not None:
+        bits.append(f"Qty: {qty}")
+    return "\n".join(bits)
+
+
+def _compose_admin_close_message(user_id: int, close_data: dict) -> str:
+    symbol = (close_data or {}).get('symbol') or (close_data or {}).get('coin') or '—'
+    side = str((close_data or {}).get('side') or (close_data or {}).get('direction') or '—').upper()
+    profit = (close_data or {}).get('profit')
+    exit_reason = (close_data or {}).get('exit_reason') or (close_data or {}).get('close_source') or (close_data or {}).get('message')
+    header = '✅ Operación cerrada'
+    try:
+        pnl = float(profit)
+        if pnl < 0:
+            header = '🔴 Operación cerrada'
+    except Exception:
+        pnl = None
+    bits = [header, f"Usuario: {_admin_user_label(user_id)}", f"Símbolo: {symbol}", f"Lado: {side}"]
+    if profit is not None:
+        bits.append(f"PnL: {profit}")
+    if exit_reason:
+        bits.append(f"Motivo: {str(exit_reason)[:180]}")
+    return "\n".join(bits)
+
 # ============================================================
 # EJECUCIÓN SEGURA POR USUARIO
 # ============================================================
 
-async def execute_user_cycle(user_id: int, semaphore: asyncio.Semaphore):
+async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.Semaphore):
     if user_id not in user_locks:
         user_locks[user_id] = asyncio.Lock()
 
@@ -159,11 +232,13 @@ async def execute_user_cycle(user_id: int, semaphore: asyncio.Semaphore):
             except asyncio.TimeoutError:
                 touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'timeout', 'error': 'execute_user_cycle timeout'})
                 log(f"Timeout ejecución usuario {user_id}", "WARN")
+                await send_admin_push_safe(app, f"⚠️ Timeout en ciclo de trading\nUsuario: {_admin_user_label(user_id)}\nEl ciclo excedió {TRADE_TIMEOUT_SECONDS}s.", dedupe_key=f"timeout:{user_id}", cooldown_seconds=300)
                 return None
 
             except Exception as e:
                 touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'exception', 'error': str(e)[:300]})
                 log(f"Error crítico usuario {user_id}: {e}", "ERROR")
+                await send_admin_push_safe(app, f"🚨 Error crítico de ejecución\nUsuario: {_admin_user_label(user_id)}\nDetalle: {str(e)[:250]}", dedupe_key=f"cycle_error:{user_id}:{str(e)[:80]}", cooldown_seconds=300)
                 return None
 
 # ============================================================
@@ -278,7 +353,7 @@ async def trading_loop(app: Application):
                     active_symbol=policy.get('active_symbol'),
                     metadata={'phase': 'scheduled'},
                 )
-                tasks.append(execute_user_cycle(user_id, semaphore))
+                tasks.append(execute_user_cycle(app, user_id, semaphore))
                 task_user_ids.append(user_id)
 
             if not tasks:
@@ -315,6 +390,7 @@ async def trading_loop(app: Application):
                         source='trading_loop',
                         metadata={'phase': 'result_exception'},
                     )
+                    await send_admin_push_safe(app, f"🚨 Error en resultado del loop\nUsuario: {_admin_user_label(user_id)}\nDetalle: {str(result)[:250]}", dedupe_key=f"result_error:{user_id}:{str(result)[:80]}", cooldown_seconds=300)
                     continue
 
                 if not isinstance(result, dict):
@@ -382,6 +458,10 @@ async def trading_loop(app: Application):
                     msg = open_data.get("message")
                     if msg:
                         await send_message_safe(app, user_id, msg)
+                    try:
+                        await send_admin_push_safe(app, _compose_admin_open_message(user_id, open_data))
+                    except Exception as e:
+                        log(f"Error push admin OPEN user {user_id}: {e}", "ERROR")
 
                 # ================================
                 # GUARDAR INFO OPERACIÓN (CLOSE)
@@ -396,9 +476,14 @@ async def trading_loop(app: Application):
                     msg = close_data.get("message")
                     if msg:
                         await send_message_safe(app, user_id, msg)
+                    try:
+                        await send_admin_push_safe(app, _compose_admin_close_message(user_id, close_data))
+                    except Exception as e:
+                        log(f"Error push admin CLOSE user {user_id}: {e}", "ERROR")
 
         except Exception as e:
             log(f"FALLO SISTÉMICO trading_loop: {e}", "CRITICAL")
+            await send_admin_push_safe(app, f"🚨 Fallo sistémico del trading loop\nDetalle: {str(e)[:250]}", dedupe_key=f"systemic:{str(e)[:120]}", cooldown_seconds=300)
             await asyncio.sleep(float(ERROR_BACKOFF_SECONDS or 3))
 
         await asyncio.sleep(max(1, int(SCAN_INTERVAL or 1)))
