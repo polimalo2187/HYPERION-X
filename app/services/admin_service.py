@@ -53,17 +53,33 @@ def _with_user_performance(detail: dict) -> dict:
 
 
 def get_admin_overview() -> dict:
-    visual = get_admin_visual_stats() or {}
-    trade_stats = get_admin_trade_stats(720) or {}
-    security = get_security_overview() or {}
-    recent_actions = get_admin_action_history(limit=12)
-    monitor = get_admin_live_monitor_snapshot(limit_events=30, limit_positions=20) or {}
+    section_errors: list[str] = []
+
+    def _safe(name: str, fn, default):
+        try:
+            value = fn()
+            return value if value is not None else default
+        except Exception as exc:
+            section_errors.append(f"{name}: {exc}")
+            return default
+
+    visual = _safe('visual', lambda: get_admin_visual_stats() or {}, {})
+    trade_stats = _safe('trade_stats_30d', lambda: get_admin_trade_stats(720) or {}, {})
+    security = _safe('security', lambda: get_security_overview() or {}, {})
+    recent_actions = _safe('recent_actions', lambda: get_admin_action_history(limit=12), [])
+    monitor = _safe(
+        'monitor',
+        lambda: get_admin_live_monitor_snapshot(limit_events=30, limit_positions=20) or {},
+        {'events': [], 'active_positions': [], 'counts': {'events': 0, 'active_positions': 0, 'trade_events': 0, 'payment_events': 0}},
+    )
     return {
         'visual': visual,
         'trade_stats_30d': trade_stats,
         'security': security,
         'recent_actions': recent_actions,
         'monitor': monitor,
+        'partial': bool(section_errors),
+        'section_errors': section_errors,
     }
 
 
