@@ -13,6 +13,27 @@ from app.services.user_service import get_user_profile
 router = APIRouter(prefix='/api/v1/billing', tags=['billing'])
 logger = logging.getLogger(__name__)
 
+def _billing_reason_message(reason: str | None) -> str:
+    normalized = str(reason or '').strip().lower()
+    mapping = {
+        'payment_not_found': 'No se localizó todavía un depósito exacto para esta orden.',
+        'payment_waiting_confirmations': 'Se detectó el pago, pero sigue pendiente de confirmaciones en cadena.',
+        'payment_confirmed': 'Pago confirmado correctamente.',
+        'verification_in_progress': 'Ya hay una verificación en curso para esta orden.',
+        'order_expired': 'La orden venció y debe generarse una nueva.',
+        'order_cancelled': 'La orden fue cancelada.',
+        'tx_already_used': 'La transacción ya fue utilizada en otra orden.',
+        'payment_config_missing': 'La configuración de cobro aún no está completa en el backend.',
+        'verification_error': 'No se pudo completar la verificación en este momento. Intenta de nuevo en unos segundos.',
+        'activation_exception': 'El pago fue detectado, pero la activación no pudo completarse todavía.',
+        'activation_failed': 'El pago fue detectado, pero la activación no pudo aplicarse.',
+        'finalize_exception': 'El pago fue detectado, pero la orden no pudo cerrarse todavía.',
+        'already_completed': 'Esta orden ya fue confirmada anteriormente.',
+        'order_not_found': 'No se encontró la orden solicitada.',
+        'order_not_available': 'La orden no está disponible para verificación ahora mismo.',
+    }
+    return mapping.get(normalized, 'Sin novedad adicional en la verificación.')
+
 
 class PaymentOrderCreateRequest(BaseModel):
     days: int
@@ -59,7 +80,7 @@ def billing_confirm_order(payload: PaymentOrderActionRequest, session: dict = De
     response = {
         'ok': bool(result.get('ok')),
         'reason': result.get('reason'),
-        'message': result.get('message'),
+        'message': result.get('message') or _billing_reason_message(result.get('reason')),
         'order': serialize_order_public(order),
         'verification': verification,
     }
