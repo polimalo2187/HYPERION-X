@@ -26,7 +26,7 @@ from app.database import (
     save_user_wallet,
     set_trading_status,
 )
-from app.hyperliquid_client import get_balance
+from app.hyperliquid_client import get_account_snapshot, get_balance
 
 _ETH_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 _PRIVATE_KEY_RE = re.compile(r"^(0x)?[a-fA-F0-9]{64}$")
@@ -176,6 +176,61 @@ def _runtime_operational_copy(profile: dict, policy: dict | None = None) -> dict
     }
 
 
+def _build_exchange_readiness(profile: dict) -> dict:
+    snapshot = get_account_snapshot(int(profile.get("user_id") or 0))
+
+    state = str(snapshot.get("status") or "blocked")
+    label = str(snapshot.get("label") or "Sin lectura")
+    tone = str(snapshot.get("tone") or "neutral")
+    message = str(snapshot.get("message") or "Sin lectura del exchange todavía.")
+
+    if not profile.get('wallet_configured'):
+        state = 'wallet_missing'
+        label = 'Falta wallet'
+        tone = 'blocked'
+        message = 'Configura la wallet para poder consultar la cuenta del exchange.'
+    elif not profile.get('private_key_configured'):
+        state = 'private_key_missing'
+        label = 'Falta private key'
+        tone = 'blocked'
+        message = 'Configura la private key para habilitar la operativa.'
+    elif not profile.get('terms_accepted'):
+        state = 'terms_missing'
+        label = 'Pendiente de políticas'
+        tone = 'warning'
+        message = 'Confirma la aceptación de políticas para habilitar la operativa.'
+    elif not profile.get('plan_active'):
+        state = 'plan_inactive'
+        label = 'Sin acceso vigente'
+        tone = 'blocked'
+        message = 'Necesitas un plan activo para operar.'
+
+    readiness = {
+        'state': state,
+        'label': label,
+        'tone': tone,
+        'message': message,
+        'available_balance': _safe_float(snapshot.get('available_balance'), 0.0),
+        'account_value': _safe_float(snapshot.get('account_value'), 0.0),
+        'capital_threshold': _safe_float(snapshot.get('capital_threshold'), 0.0),
+        'capital_sufficient': bool(snapshot.get('capital_sufficient')),
+        'positions_count': _safe_int(snapshot.get('positions_count'), 0),
+        'has_open_position': bool(snapshot.get('has_open_position')),
+        'active_symbols': list(snapshot.get('active_symbols') or []),
+        'exchange_reachable': bool(snapshot.get('exchange_reachable')),
+    }
+
+    if readiness['has_open_position'] and state not in {'wallet_missing', 'private_key_missing', 'terms_missing', 'plan_inactive'}:
+        readiness['message'] = snapshot.get('message') or 'Hay una posición activa bajo gestión.'
+
+    if state == 'ready' and str(profile.get('trading_status') or '').lower() != 'active':
+        readiness['label'] = 'Listo al activar'
+        readiness['tone'] = 'info'
+        readiness['message'] = 'La cuenta está lista. Activa el trading para permitir nuevas entradas.'
+
+    return readiness
+
+
 def _clean_wallet(wallet: str) -> str:
     value = (wallet or '').strip()
     if not value:
@@ -246,12 +301,14 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
     profile = get_user_profile(int(user_id))
     policy = get_user_cycle_policy(int(user_id))
     runtime_readout = _runtime_operational_copy(profile, policy)
+    exchange = _build_exchange_readiness(profile)
     ready = (
         profile['wallet_configured']
         and profile['private_key_configured']
         and profile['trading_status'] == 'active'
         and profile['plan_active']
         and profile['terms_accepted']
+        and exchange.get('capital_sufficient', False)
     )
     completed, total = _readiness_score(profile)
     access = _access_copy(profile)
@@ -269,9 +326,13 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
         'operational_tone': runtime_readout['tone'],
         'operational_detail': runtime_readout['detail'],
         'operational_aligned': runtime_readout['aligned'],
+        'exchange_snapshot': exchange,
+        'exchange_label': exchange.get('label'),
+        'exchange_tone': exchange.get('tone'),
+        'exchange_message': exchange.get('message'),
     }
     if include_balance:
-        payload['exchange_balance'] = float(get_balance(int(user_id)) or 0.0)
+        payload['exchange_balance'] = float(exchange.get('available_balance') or get_balance(int(user_id)) or 0.0)
     return payload
 
 
@@ -279,6 +340,7 @@ def get_control_summary(user_id: int) -> dict:
     profile = get_user_profile(int(user_id))
     policy = get_user_cycle_policy(int(user_id))
     runtime_readout = _runtime_operational_copy(profile, policy)
+    exchange = _build_exchange_readiness(profile)
     terms_accepted = bool(profile['terms_accepted'])
     completed, total = _readiness_score(profile)
     return {
@@ -321,6 +383,10 @@ def get_control_summary(user_id: int) -> dict:
         'operational_active_symbol': runtime_readout['active_symbol'],
         'operational_alignment_ok': runtime_readout['aligned'],
         'operational_alignment_label': runtime_readout['alignment_label'],
+        'exchange_snapshot': exchange,
+        'exchange_label': exchange.get('label'),
+        'exchange_tone': exchange.get('tone'),
+        'exchange_message': exchange.get('message'),
     }
 
 
@@ -361,9 +427,13 @@ def activate_user_trading(user_id: int) -> dict:
     set_trading_status(int(user_id), 'active')
     summary = get_control_summary(int(user_id))
     detail = summary.get('operational_detail') or 'La activación quedó registrada.'
+    exchange_message = ((summary.get('exchange_snapshot') or {}).get('message')) or summary.get('exchange_message')
+    message_parts = [access.get('plan_message') or 'Trading activado', detail]
+    if exchange_message:
+        message_parts.append(exchange_message)
     return {
         'result': 'activated',
-        'message': f"{access.get('plan_message') or 'Trading activado'}\n{detail}",
+        'message': '\n'.join(part for part in message_parts if part),
         'control': summary,
     }
 
