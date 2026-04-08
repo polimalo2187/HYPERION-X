@@ -80,22 +80,10 @@ logging.basicConfig(
 # ============================================================
 
 def _launcher_menu(user_id: int | None = None):
-    is_admin = bool(user_id) and int(user_id) == int(ADMIN_TELEGRAM_ID)
-
     kb = []
+    kb.append([InlineKeyboardButton("📜 Políticas", callback_data="policies")])
     if MINIAPP_URL:
         kb.append([InlineKeyboardButton("🚀 Abrir MiniApp", web_app=WebAppInfo(url=MINIAPP_URL))])
-
-    info_row = [InlineKeyboardButton("📜 Políticas", callback_data="policies")]
-    info_row.append(InlineKeyboardButton("ℹ️ Información", callback_data="info"))
-    kb.append(info_row)
-
-    if ADMIN_WHATSAPP_LINK:
-        kb.append([InlineKeyboardButton("💬 Soporte", url=ADMIN_WHATSAPP_LINK)])
-
-    if is_admin:
-        kb.append([InlineKeyboardButton("🛠 Ver panel admin en MiniApp", callback_data="admin_panel")])
-
     return InlineKeyboardMarkup(kb)
 
 
@@ -103,26 +91,36 @@ def main_menu(user_id: int | None = None):
     return _launcher_menu(user_id)
 
 
-def _miniapp_entry_text(is_admin: bool = False) -> str:
+def _miniapp_entry_text(*, terms_accepted: bool = False, is_admin: bool = False) -> str:
     base = (
-        f"🤖 Bienvenido a *{BOT_NAME}*.\n\n"
-        "Telegram queda ahora como canal de *alertas, notificaciones y acceso rápido*.\n"
-        "Toda la operación, configuración y seguimiento serio del bot se hace desde la *MiniApp*."
+        f"🚀 *Bienvenido a {BOT_NAME}*\n\n"
+        "El bot automático diseñado para operar en *Hyperliquid* con una experiencia más seria, rápida y profesional.\n\n"
+        "✅ Ejecuta trading automático sin depender de que estés conectado\n"
+        "✅ Gestiona la operativa desde una *MiniApp* visual y centralizada\n"
+        "✅ Controla wallet, clave, estado operativo, historial y rendimiento desde un solo panel\n"
+        "✅ Mantén Telegram como canal de alertas, avisos y acceso rápido\n\n"
+        "Para empezar correctamente:\n"
+        "1. *Acepta las Políticas*\n"
+        "2. Entra en la *MiniApp* para completar la configuración y operar"
     )
+    if not terms_accepted:
+        base += "\n\n⚠️ *Las Políticas son obligatorias.* Si no las aceptas aquí, dentro de la MiniApp no podrás activar ni trabajar el bot."
+    else:
+        base += "\n\n✅ Ya tienes las Políticas aceptadas. Solo falta abrir la MiniApp para continuar."
     if MINIAPP_URL:
         base += "\n\n🚀 Pulsa *Abrir MiniApp* para entrar al panel operativo."
     if is_admin:
-        base += "\n\n🛠 Tu vista admin también vive en la MiniApp."
+        base += "\n\n🛠 Tu acceso administrativo también se gestiona desde la MiniApp."
     return base
 
 
 async def _send_miniapp_redirect_message(target, user_id: int, title: str, as_edit: bool = True):
     text = (
         f"{title}\n\n"
-        "Esta función ya se trasladó a la *MiniApp* para evitar duplicidad entre Telegram y el panel web."
+        "Esta acción ahora se gestiona desde la *MiniApp* para mantener una sola interfaz operativa y evitar configuraciones duplicadas.\n\n"
+        "📜 Acepta las *Políticas* si aún no lo has hecho.\n"
+        "🚀 Después entra en la *MiniApp* para continuar."
     )
-    if MINIAPP_URL:
-        text += "\n\nUsa *Abrir MiniApp* para continuar."
     markup = _launcher_menu(user_id)
     if as_edit:
         await target.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
@@ -146,8 +144,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ref.isdigit() and int(ref) != user.id:
             set_referrer(user.id, int(ref))
 
+    terms_accepted = has_accepted_terms(user_id)
     await update.message.reply_text(
-        _miniapp_entry_text(is_admin=(user_id == ADMIN_TELEGRAM_ID)),
+        _miniapp_entry_text(terms_accepted=terms_accepted, is_admin=(user_id == ADMIN_TELEGRAM_ID)),
         reply_markup=_launcher_menu(user_id),
         parse_mode="Markdown"
     )
@@ -156,8 +155,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def miniapp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     create_user(update.effective_user.id, update.effective_user.username)
+    terms_accepted = has_accepted_terms(user_id)
     await update.message.reply_text(
-        "🚀 Accede desde aquí a la MiniApp para controlar el bot.",
+        _miniapp_entry_text(terms_accepted=terms_accepted, is_admin=(user_id == ADMIN_TELEGRAM_ID)),
         reply_markup=_launcher_menu(user_id),
         parse_mode="Markdown",
     )
@@ -676,7 +676,12 @@ async def policies_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     accept_terms(q.from_user.id)
-    await q.edit_message_text("✅ Has aceptado las políticas. Ya puedes activar el trading.", reply_markup=main_menu(q.from_user.id))
+    await q.edit_message_text(
+        "✅ *Políticas aceptadas correctamente.*\n\n"
+        "Ya puedes entrar en la *MiniApp* para completar la configuración y trabajar el bot.",
+        parse_mode="Markdown",
+        reply_markup=main_menu(q.from_user.id),
+    )
 
 # ============================================================
 # INFO
@@ -700,7 +705,10 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     await q.edit_message_text(
-        _miniapp_entry_text(is_admin=(q.from_user.id == ADMIN_TELEGRAM_ID)),
+        _miniapp_entry_text(
+            terms_accepted=has_accepted_terms(q.from_user.id),
+            is_admin=(q.from_user.id == ADMIN_TELEGRAM_ID),
+        ),
         reply_markup=_launcher_menu(q.from_user.id),
         parse_mode="Markdown",
     )
