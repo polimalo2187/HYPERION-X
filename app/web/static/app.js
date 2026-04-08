@@ -697,6 +697,14 @@ function renderBilling(data) {
   if (elements.billingCancelButton) elements.billingCancelButton.disabled = !canCancel;
 }
 
+function syncBillingActionButtons() {
+  const order = state.billing?.active_order || null;
+  const canConfirm = !!order && ['awaiting_payment', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
+  const canCancel = !!order && ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
+  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = !canConfirm;
+  if (elements.billingCancelButton) elements.billingCancelButton.disabled = !canCancel;
+}
+
 function buildControlSummary(control) {
   const blockers = formatBlockers(control.activation_blockers_copy || control.activation_blockers);
   return [
@@ -1445,9 +1453,9 @@ async function confirmPaymentAction() {
     setStatus(payload.message || paymentReasonLabel(payload.reason), isSuccess ? 'success' : 'warning');
     await loadData();
   } catch (error) {
-    setStatus(error.message || 'No se pudo confirmar el pago.', 'error');
+    setStatus(error.message || 'No se pudo confirmar el pago en este momento.', 'error');
   } finally {
-    if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = false;
+    syncBillingActionButtons();
   }
 }
 
@@ -1468,9 +1476,9 @@ async function cancelPaymentAction() {
     renderBilling(fresh);
     await refreshSummaryOnly();
   } catch (error) {
-    setStatus(error.message || 'No se pudo cancelar la orden.', 'error');
+    setStatus(error.message || 'No se pudo cancelar la orden en este momento.', 'error');
   } finally {
-    if (elements.billingCancelButton) elements.billingCancelButton.disabled = false;
+    syncBillingActionButtons();
   }
 }
 
