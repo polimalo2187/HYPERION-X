@@ -452,7 +452,11 @@ def confirm_payment_order(order_id: str, user_id: int) -> Dict[str, Any]:
         _update_locked_order(order_id, lock_token, {"status": "awaiting_payment", "last_verification_reason": "verification_error"})
         return {"ok": False, "reason": "verification_error", "message": str(exc)}
 
-    _write_verification_log(order, verification)
+    try:
+        _write_verification_log(order, verification)
+    except Exception as exc:
+        logger.warning('No se pudo registrar el log de verificación para %s: %s', order_id, exc, exc_info=True)
+
 
     status = verification.get("status")
     if status == "not_found":
@@ -485,21 +489,33 @@ def confirm_payment_order(order_id: str, user_id: int) -> Dict[str, Any]:
         finalized = _finalize_completed_order_if_needed(order_id, tx_hash=tx_hash, verification=verification, reason="activation_already_applied")
         return {"ok": True, "reason": "already_completed", "order": finalized, "verification": verification}
 
-    activation = apply_payment_premium_purchase(
-        user_id=user_id,
-        days=int(order["days"]),
-        order_id=str(order_id),
-        tx_hash=tx_hash,
-        amount_usdt=float(order["amount_usdt"]),
-        metadata={
-            "network": order.get("network"),
-            "token_symbol": order.get("token_symbol"),
-            "base_price_usdt": float(order["base_price_usdt"]),
-        },
-    )
+    try:
+        activation = apply_payment_premium_purchase(
+            user_id=user_id,
+            days=int(order["days"]),
+            order_id=str(order_id),
+            tx_hash=tx_hash,
+            amount_usdt=float(order["amount_usdt"]),
+            metadata={
+                "network": order.get("network"),
+                "token_symbol": order.get("token_symbol"),
+                "base_price_usdt": float(order["base_price_usdt"]),
+            },
+        )
+    except Exception as exc:
+        logger.error('Error aplicando la compra premium para order_id=%s: %s', order_id, exc, exc_info=True)
+        _update_locked_order(order_id, lock_token, {"status": "awaiting_payment", "last_verification_reason": "activation_exception"})
+        return {"ok": False, "reason": "activation_exception", "message": 'No se pudo aplicar la activación premium'}
+
     if not activation.get("ok"):
         _update_locked_order(order_id, lock_token, {"status": "awaiting_payment", "last_verification_reason": "activation_failed"})
         return {"ok": False, "reason": "activation_failed", "message": activation.get("message")}
 
-    updated = _finalize_completed_order_if_needed(order_id, tx_hash=tx_hash, verification=verification, reason=verification.get("reason") or "payment_confirmed")
+    try:
+        updated = _finalize_completed_order_if_needed(order_id, tx_hash=tx_hash, verification=verification, reason=verification.get("reason") or "payment_confirmed")
+    except Exception as exc:
+        logger.error('Error finalizando la orden %s: %s', order_id, exc, exc_info=True)
+        _update_locked_order(order_id, lock_token, {"status": "paid_unconfirmed", "last_verification_reason": "finalize_exception", "matched_tx_hash": tx_hash})
+        return {"ok": False, "reason": "finalize_exception", "message": 'El pago fue detectado, pero la orden no pudo cerrarse todavía'}
+
     return {"ok": True, "reason": "payment_confirmed", "order": updated, "verification": verification, "activation": activation}
