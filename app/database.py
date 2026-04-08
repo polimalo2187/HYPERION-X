@@ -467,7 +467,9 @@ def get_admin_monitor_feed(limit: int = 30, event_types: list[str] | None = None
         'private_key_updated',
     ]
     normalized = [str(x).strip().lower() for x in (event_types or default_types) if str(x).strip()]
-    query = {'event_type': {'$in': normalized}} if normalized else {}
+    query = {'admin_hidden': {'$ne': True}}
+    if normalized:
+        query['event_type'] = {'$in': normalized}
     try:
         return list(
             user_activity_col.find(query, {'_id': 0})
@@ -480,6 +482,36 @@ def get_admin_monitor_feed(limit: int = 30, event_types: list[str] | None = None
         except Exception:
             pass
         return []
+
+
+def clear_admin_monitor_feed(event_types: list[str] | None = None) -> dict:
+    default_types = [
+        'trade_opened',
+        'trade_closed',
+        'payment_confirmed',
+        'trading_activated',
+        'trading_paused',
+        'stats_reset',
+        'private_key_hardened',
+        'wallet_updated',
+        'private_key_updated',
+    ]
+    normalized = [str(x).strip().lower() for x in (event_types or default_types) if str(x).strip()]
+    query = {'admin_hidden': {'$ne': True}}
+    if normalized:
+        query['event_type'] = {'$in': normalized}
+    try:
+        result = user_activity_col.update_many(
+            query,
+            {'$set': {'admin_hidden': True, 'admin_hidden_at': _now_utc()}},
+        )
+        return {'ok': True, 'hidden_count': int(getattr(result, 'modified_count', 0) or 0)}
+    except Exception as e:
+        try:
+            db_log(f"⚠ clear_admin_monitor_feed error: {e}")
+        except Exception:
+            pass
+        return {'ok': False, 'message': str(e), 'hidden_count': 0}
 
 
 def get_admin_active_positions(limit: int = 20) -> list[dict]:
