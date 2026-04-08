@@ -719,6 +719,7 @@ function syncBillingActionButtons() {
 
 function buildControlSummary(control) {
   const blockers = formatBlockers(control.activation_blockers_copy || control.activation_blockers);
+  const exchange = control.exchange_snapshot || {};
   return [
     `Wallet: ${control.wallet_configured ? truncateMiddle(control.wallet_masked, 24) : 'pendiente'}`,
     `Private key: ${control.private_key_configured ? 'configurada' : 'pendiente'}`,
@@ -730,7 +731,11 @@ function buildControlSummary(control) {
     `Modo operativo: ${control.operational_mode || 'unknown'}`,
     `Alineación: ${control.operational_alignment_label || 'Sin lectura'}`,
     `Preparación: ${control.readiness_completed ?? 0}/${control.readiness_total ?? 5}`,
+    `Exchange: ${control.exchange_label || exchange.label || 'Sin lectura'}`,
+    `Capital disponible: ${formatNumber(exchange.available_balance || 0, 4)} USDC`,
+    `Equity: ${formatNumber(exchange.account_value || 0, 4)} USDC`,
     control.operational_detail ? `Detalle: ${control.operational_detail}` : null,
+    (control.exchange_message || exchange.message) ? `Cuenta: ${control.exchange_message || exchange.message}` : null,
     control.runtime_checked_at ? `Última lectura: ${formatDate(control.runtime_checked_at)}` : null,
     '',
     'Bloqueadores:',
@@ -744,6 +749,7 @@ function renderDashboard(data) {
   const readinessText = data.status_summary || 'not_ready';
   const tradingText = data.trading_status || 'inactive';
   const planText = planLabel(data.plan);
+  const exchange = data.exchange_snapshot || {};
   const operationalLabel = data.operational_label || tradingText;
   const accessText = accessLabel(data);
   const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 18) : 'Pendiente';
@@ -751,7 +757,7 @@ function renderDashboard(data) {
   setPill(elements.connectionBadge, 'Conectado', 'connected');
   setPill(elements.heroSessionPill, data.plan_active ? 'Sesión activa' : 'Acceso limitado', data.plan_active ? 'active' : 'blocked');
   setPill(elements.heroPlanPill, `Plan ${planText}`, data.plan_active ? data.plan : 'none');
-  setPill(elements.heroTradingPill, operationalLabel, data.operational_tone || tradingText);
+  setPill(elements.heroTradingPill, exchange.label || operationalLabel, exchange.tone || data.operational_tone || tradingText);
   setPill(elements.userPlanBadge, planText, data.plan_active ? data.plan : 'none');
   setPill(elements.userReadinessBadge, readinessText, readinessText);
   setPill(elements.walletBadge, data.wallet_configured ? 'Wallet ok' : 'Pendiente', data.wallet_configured ? 'configured' : 'missing');
@@ -763,7 +769,8 @@ function renderDashboard(data) {
   elements.heroKey.textContent = data.private_key_configured ? 'Configurada' : 'Pendiente';
   elements.heroKeySubtext.textContent = data.private_key_configured ? 'Llave privada presente en sistema' : 'Llave privada faltante';
   elements.heroAccess.textContent = accessText;
-  elements.heroAccessSubtext.textContent = `${accessDetail(data)}${data.plan_expires_at ? ' · vence ' + formatDate(data.plan_expires_at) : ''}`;
+  const capitalDetail = exchange.available_balance != null ? ` · capital ${formatNumber(exchange.available_balance || 0, 4)} USDC` : '';
+  elements.heroAccessSubtext.textContent = `${accessDetail(data)}${data.plan_expires_at ? ' · vence ' + formatDate(data.plan_expires_at) : ''}${capitalDetail}`;
 
   elements.userIdentity.textContent = usernameText;
   elements.userIdentitySubtext.textContent = data.user_id ? `Telegram ID ${data.user_id}` : 'Usuario no resuelto';
@@ -781,7 +788,10 @@ function renderDashboard(data) {
     buildKpiCard('Políticas', data.terms_accepted ? 'Confirmadas' : 'Pendientes', 'Bloquean la activación si falta la confirmación.'),
     buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
     buildKpiCard('Private key', data.private_key_configured ? 'Sí' : 'No', 'No se vuelve a exponer por API.'),
-    buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha actual del plan.')
+    buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), 'Fecha actual del plan.'),
+    buildKpiCard('Exchange', exchange.label || 'Sin lectura', exchange.message || 'Sin lectura del exchange.'),
+    buildKpiCard('Capital disponible', `${formatNumber(exchange.available_balance || 0, 4)} USDC`, exchange.capital_sufficient ? 'Capital suficiente para operar.' : `Mínimo ${formatNumber(exchange.capital_threshold || 0, 2)} USDC.`),
+    buildKpiCard('Equity', `${formatNumber(exchange.account_value || 0, 4)} USDC`, exchange.has_open_position ? `Posiciones abiertas: ${exchange.positions_count || 0}` : 'Sin posiciones abiertas en este momento.')
   );
 
   elements.readinessList.innerHTML = '';
@@ -798,6 +808,8 @@ function renderDashboard(data) {
       buildKpiCard('Estado de acceso', accessText, accessDetail(data)),
       buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Continuidad actual del plan.' : 'No hay días vigentes.'),
       buildKpiCard('Vencimiento', formatDate(data.plan_expires_at), data.plan_active ? 'Fecha actual del acceso.' : 'No existe acceso operativo vigente.'),
+      buildKpiCard('Capital disponible', `${formatNumber(exchange.available_balance || 0, 4)} USDC`, exchange.message || 'Lectura viva del exchange.'),
+      buildKpiCard('Estado de cuenta', exchange.label || 'Sin lectura', exchange.has_open_position ? `Posiciones abiertas ${exchange.positions_count || 0}` : 'Sin posiciones abiertas.'),
     );
   }
 }
@@ -815,6 +827,7 @@ function renderControl(control) {
   }
 
   elements.controlStats.innerHTML = '';
+  const exchange = control.exchange_snapshot || {};
   elements.controlStats.append(
     buildKpiCard('Wallet', control.wallet_configured ? truncateMiddle(control.wallet_masked, 18) : 'Pendiente', 'Dirección actual del usuario.'),
     buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', control.security_posture === 'encrypted_at_rest' ? 'Cifrada en reposo.' : 'Nunca se reexpone por API.'),
@@ -826,7 +839,11 @@ function renderControl(control) {
     buildKpiCard('Plan', planLabel(control.plan), control.plan_active ? `Plan vigente · ${control.plan_days_remaining || 0} día(s) restantes.` : 'Sin acceso vigente.'),
     buildKpiCard('Alineación', control.operational_alignment_label || 'Sin lectura', control.runtime_checked_at ? `Última lectura ${formatDate(control.runtime_checked_at)}` : 'Todavía no hay lectura del motor.'),
     buildKpiCard('Preparación', `${control.readiness_completed || 0}/${control.readiness_total || 5}`, 'Lectura global de requisitos cumplidos.'),
-    buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers_copy || []).join(' ') || 'Sin bloqueadores.')
+    buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers_copy || []).join(' ') || 'Sin bloqueadores.'),
+    buildKpiCard('Exchange', control.exchange_label || exchange.label || 'Sin lectura', control.exchange_message || exchange.message || 'Sin lectura viva del exchange.'),
+    buildKpiCard('Capital disponible', `${formatNumber(exchange.available_balance || 0, 4)} USDC`, exchange.capital_sufficient ? 'Capital suficiente para abrir nuevas entradas.' : `Mínimo configurado ${formatNumber(exchange.capital_threshold || 0, 2)} USDC.`),
+    buildKpiCard('Equity total', `${formatNumber(exchange.account_value || 0, 4)} USDC`, exchange.exchange_reachable ? 'Valor total leído desde Hyperliquid.' : 'No se pudo consultar el exchange.'),
+    buildKpiCard('Posiciones abiertas', exchange.positions_count || 0, exchange.has_open_position ? (exchange.active_symbols || []).join(', ') || 'Hay una posición bajo gestión.' : 'Sin posiciones abiertas ahora mismo.')
   );
 }
 
