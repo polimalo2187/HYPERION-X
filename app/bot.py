@@ -79,36 +79,55 @@ logging.basicConfig(
 # MENÚ PRINCIPAL
 # ============================================================
 
-def main_menu(user_id: int | None = None):
+def _launcher_menu(user_id: int | None = None):
     is_admin = bool(user_id) and int(user_id) == int(ADMIN_TELEGRAM_ID)
 
     kb = []
-
     if MINIAPP_URL:
         kb.append([InlineKeyboardButton("🚀 Abrir MiniApp", web_app=WebAppInfo(url=MINIAPP_URL))])
 
-    kb.extend([
-        [InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")],
-        [
-            InlineKeyboardButton("💳 Wallet / Private Key", callback_data="wallet_menu"),
-            # ✅ Capital eliminado: el bot usa el saldo real del exchange
-        ],
-        [
-            InlineKeyboardButton("▶ Activar Trading", callback_data="activate"),
-            InlineKeyboardButton("⏸ Pausar Trading", callback_data="deactivate"),
-        ],
-        [
-            InlineKeyboardButton("📈 Operaciones", callback_data="operations"),
-            InlineKeyboardButton("👥 Referidos", callback_data="referrals"),
-        ],
-        [InlineKeyboardButton("📜 Políticas de Uso", callback_data="policies")],
-        [InlineKeyboardButton("ℹ️ Información", callback_data="info")],
-    ])
+    info_row = [InlineKeyboardButton("📜 Políticas", callback_data="policies")]
+    info_row.append(InlineKeyboardButton("ℹ️ Información", callback_data="info"))
+    kb.append(info_row)
+
+    if ADMIN_WHATSAPP_LINK:
+        kb.append([InlineKeyboardButton("💬 Soporte", url=ADMIN_WHATSAPP_LINK)])
 
     if is_admin:
-        kb.append([InlineKeyboardButton("🛠 Panel Admin", callback_data="admin_panel")])
+        kb.append([InlineKeyboardButton("🛠 Ver panel admin en MiniApp", callback_data="admin_panel")])
 
     return InlineKeyboardMarkup(kb)
+
+
+def main_menu(user_id: int | None = None):
+    return _launcher_menu(user_id)
+
+
+def _miniapp_entry_text(is_admin: bool = False) -> str:
+    base = (
+        f"🤖 Bienvenido a *{BOT_NAME}*.\n\n"
+        "Telegram queda ahora como canal de *alertas, notificaciones y acceso rápido*.\n"
+        "Toda la operación, configuración y seguimiento serio del bot se hace desde la *MiniApp*."
+    )
+    if MINIAPP_URL:
+        base += "\n\n🚀 Pulsa *Abrir MiniApp* para entrar al panel operativo."
+    if is_admin:
+        base += "\n\n🛠 Tu vista admin también vive en la MiniApp."
+    return base
+
+
+async def _send_miniapp_redirect_message(target, user_id: int, title: str, as_edit: bool = True):
+    text = (
+        f"{title}\n\n"
+        "Esta función ya se trasladó a la *MiniApp* para evitar duplicidad entre Telegram y el panel web."
+    )
+    if MINIAPP_URL:
+        text += "\n\nUsa *Abrir MiniApp* para continuar."
+    markup = _launcher_menu(user_id)
+    if as_edit:
+        await target.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await target.reply_text(text, parse_mode="Markdown", reply_markup=markup)
 
 
 # ============================================================
@@ -127,16 +146,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ref.isdigit() and int(ref) != user.id:
             set_referrer(user.id, int(ref))
 
-    miniapp_hint = "\n🚀 Usa *Abrir MiniApp* para entrar al panel visual completo." if MINIAPP_URL else ""
-
     await update.message.reply_text(
-        f"🤖 Bienvenido a *{BOT_NAME}*.\n"
-        f"Tu bot profesional de trading automático 24/7.\n"
-        f"{miniapp_hint}\n\n"
-        f"Selecciona una opción:",
-        reply_markup=main_menu(user_id),
+        _miniapp_entry_text(is_admin=(user_id == ADMIN_TELEGRAM_ID)),
+        reply_markup=_launcher_menu(user_id),
         parse_mode="Markdown"
     )
+
+
+async def miniapp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    create_user(update.effective_user.id, update.effective_user.username)
+    await update.message.reply_text(
+        "🚀 Accede desde aquí a la MiniApp para controlar el bot.",
+        reply_markup=_launcher_menu(user_id),
+        parse_mode="Markdown",
+    )
+
 
 
 # ============================================================
@@ -145,25 +170,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-
-    wallet = get_user_wallet(user_id)
-    pk = get_user_private_key(user_id)
-    balance = get_balance(user_id)
-
-    msg = (
-        "📊 *PANEL PRINCIPAL*\n"
-        "───────────────────────────\n"
-        f"🪪 Usuario: `{user_id}`\n"
-        f"👛 Wallet: `{wallet}`\n"
-        f"🔐 Private Key: `{'✔ Configurada' if pk else '❌ No configurada'}`\n"
-        f"🏦 Balance Exchange (capital operativo): `{balance} USDC`\n"
-        "───────────────────────────\n"
-        f"📌 Estado: {'🟢 ACTIVO' if user_is_ready(user_id) else '🔴 INACTIVO'}"
-    )
-
-    await q.edit_message_text(msg, reply_markup=main_menu(user_id), parse_mode="Markdown")
+    await _send_miniapp_redirect_message(q, q.from_user.id, "📊 *Dashboard trasladado a la MiniApp*")
 
 
 # ============================================================
@@ -173,44 +180,21 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def wallet_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    kb = [
-        [InlineKeyboardButton("💼 Establecer Wallet", callback_data="set_wallet")],
-        [InlineKeyboardButton("🔐 Establecer Private Key", callback_data="set_pk")],
-        [InlineKeyboardButton("⬅ Volver", callback_data="back")],
-    ]
-
-    await q.edit_message_text(
-        "💳 *Configurar Wallet y Private Key*",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode="Markdown"
-    )
+    await _send_miniapp_redirect_message(q, q.from_user.id, "💳 *Configuración trasladada a la MiniApp*")
 
 
 async def set_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     context.user_data.clear()
-    context.user_data["awaiting_wallet"] = True
-
-    await q.edit_message_text(
-        "🔗 Envía ahora tu *WALLET* vinculada a HyperLiquid.",
-        parse_mode="Markdown"
-    )
+    await _send_miniapp_redirect_message(q, q.from_user.id, "🔗 *La wallet ahora se configura en la MiniApp*")
 
 
 async def set_pk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     context.user_data.clear()
-    context.user_data["awaiting_pk"] = True
-
-    await q.edit_message_text(
-        "🔐 Envía ahora tu *PRIVATE KEY*.",
-        parse_mode="Markdown"
-    )
+    await _send_miniapp_redirect_message(q, q.from_user.id, "🔐 *La private key ahora se configura en la MiniApp*")
 
 
 # ============================================================
@@ -219,72 +203,29 @@ async def set_pk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text
 
-    # ✅ Admin: activar plan premium por ID
-    if context.user_data.get("awaiting_activate_plan_id"):
-        if user_id != ADMIN_TELEGRAM_ID:
-            context.user_data.clear()
-            await update.message.reply_text("⛔ Acceso no autorizado.")
-            return
-        try:
-            target_id = int(str(text).strip())
-        except Exception:
-            await update.message.reply_text("❌ ID inválido. Debe ser numérico.")
-            return
+    legacy_flow_keys = [
+        "awaiting_activate_plan_id",
+        "awaiting_user_stats_id",
+        "awaiting_wallet",
+        "awaiting_pk",
+    ]
+    had_legacy_state = any(context.user_data.get(key) for key in legacy_flow_keys)
+    context.user_data.clear()
 
-        context.user_data.clear()
-        if not is_user_registered(target_id):
-            await update.message.reply_text("❌ Ese usuario no está registrado en la base de datos.", reply_markup=main_menu(user_id))
-            return
-
-        ok = activate_premium_plan(target_id)
-        if not ok:
-            await update.message.reply_text("❌ No se pudo activar el plan (error interno).", reply_markup=main_menu(user_id))
-            return
-
-        await update.message.reply_text(f"✅ Plan Premium activado para `{target_id}`.", parse_mode="Markdown", reply_markup=main_menu(user_id))
-        return
-
-    # ✅ Admin: stats por usuario (pedir ID)
-    if context.user_data.get("awaiting_user_stats_id"):
-        if user_id != ADMIN_TELEGRAM_ID:
-            context.user_data.clear()
-            await update.message.reply_text("⛔ Acceso no autorizado.")
-            return
-        try:
-            target_id = int(str(text).strip())
-        except Exception:
-            await update.message.reply_text("❌ ID inválido. Debe ser numérico.")
-            return
-        if not is_user_registered(target_id):
-            context.user_data.clear()
-            await update.message.reply_text("❌ Ese usuario no está registrado en la base de datos.", reply_markup=main_menu(user_id))
-            return
-        # Guardamos el target para los botones 24h/7d/30d y reset
-        context.user_data.clear()
-        context.user_data["user_stats_target_id"] = int(target_id)
+    if had_legacy_state:
         await update.message.reply_text(
-            f"👤 *ESTADÍSTICAS POR USUARIO*\n\nUsuario seleccionado: `{target_id}`\n\nElige el período:",
+            "⚠️ Ese flujo de Telegram ya fue retirado. Continúa desde la MiniApp para evitar inconsistencias.",
+            reply_markup=_launcher_menu(user_id),
             parse_mode="Markdown",
-            reply_markup=_admin_user_stats_menu(),
         )
         return
 
-    if context.user_data.get("awaiting_wallet"):
-        save_user_wallet(user_id, text)
-        context.user_data.clear()
-        await update.message.reply_text("✅ Wallet guardada.", reply_markup=main_menu(user_id))
-        return
-
-    if context.user_data.get("awaiting_pk"):
-        save_user_private_key(user_id, text)
-        context.user_data.clear()
-        await update.message.reply_text("🔐 Private Key guardada.", reply_markup=main_menu(user_id))
-        return
-
-    # ✅ Capital eliminado: no se procesa input de capital.
-    # Si el usuario envía un número, se ignora o queda como mensaje normal.
+    await update.message.reply_text(
+        "💡 Este bot ahora se usa desde la MiniApp. Telegram queda para alertas, notificaciones y acceso rápido.",
+        reply_markup=_launcher_menu(user_id),
+        parse_mode="Markdown",
+    )
 
 
 # ============================================================
@@ -294,43 +235,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-
-    # Bloqueo: debe aceptar políticas antes de operar
-    if not has_accepted_terms(user_id):
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📜 Ver Políticas", callback_data="policies")]])
-        await q.edit_message_text("📜 Debes aceptar las políticas antes de operar.", reply_markup=kb)
-        return
-
-    access = ensure_access_on_activate(user_id)
-    if not access.get("allowed", False):
-        msg = access.get("message") or "⛔ Tu acceso está bloqueado."
-        if ADMIN_WHATSAPP_LINK:
-            msg += f"\n\n📲 WhatsApp: {ADMIN_WHATSAPP_LINK}"
-        await q.edit_message_text(msg, reply_markup=main_menu(user_id), parse_mode="Markdown")
-        return
-
-    # Si allowed, activamos trading como siempre
-    set_trading_status(user_id, "active")
-
-    plan_msg = access.get("plan_message") or "🟢 *Trading ACTIVADO*."
-    await q.edit_message_text(plan_msg, reply_markup=main_menu(user_id), parse_mode="Markdown")
-
+    await _send_miniapp_redirect_message(q, q.from_user.id, "▶ *La activación de trading ahora vive en la MiniApp*")
 
 async def deactivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-    set_trading_status(user_id, "inactive")
-
-    await q.edit_message_text(
-        "🔴 *Trading PAUSADO*.",
-        reply_markup=main_menu(user_id),
-        parse_mode="Markdown"
-    )
-
+    await _send_miniapp_redirect_message(q, q.from_user.id, "⏸ *La pausa de trading ahora vive en la MiniApp*")
 
 # ============================================================
 # OPERACIONES
@@ -339,23 +249,7 @@ async def deactivate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def operations(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-    trades = get_user_trades(user_id)
-
-    if not trades:
-        msg = "📈 *No tienes operaciones registradas.*"
-    else:
-        msg = "📈 *OPERACIONES RECIENTES:*\n\n"
-        for t in trades[:10]:
-            msg += (
-                f"• {t['symbol']} | {t['side']}\n"
-                f"  Ganancia: `{t['profit']} USDC`\n"
-                "───────────────────────────\n"
-            )
-
-    await q.edit_message_text(msg, reply_markup=main_menu(user_id), parse_mode="Markdown")
-
+    await _send_miniapp_redirect_message(q, q.from_user.id, "📈 *Las operaciones y el track record ahora se consultan en la MiniApp*")
 
 # ============================================================
 # REFERIDOS
@@ -364,43 +258,15 @@ async def operations(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-    link = f"https://t.me/{BOT_USERNAME}?start={user_id}"
-    valid = get_referral_valid_count(user_id)
-
-    msg = f"""👥 *REFERIDOS*
-Comparte tu enlace. Un *referido válido* es quien compra una suscripción.
-
-🔗 Tu enlace:
-`{link}`
-
-✅ Referidos válidos: *{valid}*"""
-
-    await q.edit_message_text(msg, parse_mode="Markdown", reply_markup=main_menu(user_id))
-
+    await _send_miniapp_redirect_message(q, q.from_user.id, "👥 *Los referidos ahora se consultan desde la MiniApp*")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     if q.from_user.id != ADMIN_TELEGRAM_ID:
-        await q.edit_message_text("⛔ Acceso no autorizado.", reply_markup=main_menu(q.from_user.id))
+        await q.edit_message_text("⛔ Acceso no autorizado.", reply_markup=_launcher_menu(q.from_user.id))
         return
-
-    kb = [
-        [InlineKeyboardButton("✅ Activar Plan Premium", callback_data="activate_plan")],
-        [InlineKeyboardButton("📊 Información Visual", callback_data="admin_visual")],
-        [InlineKeyboardButton("📈 Estadísticas Trading", callback_data="admin_stats")],
-        [InlineKeyboardButton("👤 Estadísticas por Usuario", callback_data="admin_user_stats_start")],
-        [InlineKeyboardButton("⬅ Volver", callback_data="back")],
-    ]
-    await q.edit_message_text(
-        "🛠 *PANEL DE ADMINISTRACIÓN*\nSelecciona una opción:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
-
+    await _send_miniapp_redirect_message(q, q.from_user.id, "🛠 *La administración operativa ahora se hace desde la MiniApp*")
 
 async def activate_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -821,67 +687,23 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     user_id = q.from_user.id
-    data = get_last_operation(user_id) or {}
-    last_open = data.get("last_open")
-    last_close = data.get("last_close")
-
-    lines = []
-    lines.append("ℹ️ *INFORMACIÓN DE OPERACIONES*")
-    lines.append("───────────────────────────")
-
-    if last_open:
-        lines.append("")
-        lines.append("🟡 *Última operación ABIERTA*")
-        lines.append(f"• Símbolo: `{last_open.get('symbol', '-')}`")
-        lines.append(f"• Lado: `{last_open.get('side', '-')}`")
-        lines.append(f"• Entrada: `{last_open.get('entry_price', '-')}`")
-        lines.append(f"• Qty: `{last_open.get('qty', '-')}`")
-        lines.append(f"• Apalancamiento: `{last_open.get('leverage', '-')}`")
-    else:
-        lines.append("")
-        lines.append("🟡 *Última operación ABIERTA*")
-        lines.append("_No hay datos aún._")
-
-    if last_close:
-        lines.append("")
-        lines.append("✅ *Última operación CERRADA*")
-        lines.append(f"• Símbolo: `{last_close.get('symbol', '-')}`")
-        lines.append(f"• Lado: `{last_close.get('side', '-')}`")
-        lines.append(f"• Entrada: `{last_close.get('entry_price', '-')}`")
-        lines.append(f"• Salida: `{last_close.get('exit_price', '-')}`")
-        lines.append(f"• Profit: `{last_close.get('profit', '-')}`")
-    else:
-        lines.append("")
-        lines.append("✅ *Última operación CERRADA*")
-        lines.append("_No hay datos aún._")
-
-    msg = "\n".join(lines)
-    await q.edit_message_text(msg, parse_mode="Markdown", reply_markup=main_menu(user_id))
-
+    msg = (
+        "ℹ️ *INFORMACIÓN DEL SERVICIO*\n"
+        "───────────────────────────\n"
+        "• Telegram queda para notificaciones, alertas y acceso rápido.\n"
+        "• La configuración, control, historial y administración se gestionan desde la MiniApp.\n"
+        "• Si cambias wallet, private key, plan o estado operativo, hazlo desde la MiniApp para mantener coherencia."
+    )
+    await q.edit_message_text(msg, parse_mode="Markdown", reply_markup=_launcher_menu(user_id))
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    user_id = q.from_user.id
-
-    wallet = get_user_wallet(user_id)
-    pk = get_user_private_key(user_id)
-    balance = get_balance(user_id)
-
-    msg = (
-        "📊 *PANEL PRINCIPAL*\n"
-        "───────────────────────────\n"
-        f"🪪 Usuario: `{user_id}`\n"
-        f"👛 Wallet: `{wallet}`\n"
-        f"🔐 Private Key: `{'✔ Configurada' if pk else '❌ No configurada'}`\n"
-        f"🏦 Balance Exchange (capital operativo): `{balance} USDC`\n"
-        "───────────────────────────\n"
-        f"📌 Estado: {'🟢 ACTIVO' if user_is_ready(user_id) else '🔴 INACTIVO'}"
+    await q.edit_message_text(
+        _miniapp_entry_text(is_admin=(q.from_user.id == ADMIN_TELEGRAM_ID)),
+        reply_markup=_launcher_menu(q.from_user.id),
+        parse_mode="Markdown",
     )
-
-    await q.edit_message_text(msg, reply_markup=main_menu(user_id), parse_mode="Markdown")
-
 
 # ============================================================
 # ROUTER
@@ -952,6 +774,7 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("panel", start))
+    app.add_handler(CommandHandler("miniapp", miniapp_command))
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
