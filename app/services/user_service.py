@@ -20,6 +20,7 @@ from app.database import (
     get_user_trade_stats,
     get_user_track_record_summary,
     get_user_trades_limited,
+    get_user_cycle_policy,
     has_accepted_terms,
     save_user_private_key,
     save_user_wallet,
@@ -127,6 +128,54 @@ def _friendly_blockers(blockers: list[str] | None) -> list[str]:
     return [labels.get(str(item), str(item)) for item in (blockers or [])]
 
 
+def _runtime_operational_copy(profile: dict, policy: dict | None = None) -> dict:
+    policy = dict(policy or {})
+    state = str(profile.get('runtime_state') or policy.get('runtime_state') or 'unknown').strip().lower() or 'unknown'
+    mode = str(profile.get('runtime_mode') or policy.get('runtime_mode') or '').strip().lower() or 'unknown'
+    live_trade = bool(profile.get('runtime_live_trade')) or bool(policy.get('live_trade'))
+    active_symbol = profile.get('runtime_active_symbol') or policy.get('active_symbol')
+    detail = profile.get('runtime_message') or policy.get('runtime_message') or 'Sin lectura operativa todavía.'
+
+    mapping = {
+        'activation_requested': ('Pendiente de sincronizar', 'info'),
+        'entries_enabled': ('Operativo', 'active'),
+        'manager_only': ('Gestión activa', 'warning'),
+        'paused': ('Pausado', 'inactive'),
+        'access_blocked': ('Bloqueado por acceso', 'blocked'),
+        'configuration_blocked': ('Bloqueado por configuración', 'blocked'),
+        'idle': ('Sin actividad', 'neutral'),
+        'cycle_running': ('Motor trabajando', 'active'),
+        'cycle_completed': ('Sincronizado', 'active'),
+        'error': ('Incidencia operativa', 'danger'),
+    }
+    label, tone = mapping.get(state, ('Sin lectura', 'neutral'))
+
+    if mode == 'manager_only' and live_trade and active_symbol:
+        detail = f'El motor mantiene {active_symbol} en modo gestión y no abrirá nuevas entradas.'
+    elif state == 'entries_enabled' and active_symbol:
+        detail = f'El motor puede operar normalmente. Símbolo activo reciente: {active_symbol}.'
+
+    desired = str(profile.get('trading_status') or '').lower()
+    aligned = True
+    if desired == 'active' and state in {'paused', 'access_blocked', 'configuration_blocked'}:
+        aligned = False
+    if desired != 'active' and state == 'entries_enabled':
+        aligned = False
+
+    alignment_label = 'Sincronizado' if aligned else 'Revisar sincronización'
+    return {
+        'state': state,
+        'mode': mode,
+        'label': label,
+        'tone': tone,
+        'detail': detail,
+        'live_trade': live_trade,
+        'active_symbol': active_symbol,
+        'aligned': aligned,
+        'alignment_label': alignment_label,
+    }
+
+
 def _clean_wallet(wallet: str) -> str:
     value = (wallet or '').strip()
     if not value:
@@ -183,11 +232,20 @@ def get_user_profile(user_id: int) -> dict:
         'referral_valid_count': int(profile.get('referral_valid_count', 0) or 0),
         'last_open_at': _serialize_dt(profile.get('last_open_at')),
         'last_close_at': _serialize_dt(profile.get('last_close_at')),
+        'runtime_state': profile.get('runtime_state') or 'unknown',
+        'runtime_mode': profile.get('runtime_mode'),
+        'runtime_message': profile.get('runtime_message'),
+        'runtime_source': profile.get('runtime_source'),
+        'runtime_checked_at': _serialize_dt(profile.get('runtime_checked_at')),
+        'runtime_live_trade': bool(profile.get('runtime_live_trade')),
+        'runtime_active_symbol': profile.get('runtime_active_symbol'),
     }
 
 
 def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
     profile = get_user_profile(int(user_id))
+    policy = get_user_cycle_policy(int(user_id))
+    runtime_readout = _runtime_operational_copy(profile, policy)
     ready = (
         profile['wallet_configured']
         and profile['private_key_configured']
@@ -205,6 +263,12 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
         'access_label': access['label'],
         'access_detail': access['detail'],
         'access_tone': access['tone'],
+        'operational_state': runtime_readout['state'],
+        'operational_mode': runtime_readout['mode'],
+        'operational_label': runtime_readout['label'],
+        'operational_tone': runtime_readout['tone'],
+        'operational_detail': runtime_readout['detail'],
+        'operational_aligned': runtime_readout['aligned'],
     }
     if include_balance:
         payload['exchange_balance'] = float(get_balance(int(user_id)) or 0.0)
@@ -213,6 +277,8 @@ def get_dashboard(user_id: int, include_balance: bool = False) -> dict:
 
 def get_control_summary(user_id: int) -> dict:
     profile = get_user_profile(int(user_id))
+    policy = get_user_cycle_policy(int(user_id))
+    runtime_readout = _runtime_operational_copy(profile, policy)
     terms_accepted = bool(profile['terms_accepted'])
     completed, total = _readiness_score(profile)
     return {
@@ -246,6 +312,15 @@ def get_control_summary(user_id: int) -> dict:
         'support_contact': ADMIN_WHATSAPP_LINK or None,
         'readiness_completed': completed,
         'readiness_total': total,
+        'operational_state': runtime_readout['state'],
+        'operational_mode': runtime_readout['mode'],
+        'operational_label': runtime_readout['label'],
+        'operational_tone': runtime_readout['tone'],
+        'operational_detail': runtime_readout['detail'],
+        'operational_live_trade': runtime_readout['live_trade'],
+        'operational_active_symbol': runtime_readout['active_symbol'],
+        'operational_alignment_ok': runtime_readout['aligned'],
+        'operational_alignment_label': runtime_readout['alignment_label'],
     }
 
 
@@ -285,19 +360,21 @@ def activate_user_trading(user_id: int) -> dict:
 
     set_trading_status(int(user_id), 'active')
     summary = get_control_summary(int(user_id))
+    detail = summary.get('operational_detail') or 'La activación quedó registrada.'
     return {
         'result': 'activated',
-        'message': access.get('plan_message') or 'Trading activado',
+        'message': f"{access.get('plan_message') or 'Trading activado'}\n{detail}",
         'control': summary,
     }
 
 
 def pause_user_trading(user_id: int) -> dict:
     set_trading_status(int(user_id), 'inactive')
+    control = get_control_summary(int(user_id))
     return {
         'result': 'paused',
-        'message': 'Trading pausado',
-        'control': get_control_summary(int(user_id)),
+        'message': control.get('operational_detail') or 'Trading pausado',
+        'control': control,
     }
 
 
