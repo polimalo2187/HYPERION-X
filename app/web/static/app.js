@@ -88,6 +88,9 @@ const elements = {
   adminSecurityStats: $('adminSecurityStats'),
   adminTradeStats: $('adminTradeStats'),
   adminRecentActions: $('adminRecentActions'),
+  adminMonitorStats: $('adminMonitorStats'),
+  adminMonitorFeed: $('adminMonitorFeed'),
+  adminLivePositions: $('adminLivePositions'),
   adminSearchForm: $('adminSearchForm'),
   adminSearchInput: $('adminSearchInput'),
   adminSearchButton: $('adminSearchButton'),
@@ -1039,11 +1042,59 @@ function renderSystemRuntime(payload) {
 }
 
 
+function renderAdminMonitorFeed(rows) {
+  renderActivityList(
+    elements.adminMonitorFeed,
+    rows || [],
+    'Sin eventos operativos recientes.',
+    {
+      emptyTitle: 'Sin eventos recientes',
+      emptyDetail: 'Todavía no hay aperturas, cierres o pagos recientes para mostrar.',
+    }
+  );
+}
+
+function renderAdminLivePositions(rows) {
+  if (!elements.adminLivePositions) return;
+  const items = Array.isArray(rows) ? rows : [];
+  if (!items.length) {
+    elements.adminLivePositions.className = 'list-stack empty-state';
+    elements.adminLivePositions.textContent = 'Sin posiciones activas ahora mismo.';
+    return;
+  }
+  elements.adminLivePositions.className = 'list-stack';
+  elements.adminLivePositions.innerHTML = '';
+  items.forEach((row) => {
+    const article = document.createElement('article');
+    article.className = 'activity-item';
+    const userLabel = row.username ? `@${row.username}` : `Usuario ${row.user_id || '—'}`;
+    const symbol = row.symbol || '—';
+    const side = String(row.direction || row.side || '').toUpperCase() || '—';
+    const detailBits = [];
+    if (row.entry_price !== null && row.entry_price !== undefined) detailBits.push(`Entry ${formatNumber(row.entry_price, 6)}`);
+    if (row.qty_coin !== null && row.qty_coin !== undefined) detailBits.push(`Qty ${formatNumber(row.qty_coin, 6)}`);
+    if (row.qty_usdc !== null && row.qty_usdc !== undefined) detailBits.push(`Notional ${formatNumber(row.qty_usdc, 2)} USDT`);
+    if (row.manager_heartbeat_at) detailBits.push(`Heartbeat ${formatDate(row.manager_heartbeat_at)}`);
+    article.innerHTML = `
+      <div class="activity-dot info"></div>
+      <div class="activity-copy">
+        <div class="activity-title">${symbol} · ${side} · ${userLabel}</div>
+        <div class="activity-detail">${detailBits.join(' · ') || 'Posición activa detectada en runtime.'}</div>
+      </div>
+      <div class="activity-time">${formatDate(row.opened_at)}</div>
+    `;
+    elements.adminLivePositions.appendChild(article);
+  });
+}
+
+
 function renderAdmin(data) {
   state.admin = data;
   const visual = data.visual || {};
   const tradeStats = data.trade_stats_30d || {};
   const security = data.security || {};
+  const monitor = data.monitor || {};
+  const monitorCounts = monitor.counts || {};
 
   elements.adminVisualStats.innerHTML = '';
   elements.adminVisualStats.append(
@@ -1075,6 +1126,18 @@ function renderAdmin(data) {
     data.recent_actions || [],
     'Sin acciones administrativas registradas todavía.',
   );
+
+  if (elements.adminMonitorStats) {
+    elements.adminMonitorStats.innerHTML = '';
+    elements.adminMonitorStats.append(
+      buildKpiCard('Eventos', monitorCounts.events || 0, 'Feed global reciente.'),
+      buildKpiCard('Aperturas/cierres', monitorCounts.trade_events || 0, 'Trading reciente del sistema.'),
+      buildKpiCard('Pagos', monitorCounts.payment_events || 0, 'Confirmaciones recientes.'),
+      buildKpiCard('Posiciones vivas', monitorCounts.active_positions || 0, 'Operaciones abiertas ahora mismo.')
+    );
+  }
+  renderAdminMonitorFeed(monitor.events || []);
+  renderAdminLivePositions(monitor.active_positions || []);
 
   if (elements.adminBulkMigrationStatus) {
     elements.adminBulkMigrationStatus.textContent = `Legacy pendientes: ${security.legacy_plaintext_private_keys || 0} · Keys cifradas: ${security.encrypted_private_keys || 0}`;
