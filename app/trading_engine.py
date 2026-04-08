@@ -33,7 +33,6 @@ from app.risk import validate_trade_conditions
 from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_recent_closed_pnl, get_last_closed_pnl
 
 from app.database import (
-    user_is_ready,
     register_trade,
     add_daily_admin_fee,
     add_weekly_ref_fee,
@@ -2318,9 +2317,12 @@ def execute_trade_cycle(user_id: int) -> dict | None:
     try:
         log(f"Usuario {user_id} — inicio ciclo")
 
-        if not user_is_ready(user_id):
-            log(f"Usuario {user_id} no listo")
+        policy = database_module.get_user_cycle_policy(user_id)
+        if not policy.get('should_run_cycle', False):
+            log(f"Usuario {user_id} sin permiso operativo: {policy.get('runtime_message')}")
             return None
+
+        manager_only = bool(policy.get('manager_only', False))
 
         # Reconciliación defensiva: si el exchange ya no tiene posición pero el bot
         # conserva estado activo en memoria, registramos el cierre y activamos cooldown.
@@ -2346,6 +2348,10 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         if has_open_position(user_id):
             log("Ya hay una posición abierta en el exchange — entrando en modo MANAGER (SL/TRAIL)", "WARN")
             return _manage_existing_open_position(user_id)
+
+        if manager_only:
+            log(f"Usuario {user_id} en modo MANAGER_ONLY — no se evaluarán nuevas entradas", "INFO")
+            return {'event': 'MANAGER_ONLY_IDLE'}
 
         # ✅ Guard: capital mínimo (evita órdenes ridículas) — solo aplica cuando NO hay posición abierta
         if capital < float(MIN_CAPITAL_USDC):
