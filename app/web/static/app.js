@@ -470,6 +470,66 @@ function truncateMiddle(value, max = 18) {
   return `${text.slice(0, side)}...${text.slice(-side)}`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function copyTextToClipboard(value, successMessage = 'Copiado correctamente.') {
+  const text = String(value || '').trim();
+  if (!text) {
+    setStatus('No hay un valor disponible para copiar.', 'warning');
+    return false;
+  }
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'readonly');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!ok) throw new Error('copy_failed');
+    }
+    setStatus(successMessage, 'success');
+    return true;
+  } catch (error) {
+    setStatus('No se pudo copiar automáticamente. Intenta mantener pulsada la dirección.', 'error');
+    return false;
+  }
+}
+
+function buildCopyableAddress(address, label = 'Wallet receptora') {
+  const full = String(address || '').trim();
+  if (!full) {
+    return `<div class="list-item-meta payment-order-detail">${label}: —</div>`;
+  }
+
+  const escaped = escapeHtml(full);
+  const short = escapeHtml(truncateMiddle(full, 22));
+  return `
+    <div class="list-item-meta payment-order-detail payment-copy-block">
+      <span class="payment-copy-label">${label}</span>
+      <div class="payment-copy-row">
+        <span class="payment-copy-value" title="${escaped}">${short}</span>
+        <button class="inline-copy-button" type="button" data-copy-text="${escaped}">Copiar</button>
+      </div>
+    </div>
+  `;
+}
+
 function buildKpiCard(label, value, subtext = '') {
   const article = document.createElement('article');
   article.className = 'kpi-card';
@@ -622,7 +682,7 @@ function renderBilling(data) {
         <article class="list-item">
           <div class="list-item-title">${paymentStatusLabel(order.status)} · Premium ${order.days} días</div>
           <div class="list-item-meta payment-order-detail">Monto exacto: ${order.amount_formatted || formatNumber(order.amount_usdt, 3)} ${order.token_symbol || 'USDT'} · Base ${formatNumber(order.base_price_usdt, 2)} USDT</div>
-          <div class="list-item-meta payment-order-detail">Wallet receptora: ${order.deposit_address || '—'}</div>
+          ${buildCopyableAddress(order.deposit_address, 'Wallet receptora')}
           <div class="list-item-meta">Orden ${order.order_id} · vence ${formatDate(order.expires_at)}${Number.isFinite(order.expires_in_seconds) ? ' · ' + Math.max(0, Math.floor(order.expires_in_seconds / 60)) + ' min restantes' : ''}</div>
           <div class="list-item-meta">${paymentReasonLabel(order.last_verification_reason || order.status)}</div>
           ${order.matched_tx_hash ? `<div class="list-item-meta payment-order-detail">Tx detectada: ${order.matched_tx_hash}</div>` : ''}
@@ -1655,6 +1715,13 @@ function bindActions() {
   elements.pauseTradingButton.addEventListener('click', pauseTradingAction);
   if (elements.billingConfirmButton) elements.billingConfirmButton.addEventListener('click', confirmPaymentAction);
   if (elements.billingCancelButton) elements.billingCancelButton.addEventListener('click', cancelPaymentAction);
+
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-copy-text]');
+    if (!button) return;
+    event.preventDefault();
+    await copyTextToClipboard(button.getAttribute('data-copy-text'), 'Wallet copiada al portapapeles.');
+  });
 
   if (elements.adminSearchForm) {
     elements.adminSearchForm.addEventListener('submit', async (event) => {
