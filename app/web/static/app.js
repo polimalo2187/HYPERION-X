@@ -524,12 +524,17 @@ function buildControlSummary(control) {
     `Términos: ${control.terms_accepted ? 'aceptados' : 'pendientes'}`,
     `Plan: ${planLabel(control.plan)} (${control.plan_active ? 'activo' : 'inactivo'})`,
     `Días restantes: ${control.plan_days_remaining ?? 0}`,
-    `Trading: ${control.trading_status || 'inactive'}`,
+    `Solicitud del usuario: ${control.trading_status || 'inactive'}`,
+    `Estado real del motor: ${control.operational_label || 'Sin lectura'}`,
+    `Modo operativo: ${control.operational_mode || 'unknown'}`,
+    `Alineación: ${control.operational_alignment_label || 'Sin lectura'}`,
     `Preparación: ${control.readiness_completed ?? 0}/${control.readiness_total ?? 5}`,
+    control.operational_detail ? `Detalle: ${control.operational_detail}` : null,
+    control.runtime_checked_at ? `Última lectura: ${formatDate(control.runtime_checked_at)}` : null,
     '',
     'Bloqueadores:',
     blockers,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function renderDashboard(data) {
@@ -538,13 +543,14 @@ function renderDashboard(data) {
   const readinessText = data.status_summary || 'not_ready';
   const tradingText = data.trading_status || 'inactive';
   const planText = planLabel(data.plan);
+  const operationalLabel = data.operational_label || tradingText;
   const accessText = accessLabel(data);
   const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 18) : 'Pendiente';
 
   setPill(elements.connectionBadge, 'Conectado', 'connected');
   setPill(elements.heroSessionPill, data.plan_active ? 'Sesión activa' : 'Acceso limitado', data.plan_active ? 'active' : 'blocked');
   setPill(elements.heroPlanPill, `Plan ${planText}`, data.plan_active ? data.plan : 'none');
-  setPill(elements.heroTradingPill, `Trading ${tradingText}`, tradingText);
+  setPill(elements.heroTradingPill, operationalLabel, data.operational_tone || tradingText);
   setPill(elements.userPlanBadge, planText, data.plan_active ? data.plan : 'none');
   setPill(elements.userReadinessBadge, readinessText, readinessText);
   setPill(elements.walletBadge, data.wallet_configured ? 'Wallet ok' : 'Pendiente', data.wallet_configured ? 'configured' : 'missing');
@@ -561,7 +567,7 @@ function renderDashboard(data) {
   elements.userIdentity.textContent = usernameText;
   elements.userIdentitySubtext.textContent = data.user_id ? `Telegram ID ${data.user_id}` : 'Usuario no resuelto';
   elements.userReadiness.textContent = readinessText;
-  elements.userTradingStatus.textContent = `Trading ${tradingText}`;
+  elements.userTradingStatus.textContent = `${operationalLabel} · ${data.operational_detail || ('Trading ' + tradingText)}`;
   elements.walletConfigured.textContent = data.wallet_configured ? 'Wallet configurada' : 'Wallet pendiente';
   elements.privateKeyConfigured.textContent = data.private_key_configured ? 'Private key cargada' : 'Private key faltante';
 
@@ -569,7 +575,8 @@ function renderDashboard(data) {
   elements.dashboardStats.append(
     buildKpiCard('Plan', planText, data.plan_active ? 'Acceso operativo habilitado.' : 'Acceso inactivo.'),
     buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Se calculan sobre el vencimiento actual.' : 'Sin días vigentes.'),
-    buildKpiCard('Trading', tradingText, 'Estado reportado por la base.'),
+    buildKpiCard('Trading solicitado', tradingText, 'Estado deseado guardado por el usuario.'),
+    buildKpiCard('Motor real', operationalLabel, data.operational_detail || 'Lectura operativa del motor.'),
     buildKpiCard('Términos', data.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean la activación si faltan.'),
     buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
     buildKpiCard('Private key', data.private_key_configured ? 'Sí' : 'No', 'No se vuelve a exponer por API.'),
@@ -599,7 +606,7 @@ function renderControl(control) {
   elements.controlReadinessBox.textContent = buildControlSummary(control);
   elements.termsStatusText.textContent = control.terms_accepted ? 'Aceptados' : 'Pendientes';
   elements.acceptTermsButton.disabled = control.terms_accepted;
-  elements.activateTradingButton.disabled = !control.activation_ready;
+  elements.activateTradingButton.disabled = !control.activation_ready || control.trading_status === 'active';
   elements.pauseTradingButton.disabled = control.trading_status !== 'active';
 
   if (!elements.walletInput.value && control.wallet) {
@@ -612,8 +619,11 @@ function renderControl(control) {
     buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', control.security_posture === 'encrypted_at_rest' ? 'Cifrada en reposo.' : 'Nunca se reexpone por API.'),
     buildKpiCard('Seguridad', control.security_posture === 'encrypted_at_rest' ? 'Cifrada' : (control.security_posture === 'legacy_plaintext' ? 'Legacy' : 'Sin key'), control.security_posture === 'legacy_plaintext' ? 'Requiere rotación para endurecer.' : 'Estado del almacenamiento sensible.'),
     buildKpiCard('Términos', control.terms_accepted ? 'Aceptados' : 'Pendientes', 'Bloquean activación.'),
-    buildKpiCard('Trading', control.trading_status || 'inactive', 'Se puede pausar desde aquí.'),
+    buildKpiCard('Solicitud', control.trading_status || 'inactive', 'Estado deseado por el usuario desde la MiniApp.'),
+    buildKpiCard('Estado real', control.operational_label || 'Sin lectura', control.operational_detail || 'Lectura operativa actual.'),
+    buildKpiCard('Modo operativo', control.operational_mode || 'unknown', control.operational_live_trade ? `Trade vivo ${control.operational_active_symbol || ''}`.trim() : 'Sin trade activo gestionado ahora mismo.'),
     buildKpiCard('Plan', planLabel(control.plan), control.plan_active ? `Plan vigente · ${control.plan_days_remaining || 0} día(s) restantes.` : 'Sin acceso vigente.'),
+    buildKpiCard('Alineación', control.operational_alignment_label || 'Sin lectura', control.runtime_checked_at ? `Última lectura ${formatDate(control.runtime_checked_at)}` : 'Todavía no hay lectura del motor.'),
     buildKpiCard('Preparación', `${control.readiness_completed || 0}/${control.readiness_total || 5}`, 'Lectura global de requisitos cumplidos.'),
     buildKpiCard('Activación', control.activation_ready ? 'Lista' : 'Bloqueada', (control.activation_blockers_copy || []).join(' ') || 'Sin bloqueadores.')
   );
