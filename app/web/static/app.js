@@ -8,6 +8,7 @@ const state = {
   operations: null,
   referrals: null,
   systemRuntime: null,
+  billing: null,
   admin: null,
   adminSelectedUser: null,
 };
@@ -67,6 +68,12 @@ const elements = {
   acceptTermsButton: $('acceptTermsButton'),
   activateTradingButton: $('activateTradingButton'),
   pauseTradingButton: $('pauseTradingButton'),
+  billingCatalogGrid: $('billingCatalogGrid'),
+  billingOrderBox: $('billingOrderBox'),
+  billingConfirmButton: $('billingConfirmButton'),
+  billingCancelButton: $('billingCancelButton'),
+  billingConfigGrid: $('billingConfigGrid'),
+  billingHelpList: $('billingHelpList'),
   activeTradeBadge: $('activeTradeBadge'),
   activeTradeSummary: $('activeTradeSummary'),
   latestOpenSummary: $('latestOpenSummary'),
@@ -514,6 +521,120 @@ function buildAdminPerformanceCard(windowLabel, stats = {}) {
     profit_factor: stats.profit_factor === Infinity ? Infinity : Number(stats.profit_factor || 0),
     win_rate: Number(stats.win_rate || 0),
   });
+}
+
+
+function paymentStatusLabel(status) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'awaiting_payment') return 'Esperando pago';
+  if (normalized === 'verification_in_progress') return 'Verificando';
+  if (normalized === 'paid_unconfirmed') return 'Pago detectado';
+  if (normalized === 'completed') return 'Completado';
+  if (normalized === 'cancelled') return 'Cancelado';
+  if (normalized === 'expired') return 'Expirado';
+  return normalized.toUpperCase() || '—';
+}
+
+function paymentReasonLabel(reason) {
+  const normalized = String(reason || '').toLowerCase();
+  const mapping = {
+    payment_not_found: 'Todavía no se detecta una transferencia exacta hacia la wallet receptora.',
+    payment_waiting_confirmations: 'La transferencia fue detectada, pero aún no llega al mínimo de confirmaciones.',
+    payment_confirmed: 'Pago confirmado correctamente.',
+    verification_in_progress: 'Ya hay una verificación en curso para esta orden.',
+    order_expired: 'La orden venció y debe generarse una nueva.',
+    order_cancelled: 'La orden fue cancelada.',
+    tx_already_used: 'La transacción ya fue utilizada en otra orden.',
+    payment_config_missing: 'La configuración de cobro aún no está completa en el backend.',
+  };
+  return mapping[normalized] || 'Sin novedad adicional.';
+}
+
+function buildPaymentPlanCard(option, canCreate = true) {
+  const article = document.createElement('article');
+  article.className = 'kpi-card payment-plan-card';
+  article.innerHTML = `
+    <span class="kpi-label">Premium ${option.days} días</span>
+    <div class="kpi-value">${formatNumber(option.price_usdt, 2)} USDT</div>
+    <div class="kpi-subtext">Pago automático por USDT BEP-20 con monto único para identificar la orden.</div>
+  `;
+  const row = document.createElement('div');
+  row.className = 'button-row';
+  const button = document.createElement('button');
+  button.className = 'primary-button';
+  button.type = 'button';
+  button.textContent = `Generar orden ${option.days}d`;
+  button.disabled = !canCreate;
+  button.addEventListener('click', () => createPaymentOrderAction(option.days));
+  row.appendChild(button);
+  article.appendChild(row);
+  return article;
+}
+
+function renderBilling(data) {
+  state.billing = data || null;
+  const catalog = Array.isArray(data?.catalog?.premium) ? data.catalog.premium : [];
+  if (elements.billingCatalogGrid) {
+    elements.billingCatalogGrid.innerHTML = '';
+    if (!catalog.length) {
+      elements.billingCatalogGrid.appendChild(buildKpiCard('Catálogo', 'No disponible', 'No hay planes configurados todavía.'));
+    } else {
+      catalog.forEach((option) => elements.billingCatalogGrid.appendChild(buildPaymentPlanCard(option, Boolean(config.ready))));
+    }
+  }
+
+  const config = data?.configuration || {};
+  if (elements.billingConfigGrid) {
+    const missing = Array.isArray(config.missing_keys) ? config.missing_keys : [];
+    elements.billingConfigGrid.innerHTML = '';
+    elements.billingConfigGrid.append(
+      buildKpiCard('Estado', config.ready ? 'Listo' : 'Incompleto', config.ready ? 'El backend puede generar y verificar órdenes.' : 'Faltan variables críticas para cobros.'),
+      buildKpiCard('Red', String(config.network || 'bep20').toUpperCase(), 'Canal de cobro configurado.'),
+      buildKpiCard('Token', config.token_symbol || 'USDT', `Confirmaciones requeridas: ${data?.required_confirmations || 3}`),
+      buildKpiCard('Pendientes', missing.length || 0, missing.length ? missing.join(', ') : 'Configuración completa.'),
+    );
+  }
+
+  if (elements.billingHelpList) {
+    elements.billingHelpList.className = 'list-stack';
+    elements.billingHelpList.innerHTML = '';
+    [
+      '1. Genera una orden con el plan premium de 15 o 30 días.',
+      '2. Envía exactamente el monto único mostrado a la wallet receptora en USDT BEP-20.',
+      '3. Cuando la transferencia salga en cadena, pulsa Confirmar pago.',
+      '4. Si todavía no hay confirmaciones suficientes, la orden quedará esperando y podrás volver a confirmar luego.',
+    ].forEach((line) => {
+      const item = document.createElement('article');
+      item.className = 'list-item';
+      item.innerHTML = `<div class="list-item-title">${line}</div>`;
+      elements.billingHelpList.appendChild(item);
+    });
+  }
+
+  const order = data?.active_order || null;
+  if (elements.billingOrderBox) {
+    if (!order) {
+      elements.billingOrderBox.className = 'list-stack empty-state';
+      elements.billingOrderBox.textContent = 'No hay una orden de pago activa ahora mismo.';
+    } else {
+      elements.billingOrderBox.className = 'list-stack';
+      elements.billingOrderBox.innerHTML = `
+        <article class="list-item">
+          <div class="list-item-title">${paymentStatusLabel(order.status)} · Premium ${order.days} días</div>
+          <div class="list-item-meta payment-order-detail">Monto exacto: ${order.amount_formatted || formatNumber(order.amount_usdt, 3)} ${order.token_symbol || 'USDT'} · Base ${formatNumber(order.base_price_usdt, 2)} USDT</div>
+          <div class="list-item-meta payment-order-detail">Wallet receptora: ${order.deposit_address || '—'}</div>
+          <div class="list-item-meta">Orden ${order.order_id} · vence ${formatDate(order.expires_at)}${Number.isFinite(order.expires_in_seconds) ? ' · ' + Math.max(0, Math.floor(order.expires_in_seconds / 60)) + ' min restantes' : ''}</div>
+          <div class="list-item-meta">${paymentReasonLabel(order.last_verification_reason || order.status)}</div>
+          ${order.matched_tx_hash ? `<div class="list-item-meta payment-order-detail">Tx detectada: ${order.matched_tx_hash}</div>` : ''}
+        </article>
+      `;
+    }
+  }
+
+  const canConfirm = !!order && ['awaiting_payment', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
+  const canCancel = !!order && ['awaiting_payment', 'verification_in_progress', 'paid_unconfirmed'].includes(String(order.status || '').toLowerCase());
+  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = !canConfirm;
+  if (elements.billingCancelButton) elements.billingCancelButton.disabled = !canCancel;
 }
 
 function buildControlSummary(control) {
@@ -1105,13 +1226,14 @@ async function authenticate() {
 
 async function loadData() {
   setStatus('Sincronizando datos con el backend...', 'info');
-  const [dashboard, control, performance, operations, referrals, systemRuntime] = await Promise.all([
+  const [dashboard, control, performance, operations, referrals, systemRuntime, billing] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
     apiFetch('/api/v1/control'),
     apiFetch('/api/v1/performance'),
     apiFetch('/api/v1/operations?limit=20'),
     apiFetch('/api/v1/referrals'),
     apiFetch('/api/v1/system/runtime'),
+    apiFetch('/api/v1/billing'),
   ]);
 
   renderDashboard(dashboard);
@@ -1120,6 +1242,7 @@ async function loadData() {
   renderOperations(operations);
   renderReferrals(referrals);
   renderSystemRuntime(systemRuntime);
+  renderBilling(billing);
 
   if (state.isAdmin) {
     try {
@@ -1230,17 +1353,80 @@ async function pauseTradingAction() {
   }
 }
 
+
+async function createPaymentOrderAction(days) {
+  try {
+    const payload = await apiFetch('/api/v1/billing/order', {
+      method: 'POST',
+      body: JSON.stringify({ days }),
+    });
+    renderBilling({ ...(state.billing || {}), active_order: payload.order });
+    setStatus(`Orden premium ${days}d generada correctamente.`, 'success');
+    const fresh = await apiFetch('/api/v1/billing');
+    renderBilling(fresh);
+  } catch (error) {
+    setStatus(error.message || 'No se pudo generar la orden de pago.', 'error');
+  }
+}
+
+async function confirmPaymentAction() {
+  const order = state.billing?.active_order;
+  if (!order?.order_id) {
+    setStatus('No hay una orden activa para confirmar.', 'warning');
+    return;
+  }
+  if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = true;
+  try {
+    const payload = await apiFetch('/api/v1/billing/order/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ order_id: order.order_id }),
+    });
+    const isSuccess = Boolean(payload.ok);
+    setStatus(payload.message || paymentReasonLabel(payload.reason), isSuccess ? 'success' : 'warning');
+    await loadData();
+  } catch (error) {
+    setStatus(error.message || 'No se pudo confirmar el pago.', 'error');
+  } finally {
+    if (elements.billingConfirmButton) elements.billingConfirmButton.disabled = false;
+  }
+}
+
+async function cancelPaymentAction() {
+  const order = state.billing?.active_order;
+  if (!order?.order_id) {
+    setStatus('No hay una orden activa para cancelar.', 'warning');
+    return;
+  }
+  if (elements.billingCancelButton) elements.billingCancelButton.disabled = true;
+  try {
+    const payload = await apiFetch('/api/v1/billing/order/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ order_id: order.order_id }),
+    });
+    setStatus(payload.message || 'Orden cancelada correctamente.', 'success');
+    const fresh = await apiFetch('/api/v1/billing');
+    renderBilling(fresh);
+    await refreshSummaryOnly();
+  } catch (error) {
+    setStatus(error.message || 'No se pudo cancelar la orden.', 'error');
+  } finally {
+    if (elements.billingCancelButton) elements.billingCancelButton.disabled = false;
+  }
+}
+
 async function refreshSummaryOnly() {
-  const [dashboard, control, performance, systemRuntime] = await Promise.all([
+  const [dashboard, control, performance, systemRuntime, billing] = await Promise.all([
     apiFetch('/api/v1/dashboard?include_balance=false'),
     apiFetch('/api/v1/control'),
     apiFetch('/api/v1/performance'),
     apiFetch('/api/v1/system/runtime'),
+    apiFetch('/api/v1/billing'),
   ]);
   renderDashboard(dashboard);
   renderControl(control);
   renderPerformance(performance);
   renderSystemRuntime(systemRuntime);
+  renderBilling(billing);
 }
 async function loadAdminUserDetail(userId) {
   const detail = await apiFetch(`/api/v1/admin/users/${userId}`);
@@ -1467,6 +1653,8 @@ function bindActions() {
   elements.acceptTermsButton.addEventListener('click', acceptTermsAction);
   elements.activateTradingButton.addEventListener('click', activateTradingAction);
   elements.pauseTradingButton.addEventListener('click', pauseTradingAction);
+  if (elements.billingConfirmButton) elements.billingConfirmButton.addEventListener('click', confirmPaymentAction);
+  if (elements.billingCancelButton) elements.billingCancelButton.addEventListener('click', cancelPaymentAction);
 
   if (elements.adminSearchForm) {
     elements.adminSearchForm.addEventListener('submit', async (event) => {
