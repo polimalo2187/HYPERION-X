@@ -33,7 +33,6 @@ ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0") or "0")
 ADMIN_WHATSAPP_LINK = os.getenv("ADMIN_WHATSAPP_LINK", "").strip()
 
 from app.database import (
-    accept_terms,
     has_accepted_terms,
     create_user,
     save_user_wallet,
@@ -81,7 +80,7 @@ logging.basicConfig(
 
 def _launcher_menu(user_id: int | None = None):
     kb = []
-    kb.append([InlineKeyboardButton("📜 Políticas", callback_data="policies")])
+    kb.append([InlineKeyboardButton("📜 Ver políticas", callback_data="policies")])
     if MINIAPP_URL:
         kb.append([InlineKeyboardButton("🚀 Abrir MiniApp", web_app=WebAppInfo(url=MINIAPP_URL))])
     return InlineKeyboardMarkup(kb)
@@ -100,13 +99,14 @@ def _miniapp_entry_text(*, terms_accepted: bool = False, is_admin: bool = False)
         "✅ Controla wallet, clave, estado operativo, historial y rendimiento desde un solo panel\n"
         "✅ Mantén Telegram como canal de alertas, avisos y acceso rápido\n\n"
         "Para empezar correctamente:\n"
-        "1. *Acepta las Políticas*\n"
-        "2. Entra en la *MiniApp* para completar la configuración y operar"
+        "1. *Lee las Políticas* aquí en Telegram\n"
+        "2. Entra en la *MiniApp* y *confirma su aceptación*\n"
+        "3. Completa la configuración y activa la operativa"
     )
     if not terms_accepted:
-        base += "\n\n⚠️ *Las Políticas son obligatorias.* Si no las aceptas aquí, dentro de la MiniApp no podrás activar ni trabajar el bot."
+        base += "\n\n⚠️ *Las Políticas son obligatorias.* Debes leerlas aquí y luego confirmar su aceptación dentro de la MiniApp para poder trabajar el bot."
     else:
-        base += "\n\n✅ Ya tienes las Políticas aceptadas. Solo falta abrir la MiniApp para continuar."
+        base += "\n\n✅ Tu confirmación de políticas ya fue registrada. Solo falta abrir la MiniApp para continuar."
     if MINIAPP_URL:
         base += "\n\n🚀 Pulsa *Abrir MiniApp* para entrar al panel operativo."
     if is_admin:
@@ -660,25 +660,33 @@ POLICY_TEXT = (
     "7) No se aceptarán reclamaciones por pérdidas financieras derivadas de la volatilidad del mercado.\n"
     "8) El servicio puede suspenderse si se detecta abuso.\n"
     "───────────────────────────\n"
-    "Al presionar *ACEPTAR*, declaras que has leído y comprendido estas condiciones.\n"
+    "Léelas con atención. La *confirmación final* que habilita la operativa se registra dentro de la *MiniApp*.\n"
 )
 
 async def policies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     kb = [
-        [InlineKeyboardButton("✅ Aceptar", callback_data="policies_accept")],
-        [InlineKeyboardButton("❌ Rechazar", callback_data="back")],
+        [InlineKeyboardButton("✅ Ya las leí", callback_data="policies_accept")],
+        [InlineKeyboardButton("⬅️ Volver", callback_data="back")],
     ]
     await q.edit_message_text(POLICY_TEXT, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
 async def policies_accept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    accept_terms(q.from_user.id)
+    already_confirmed = has_accepted_terms(q.from_user.id)
+    message = (
+        "📜 *Políticas revisadas.*\n\n"
+        "El siguiente paso es abrir la *MiniApp* y usar *Confirmar aceptación* para registrar el consentimiento que habilita la operativa."
+    )
+    if already_confirmed:
+        message = (
+            "✅ *La confirmación de políticas ya está registrada.*\n\n"
+            "Puedes volver a la *MiniApp* para seguir operando con normalidad."
+        )
     await q.edit_message_text(
-        "✅ *Políticas aceptadas correctamente.*\n\n"
-        "Ya puedes entrar en la *MiniApp* para completar la configuración y trabajar el bot.",
+        message,
         parse_mode="Markdown",
         reply_markup=main_menu(q.from_user.id),
     )
