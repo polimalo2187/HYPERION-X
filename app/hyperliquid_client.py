@@ -24,6 +24,7 @@ from app.config import (
     REQUEST_TIMEOUT,
     VERBOSE_LOGS,
     PRODUCTION_MODE,
+    MIN_CAPITAL,
 )
 
 from app.database import (
@@ -364,6 +365,121 @@ def _format_price_tick(px: float, tick_size: float, sz_decimals: int, is_buy: bo
 # ------------------------------------------------------------
 # Balance
 # ------------------------------------------------------------
+
+
+def get_account_snapshot(user_id: int) -> Dict[str, Any]:
+    """
+    Snapshot vivo de la cuenta en Hyperliquid para lectura de la MiniApp.
+
+    Devuelve un payload robusto que NO lanza excepciones al caller y permite
+    saber si la cuenta está lista para operar, si falta capital o si el exchange
+    no respondió.
+    """
+    wallet = get_user_wallet(user_id)
+    private_key = get_user_private_key(user_id)
+
+    base: Dict[str, Any] = {
+        "wallet_configured": bool(wallet),
+        "private_key_configured": bool(private_key),
+        "status": "blocked",
+        "label": "Falta configuración",
+        "tone": "blocked",
+        "message": "Configura wallet y private key para poder operar.",
+        "available_balance": 0.0,
+        "account_value": 0.0,
+        "capital_threshold": float(MIN_CAPITAL),
+        "capital_sufficient": False,
+        "positions_count": 0,
+        "has_open_position": False,
+        "active_symbols": [],
+        "exchange_reachable": False,
+    }
+
+    if not wallet:
+        base["message"] = "Falta configurar la wallet para consultar el exchange."
+        return base
+
+    if not private_key:
+        base["message"] = "Falta configurar la private key para habilitar la operativa."
+        return base
+
+    r = make_request("/info", {"type": "clearinghouseState", "user": wallet})
+    if not isinstance(r, dict):
+        base.update({
+            "status": "error",
+            "label": "Exchange sin respuesta",
+            "tone": "danger",
+            "message": "No se pudo leer el estado de la cuenta en Hyperliquid.",
+            "exchange_reachable": False,
+        })
+        return base
+
+    def _to_float(x: Any) -> float:
+        try:
+            return float(x)
+        except Exception:
+            try:
+                return float(str(x).strip())
+            except Exception:
+                return 0.0
+
+    withdrawable = _to_float(r.get("withdrawable", 0) or 0)
+    account_value = _to_float(((r.get("marginSummary") or {}).get("accountValue", 0)) or 0)
+    available = withdrawable if withdrawable > 0 else account_value
+
+    asset_positions = r.get("assetPositions") or []
+    active_symbols = []
+    if isinstance(asset_positions, list):
+        for ap in asset_positions:
+            if not isinstance(ap, dict):
+                continue
+            pos = ap.get("position") or ap
+            if not isinstance(pos, dict):
+                continue
+            try:
+                szi = float(pos.get("szi", 0) or 0)
+            except Exception:
+                szi = 0.0
+            if abs(szi) <= 0.0:
+                continue
+            symbol = (pos.get("coin") or ap.get("coin") or "").strip().upper()
+            if symbol:
+                active_symbols.append(symbol)
+
+    positions_count = len(active_symbols)
+    capital_ok = available >= float(MIN_CAPITAL)
+
+    if positions_count > 0:
+        status = "manager_only"
+        label = "Posición activa"
+        tone = "warning"
+        message = f"Hay {positions_count} posición(es) abierta(s). El motor debe seguir gestionándolas."
+    elif capital_ok:
+        status = "ready"
+        label = "Listo para operar"
+        tone = "active"
+        message = f"Cuenta lista. Capital disponible {available:.4f} USDC."
+    else:
+        status = "insufficient_capital"
+        label = "Capital insuficiente"
+        tone = "blocked"
+        message = f"Capital disponible {available:.4f} USDC. El mínimo configurado es {float(MIN_CAPITAL):.2f}."
+
+    base.update({
+        "status": status,
+        "label": label,
+        "tone": tone,
+        "message": message,
+        "available_balance": round(float(available), 8),
+        "account_value": round(float(account_value), 8),
+        "capital_threshold": float(MIN_CAPITAL),
+        "capital_sufficient": bool(capital_ok),
+        "positions_count": positions_count,
+        "has_open_position": positions_count > 0,
+        "active_symbols": active_symbols,
+        "exchange_reachable": True,
+    })
+    return base
 
 
 def get_balance(user_id: int) -> float:
