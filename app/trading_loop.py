@@ -21,6 +21,8 @@ from app.database import (
     save_last_open,
     save_last_close,
     touch_runtime_component,
+    get_user_cycle_policy,
+    touch_user_operational_state,
 )
 from app.trading_engine import execute_trade_cycle
 from app.config import SCAN_INTERVAL
@@ -232,24 +234,50 @@ async def trading_loop(app: Application):
                     continue
 
                 try:
-                    if is_plan_expired(user_id):
-                        if should_notify_expired(user_id):
-                            await send_message_safe(
-                                app,
-                                user_id,
-                                "⛔ Tu plan ha vencido. Para continuar, contacta al administrador."
-                            )
-                            mark_expiry_notified(user_id)
+                    policy = get_user_cycle_policy(user_id)
 
-                        # Plan vencido: nunca ejecutamos trading
-                        continue
+                    if is_plan_expired(user_id) and should_notify_expired(user_id):
+                        await send_message_safe(
+                            app,
+                            user_id,
+                            "⛔ Tu plan ha vencido. Las nuevas entradas quedan bloqueadas hasta reactivar el acceso."
+                        )
+                        mark_expiry_notified(user_id)
 
-                    if not user_is_ready(user_id):
+                    if not policy.get('should_run_cycle', False):
+                        touch_user_operational_state(
+                            user_id,
+                            policy.get('runtime_state') or 'idle',
+                            policy.get('runtime_message') or 'Sin actividad operativa.',
+                            mode=policy.get('runtime_mode'),
+                            source='trading_loop',
+                            live_trade=bool(policy.get('live_trade')),
+                            active_symbol=policy.get('active_symbol'),
+                            metadata={'phase': 'skip_policy'},
+                        )
                         continue
                 except Exception as e:
                     log(f"Error verificando readiness usuario {user_id}: {e}", "ERROR")
+                    touch_user_operational_state(
+                        user_id,
+                        'error',
+                        f'No se pudo evaluar el estado operativo: {str(e)[:180]}',
+                        mode='error',
+                        source='trading_loop',
+                        metadata={'phase': 'policy_exception'},
+                    )
                     continue
 
+                touch_user_operational_state(
+                    user_id,
+                    'cycle_running',
+                    'El motor está revisando esta cuenta en tiempo real.',
+                    mode='cycle_running',
+                    source='trading_loop',
+                    live_trade=bool(policy.get('live_trade')),
+                    active_symbol=policy.get('active_symbol'),
+                    metadata={'phase': 'scheduled'},
+                )
                 tasks.append(execute_user_cycle(user_id, semaphore))
                 task_user_ids.append(user_id)
 
@@ -279,11 +307,67 @@ async def trading_loop(app: Application):
             for user_id, result in zip(task_user_ids, results):
                 if isinstance(result, Exception):
                     log(f"Error ciclo usuario {user_id}: {result}", "ERROR")
+                    touch_user_operational_state(
+                        user_id,
+                        'error',
+                        f'El motor devolvió un error: {str(result)[:180]}',
+                        mode='error',
+                        source='trading_loop',
+                        metadata={'phase': 'result_exception'},
+                    )
                     continue
 
                 if not isinstance(result, dict):
+                    policy = get_user_cycle_policy(user_id)
+                    touch_user_operational_state(
+                        user_id,
+                        policy.get('runtime_state') or 'idle',
+                        policy.get('runtime_message') or 'Sin cambios operativos en este ciclo.',
+                        mode=policy.get('runtime_mode'),
+                        source='trading_loop',
+                        live_trade=bool(policy.get('live_trade')),
+                        active_symbol=policy.get('active_symbol'),
+                        metadata={'phase': 'result_empty'},
+                    )
                     continue
 
+                event_name = str(result.get('event') or '').upper()
+
+                if event_name in ('OPEN', 'BOTH'):
+                    touch_user_operational_state(
+                        user_id,
+                        'cycle_completed',
+                        'Se abrió una operación y el motor quedó sincronizado con la nueva posición.',
+                        mode='entries_enabled',
+                        source='trading_loop',
+                        live_trade=True,
+                        active_symbol=((result.get('open') or {}).get('symbol')),
+                        metadata={'phase': 'open_event'},
+                    )
+                elif event_name in ('CLOSE', 'RECONCILE_CLOSED', 'BOTH'):
+                    policy = get_user_cycle_policy(user_id)
+                    touch_user_operational_state(
+                        user_id,
+                        policy.get('runtime_state') or 'idle',
+                        'El motor cerró o reconcilió una operación reciente y volvió a su estado operativo actual.',
+                        mode=policy.get('runtime_mode'),
+                        source='trading_loop',
+                        live_trade=bool(policy.get('live_trade')),
+                        active_symbol=policy.get('active_symbol'),
+                        metadata={'phase': 'close_event', 'event': event_name},
+                    )
+                else:
+                    policy = get_user_cycle_policy(user_id)
+                    touch_user_operational_state(
+                        user_id,
+                        policy.get('runtime_state') or 'idle',
+                        policy.get('runtime_message') or 'Ciclo completado sin nuevas aperturas.',
+                        mode=policy.get('runtime_mode'),
+                        source='trading_loop',
+                        live_trade=bool(policy.get('live_trade')),
+                        active_symbol=policy.get('active_symbol'),
+                        metadata={'phase': 'cycle_complete', 'event': event_name or 'none'},
+                    )
 
                 # ================================
                 # GUARDAR INFO OPERACIÓN (OPEN)
