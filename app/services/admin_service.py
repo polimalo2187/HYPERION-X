@@ -8,6 +8,7 @@ from app.database import (
     ensure_access_on_activate,
     get_admin_action_history,
     get_admin_trade_stats,
+    get_admin_live_monitor_snapshot,
     get_admin_user_snapshot,
     get_admin_visual_stats,
     get_manual_plan_days_preview,
@@ -19,6 +20,7 @@ from app.database import (
     migrate_user_private_key_to_encrypted,
     reset_user_trade_stats_epoch,
     search_users_for_admin,
+    log_user_activity,
 )
 
 
@@ -55,11 +57,13 @@ def get_admin_overview() -> dict:
     trade_stats = get_admin_trade_stats(720) or {}
     security = get_security_overview() or {}
     recent_actions = get_admin_action_history(limit=12)
+    monitor = get_admin_live_monitor_snapshot(limit_events=30, limit_positions=20) or {}
     return {
         'visual': visual,
         'trade_stats_30d': trade_stats,
         'security': security,
         'recent_actions': recent_actions,
+        'monitor': monitor,
     }
 
 
