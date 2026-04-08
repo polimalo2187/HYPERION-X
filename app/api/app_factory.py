@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes_admin import router as admin_router
 from app.api.routes_auth import router as auth_router
+from app.api.routes_billing import router as billing_router
 from app.api.routes_health import router as health_router
 from app.api.routes_user import router as user_router
 from app.config import MINIAPP_ALLOWED_ORIGINS
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(billing_router)
     app.include_router(user_router)
     app.include_router(admin_router)
     return app
