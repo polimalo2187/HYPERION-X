@@ -33,6 +33,7 @@ trades_col = db["trades"]
 settings_col = db["settings"]
 admin_action_logs_col = db["admin_action_logs"]
 runtime_status_col = db["runtime_status"]
+user_runtime_col = db["user_runtime"]
 user_activity_col = db["user_activity"]
 
 # ============================================================
@@ -434,6 +435,182 @@ def get_user_active_trade_snapshot(user_id: int) -> dict | None:
         return None
 
 
+def get_user_cycle_policy(user_id: int) -> dict:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return {
+            'user_id': None,
+            'should_run_cycle': False,
+            'entries_allowed': False,
+            'manager_allowed': False,
+            'manager_only': False,
+            'desired_trading_status': 'inactive',
+            'runtime_state': 'unknown',
+            'runtime_mode': 'unknown',
+            'runtime_message': 'Usuario inválido.',
+            'live_trade': False,
+            'active_symbol': None,
+            'has_wallet': False,
+            'has_private_key': False,
+            'plan_active': False,
+        }
+
+    u = users_col.find_one(
+        {'user_id': uid},
+        {
+            '_id': 0,
+            'wallet': 1,
+            'private_key': 1,
+            'trading_status': 1,
+            'plan': 1,
+            'plan_expires_at': 1,
+        },
+    ) or {}
+
+    active_trade = get_user_active_trade_snapshot(uid) or {}
+    has_wallet = bool(u.get('wallet'))
+    has_private_key = bool(u.get('private_key'))
+    desired_trading_status = str(u.get('trading_status') or 'inactive').strip().lower() or 'inactive'
+    plan_active = _plan_is_active(u)
+    live_trade = bool(active_trade)
+    active_symbol = active_trade.get('symbol') if isinstance(active_trade, dict) else None
+
+    entries_allowed = bool(desired_trading_status == 'active' and plan_active and has_wallet and has_private_key)
+    manager_allowed = bool(live_trade and has_wallet and has_private_key)
+    manager_only = bool(manager_allowed and not entries_allowed)
+    should_run_cycle = bool(entries_allowed or manager_allowed)
+
+    if manager_only:
+        runtime_state = 'manager_only'
+        runtime_mode = 'manager_only'
+        if desired_trading_status != 'active':
+            runtime_message = 'Nuevas entradas pausadas. El motor seguirá gestionando la posición activa hasta cerrarla.'
+        elif not plan_active:
+            runtime_message = 'El acceso ya no permite nuevas entradas, pero la posición activa seguirá bajo gestión hasta cerrarse.'
+        else:
+            runtime_message = 'El motor mantiene una posición activa en modo de gestión.'
+    elif entries_allowed:
+        runtime_state = 'entries_enabled'
+        runtime_mode = 'entries_enabled'
+        runtime_message = 'El motor puede seguir evaluando entradas y gestionando operaciones.'
+    elif desired_trading_status != 'active':
+        runtime_state = 'paused'
+        runtime_mode = 'paused'
+        runtime_message = 'El trading está pausado para nuevas entradas.'
+    elif not plan_active:
+        runtime_state = 'access_blocked'
+        runtime_mode = 'blocked'
+        runtime_message = 'No hay acceso vigente para abrir nuevas operaciones.'
+    elif not has_wallet or not has_private_key:
+        runtime_state = 'configuration_blocked'
+        runtime_mode = 'blocked'
+        missing = []
+        if not has_wallet:
+            missing.append('wallet')
+        if not has_private_key:
+            missing.append('private key')
+        runtime_message = f"Falta configuración crítica: {', '.join(missing)}."
+    else:
+        runtime_state = 'idle'
+        runtime_mode = 'idle'
+        runtime_message = 'Sin actividad operativa registrada todavía.'
+
+    return {
+        'user_id': uid,
+        'should_run_cycle': should_run_cycle,
+        'entries_allowed': entries_allowed,
+        'manager_allowed': manager_allowed,
+        'manager_only': manager_only,
+        'desired_trading_status': desired_trading_status,
+        'runtime_state': runtime_state,
+        'runtime_mode': runtime_mode,
+        'runtime_message': runtime_message,
+        'live_trade': live_trade,
+        'active_symbol': active_symbol,
+        'has_wallet': has_wallet,
+        'has_private_key': has_private_key,
+        'plan_active': plan_active,
+    }
+
+
+def touch_user_operational_state(
+    user_id: int,
+    state: str,
+    message: str,
+    *,
+    mode: str | None = None,
+    source: str = 'system',
+    live_trade: bool | None = None,
+    active_symbol: str | None = None,
+    metadata: dict | None = None,
+) -> bool:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+
+    now = _now_utc()
+    payload = {
+        'user_id': uid,
+        'state': str(state or 'unknown').strip().lower() or 'unknown',
+        'mode': str(mode or '').strip().lower() or None,
+        'message': str(message or '').strip() or None,
+        'source': str(source or 'system').strip().lower() or 'system',
+        'last_seen_at': now,
+        'updated_at': now,
+        'live_trade': bool(live_trade) if live_trade is not None else False,
+        'active_symbol': str(active_symbol or '').strip().upper() or None,
+        'metadata': metadata or {},
+    }
+    try:
+        user_runtime_col.update_one(
+            {'user_id': uid},
+            {'$set': payload, '$setOnInsert': {'created_at': now}},
+            upsert=True,
+        )
+        users_col.update_one(
+            {'user_id': uid},
+            {
+                '$set': {
+                    'runtime_state': payload['state'],
+                    'runtime_mode': payload['mode'],
+                    'runtime_message': payload['message'],
+                    'runtime_source': payload['source'],
+                    'runtime_checked_at': now,
+                    'runtime_live_trade': payload['live_trade'],
+                    'runtime_active_symbol': payload['active_symbol'],
+                }
+            },
+        )
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ touch_user_operational_state error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def get_user_operational_runtime(user_id: int) -> dict | None:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return None
+
+    try:
+        doc = user_runtime_col.find_one({'user_id': uid}, {'_id': 0})
+        if not isinstance(doc, dict):
+            return None
+        return doc
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_user_operational_runtime error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return None
+
+
 def _safe_float(x, default: float = 0.0) -> float:
     try:
         if x is None:
@@ -584,11 +761,40 @@ def save_user_capital(user_id: int, capital: float):
 
 def set_trading_status(user_id: int, status: str):
     normalized = str(status or '').strip().lower() or 'inactive'
-    users_col.update_one({"user_id": int(user_id)}, {"$set": {"trading_status": normalized}})
+    uid = int(user_id)
+    users_col.update_one({"user_id": uid}, {"$set": {"trading_status": normalized}})
+
+    active_trade = get_user_active_trade_snapshot(uid) or {}
     if normalized == 'active':
-        log_user_activity(int(user_id), 'Trading activado', 'El motor quedó habilitado para operar con tu configuración actual.', tone='success', event_type='trading_activated')
+        log_user_activity(uid, 'Trading activado', 'El motor quedó habilitado para operar con tu configuración actual.', tone='success', event_type='trading_activated')
+        touch_user_operational_state(
+            uid,
+            'activation_requested',
+            'Solicitud registrada. El motor aplicará la activación en su próximo ciclo.',
+            mode='pending_sync',
+            source='control',
+            live_trade=bool(active_trade),
+            active_symbol=(active_trade or {}).get('symbol'),
+        )
     else:
-        log_user_activity(int(user_id), 'Trading pausado', 'El motor quedó pausado para esta cuenta.', tone='warning', event_type='trading_paused')
+        if active_trade:
+            detail = 'Nuevas entradas pausadas. La posición activa seguirá bajo gestión hasta cerrarse.'
+            mode = 'manager_only'
+            state = 'manager_only'
+        else:
+            detail = 'Trading pausado. No se abrirán nuevas operaciones hasta que lo reanudes.'
+            mode = 'paused'
+            state = 'paused'
+        log_user_activity(uid, 'Trading pausado', detail, tone='warning', event_type='trading_paused')
+        touch_user_operational_state(
+            uid,
+            state,
+            detail,
+            mode=mode,
+            source='control',
+            live_trade=bool(active_trade),
+            active_symbol=(active_trade or {}).get('symbol'),
+        )
 
 
 # ============================================================
@@ -1671,6 +1877,13 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
             "referral_valid_count": 1,
             "last_open_at": 1,
             "last_close_at": 1,
+            "runtime_state": 1,
+            "runtime_mode": 1,
+            "runtime_message": 1,
+            "runtime_source": 1,
+            "runtime_checked_at": 1,
+            "runtime_live_trade": 1,
+            "runtime_active_symbol": 1,
         },
     )
     if not u:
@@ -1695,6 +1908,13 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "referral_valid_count": int(u.get("referral_valid_count", 0) or 0),
         "last_open_at": _parse_dt(u.get("last_open_at")),
         "last_close_at": _parse_dt(u.get("last_close_at")),
+        "runtime_state": u.get("runtime_state") or 'unknown',
+        "runtime_mode": u.get("runtime_mode"),
+        "runtime_message": u.get("runtime_message"),
+        "runtime_source": u.get("runtime_source"),
+        "runtime_checked_at": _parse_dt(u.get("runtime_checked_at")),
+        "runtime_live_trade": bool(u.get("runtime_live_trade", False)),
+        "runtime_active_symbol": u.get("runtime_active_symbol"),
     }
 
 
