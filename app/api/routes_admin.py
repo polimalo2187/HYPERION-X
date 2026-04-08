@@ -9,7 +9,11 @@ from app.services import admin_service
 router = APIRouter(prefix='/api/v1/admin', tags=['admin'])
 
 
-class ManualPlanDaysPayload(BaseModel):
+class AdminActionPayload(BaseModel):
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class ManualPlanDaysPayload(AdminActionPayload):
     plan: str = Field(default='premium', min_length=5, max_length=20)
     days: int = Field(..., ge=1, le=3650)
 
@@ -54,42 +58,112 @@ def admin_preview_user_manual_plan_days(
 
 
 @router.post('/users/{user_id}/plan/premium')
-def admin_activate_user_premium(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
-    return _require_admin_attr('admin_activate_premium')(int(user_id))
+def admin_activate_user_premium(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_activate_premium')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
 
 
 @router.post('/users/{user_id}/plan/manual-days')
 def admin_grant_user_manual_plan_days(
     user_id: int,
     payload: ManualPlanDaysPayload,
-    _: dict = Depends(require_admin_session),
+    session: dict = Depends(require_admin_session),
 ) -> dict:
-    return _require_admin_attr('admin_grant_manual_plan_days')(int(user_id), payload.plan, int(payload.days))
+    return _require_admin_attr('admin_grant_manual_plan_days')(
+        int(user_id),
+        payload.plan,
+        int(payload.days),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=payload.reason,
+    )
 
 
 @router.post('/users/{user_id}/trading/activate')
-def admin_activate_user_trading(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
-    return _require_admin_attr('admin_activate_user_trading')(int(user_id))
+def admin_activate_user_trading(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_activate_user_trading')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
 
 
 @router.post('/users/{user_id}/trading/pause')
-def admin_pause_user_trading(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
-    return _require_admin_attr('admin_pause_user_trading')(int(user_id))
+def admin_pause_user_trading(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_pause_user_trading')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
 
 
 @router.post('/users/{user_id}/stats/reset')
-def admin_reset_stats(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
-    return _require_admin_attr('admin_reset_user_stats')(int(user_id))
+def admin_reset_stats(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_reset_user_stats')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
 
 
 @router.post('/users/{user_id}/security/migrate-key')
-def admin_migrate_user_key(user_id: int, _: dict = Depends(require_admin_session)) -> dict:
-    return _require_admin_attr('admin_migrate_user_private_key')(int(user_id))
+def admin_migrate_user_key(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_migrate_user_private_key')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
+
+
+@router.post('/monitor/clear')
+def admin_clear_monitor(
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_clear_monitor_feed')(
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
 
 
 @router.post('/security/migrate-legacy-keys')
 def admin_bulk_migrate_keys(
     limit: int = Query(default=25, ge=1, le=100),
-    _: dict = Depends(require_admin_session),
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
 ) -> dict:
-    return _require_admin_attr('admin_bulk_migrate_legacy_keys')(limit=limit)
+    return _require_admin_attr('admin_bulk_migrate_legacy_keys')(
+        limit=limit,
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
