@@ -410,6 +410,16 @@ async def trading_loop(app: Application):
                 event_name = str(result.get('event') or '').upper()
 
                 if event_name in ('OPEN', 'BOTH'):
+                    touch_runtime_component(
+                        'trading_loop',
+                        'online',
+                        metadata={
+                            'phase': 'user_cycle_processed',
+                            'last_user_id': int(user_id),
+                            'last_event': event_name.lower(),
+                            'symbol': ((result.get('open') or {}).get('symbol')),
+                        },
+                    )
                     touch_user_operational_state(
                         user_id,
                         'cycle_completed',
@@ -418,9 +428,19 @@ async def trading_loop(app: Application):
                         source='trading_loop',
                         live_trade=True,
                         active_symbol=((result.get('open') or {}).get('symbol')),
-                        metadata={'phase': 'open_event'},
+                        metadata={'phase': 'open_event', 'last_result': event_name.lower(), 'last_symbol': ((result.get('open') or {}).get('symbol')), 'last_cycle_at': datetime.utcnow()},
                     )
                 elif event_name in ('CLOSE', 'RECONCILE_CLOSED', 'BOTH'):
+                    touch_runtime_component(
+                        'trading_loop',
+                        'online',
+                        metadata={
+                            'phase': 'user_cycle_processed',
+                            'last_user_id': int(user_id),
+                            'last_event': event_name.lower(),
+                            'symbol': ((result.get('close') or {}).get('symbol')),
+                        },
+                    )
                     policy = get_user_cycle_policy(user_id)
                     touch_user_operational_state(
                         user_id,
@@ -430,10 +450,20 @@ async def trading_loop(app: Application):
                         source='trading_loop',
                         live_trade=bool(policy.get('live_trade')),
                         active_symbol=policy.get('active_symbol'),
-                        metadata={'phase': 'close_event', 'event': event_name},
+                        metadata={'phase': 'close_event', 'event': event_name, 'last_result': event_name.lower(), 'last_symbol': ((result.get('close') or {}).get('symbol')), 'last_cycle_at': datetime.utcnow()},
                     )
                 else:
                     policy = get_user_cycle_policy(user_id)
+                    touch_runtime_component(
+                        'trading_loop',
+                        'online',
+                        metadata={
+                            'phase': 'user_cycle_processed',
+                            'last_user_id': int(user_id),
+                            'last_event': (event_name or 'none').lower(),
+                            'symbol': policy.get('active_symbol'),
+                        },
+                    )
                     touch_user_operational_state(
                         user_id,
                         policy.get('runtime_state') or 'idle',
@@ -442,7 +472,7 @@ async def trading_loop(app: Application):
                         source='trading_loop',
                         live_trade=bool(policy.get('live_trade')),
                         active_symbol=policy.get('active_symbol'),
-                        metadata={'phase': 'cycle_complete', 'event': event_name or 'none'},
+                        metadata={'phase': 'cycle_complete', 'event': event_name or 'none', 'last_result': (event_name or 'none').lower(), 'last_symbol': policy.get('active_symbol'), 'last_cycle_at': datetime.utcnow()},
                     )
 
                 # ================================
