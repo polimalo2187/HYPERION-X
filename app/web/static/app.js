@@ -1380,7 +1380,7 @@ function buildAdminSearchResultItem(user) {
     <div class="list-item-header">
       <div>
         <div class="list-item-title">${user.username ? `@${user.username}` : `ID ${user.user_id}`}</div>
-        <div class="list-item-meta">Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'} · Key ${user.private_key_storage || 'not_configured'}</div>
+        <div class="list-item-meta">Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'} · Key ${user.private_key_storage || 'not_configured'} · Salud ${user.private_key_health || 'not_configured'}</div>
       </div>
       <button class="secondary-button" type="button" data-admin-user-id="${user.user_id}">Cargar</button>
     </div>
@@ -1411,6 +1411,7 @@ function renderAdminSelectedUser(user) {
   elements.adminUserStats.append(
     buildKpiCard('Wallet', user.wallet_configured ? truncateMiddle(user.wallet || '—', 18) : 'Pendiente', 'Estado de wallet.'),
     buildKpiCard('Private key', user.private_key_configured ? 'Configurada' : 'Pendiente', user.private_key_storage || 'not_configured'),
+    buildKpiCard('Salud credencial', user.private_key_health === 'invalid' ? 'Requiere reparación' : (user.private_key_configured ? 'Válida' : 'Pendiente'), user.private_key_runtime_error || (user.private_key_runtime_checked_at ? `Validada ${formatDate(user.private_key_runtime_checked_at)}` : 'Sin verificación runtime todavía.')),
     buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)} · ${user.plan_days_remaining || 0} día(s)` : 'Sin acceso vigente.'),
     buildKpiCard('Políticas', user.terms_accepted ? 'Confirmadas' : 'Pendientes', user.terms_timestamp ? `Confirmadas ${formatDate(user.terms_timestamp)}` : 'Sin confirmación registrada.'),
     buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
@@ -1434,7 +1435,7 @@ function renderAdminSelectedUser(user) {
   );
 
   if (elements.adminActivateTradingButton) {
-    elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured;
+    elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured || user.private_key_health === 'invalid';
   }
   if (elements.adminPauseTradingButton) {
     elements.adminPauseTradingButton.disabled = user.trading_status !== 'active';
