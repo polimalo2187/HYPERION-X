@@ -33,6 +33,7 @@ trades_col = db["trades"]
 settings_col = db["settings"]
 admin_action_logs_col = db["admin_action_logs"]
 runtime_status_col = db["runtime_status"]
+runtime_components_shadow_col = db["runtime_components_shadow"]
 user_runtime_col = db["user_runtime"]
 user_activity_col = db["user_activity"]
 payment_orders_col = db["payment_orders"]
@@ -132,6 +133,10 @@ def _serialize_runtime_dt(value: datetime | None) -> str | None:
     return None
 
 
+def _runtime_shadow_key(component: str) -> str:
+    return f"runtime_component::{str(component or '').strip().lower()}"
+
+
 def touch_runtime_component(component: str, state: str = 'online', *, metadata: dict | None = None) -> bool:
     name = str(component or '').strip().lower()
     if not name:
@@ -144,36 +149,87 @@ def touch_runtime_component(component: str, state: str = 'online', *, metadata: 
         'updated_at': now,
         'metadata': metadata or {},
     }
+
+    primary_ok = False
+    shadow_ok = False
+    primary_error = None
+    shadow_error = None
+
     try:
         runtime_status_col.update_one(
             {'component': name},
             {'$set': payload, '$setOnInsert': {'created_at': now}},
             upsert=True,
         )
-        return True
+        primary_ok = True
     except Exception as e:
-        try:
-            db_log(f"⚠ touch_runtime_component error component={name}: {e}")
-        except Exception:
-            pass
-        return False
+        primary_error = e
+
+    try:
+        runtime_components_shadow_col.update_one(
+            {'component': name},
+            {'$set': payload, '$setOnInsert': {'created_at': now, 'key': _runtime_shadow_key(name)}},
+            upsert=True,
+        )
+        shadow_ok = True
+    except Exception as e:
+        shadow_error = e
+
+    if primary_ok or shadow_ok:
+        if not primary_ok:
+            try:
+                db_log(f"⚠ runtime primary write failed component={name}; usando shadow: {primary_error}")
+            except Exception:
+                pass
+        return True
+
+    try:
+        db_log(f"⚠ touch_runtime_component error component={name}: primary={primary_error} shadow={shadow_error}")
+    except Exception:
+        pass
+    return False
 
 
 def get_runtime_component(component: str) -> dict | None:
     name = str(component or '').strip().lower()
     if not name:
         return None
-    doc = runtime_status_col.find_one({'component': name}, {'_id': 0})
+
+    doc = None
+    source = None
+    try:
+        doc = runtime_status_col.find_one({'component': name}, {'_id': 0})
+        if doc:
+            source = 'runtime_status'
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_runtime_component primary read error component={name}: {e}")
+        except Exception:
+            pass
+
+    if not doc:
+        try:
+            doc = runtime_components_shadow_col.find_one({'component': name}, {'_id': 0})
+            if doc:
+                source = 'runtime_components_shadow'
+        except Exception as e:
+            try:
+                db_log(f"⚠ get_runtime_component shadow read error component={name}: {e}")
+            except Exception:
+                pass
+
     if not doc:
         return None
     last_seen = _parse_dt(doc.get('last_seen_at'))
     updated_at = _parse_dt(doc.get('updated_at'))
+    metadata = dict(doc.get('metadata') or {})
+    metadata.setdefault('runtime_source', source)
     return {
         'component': doc.get('component') or name,
         'state': doc.get('state') or 'unknown',
         'last_seen_at': last_seen,
         'updated_at': updated_at,
-        'metadata': doc.get('metadata') or {},
+        'metadata': metadata,
         'created_at': _parse_dt(doc.get('created_at')),
     }
 
