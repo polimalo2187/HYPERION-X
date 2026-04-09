@@ -568,6 +568,85 @@ def get_admin_live_monitor_snapshot(limit_events: int = 30, limit_positions: int
         },
     }
 
+
+def get_admin_operator_snapshots(limit: int = 20) -> list[dict]:
+    try:
+        lim = max(1, min(int(limit), 50))
+    except Exception:
+        lim = 20
+
+    query = {
+        '$or': [
+            {'trading_status': 'active'},
+            {'runtime_live_trade': True},
+            {'runtime_checked_at': {'$ne': None}},
+        ]
+    }
+    projection = {
+        '_id': 0,
+        'user_id': 1,
+        'username': 1,
+        'plan': 1,
+        'plan_expires_at': 1,
+        'trading_status': 1,
+        'runtime_state': 1,
+        'runtime_mode': 1,
+        'runtime_message': 1,
+        'runtime_checked_at': 1,
+        'runtime_live_trade': 1,
+        'runtime_active_symbol': 1,
+        'runtime_exchange_balance': 1,
+        'runtime_exchange_equity': 1,
+        'runtime_exchange_status': 1,
+        'runtime_exchange_positions_count': 1,
+        'runtime_last_cycle_at': 1,
+        'runtime_last_result': 1,
+        'runtime_last_block_reason': 1,
+        'runtime_last_symbol': 1,
+        'runtime_last_decision': 1,
+        'runtime_metadata': 1,
+    }
+
+    try:
+        cursor = users_col.find(query, projection).sort('runtime_checked_at', -1).limit(lim)
+        rows = []
+        for doc in cursor:
+            metadata = doc.get('runtime_metadata') or {}
+            rows.append({
+                'user_id': int(doc.get('user_id') or 0),
+                'username': doc.get('username'),
+                'plan': doc.get('plan') or 'none',
+                'plan_expires_at': _parse_dt(doc.get('plan_expires_at')),
+                'trading_status': doc.get('trading_status') or 'inactive',
+                'runtime_state': doc.get('runtime_state') or 'unknown',
+                'runtime_mode': doc.get('runtime_mode'),
+                'runtime_message': doc.get('runtime_message'),
+                'runtime_checked_at': _parse_dt(doc.get('runtime_checked_at')),
+                'runtime_live_trade': bool(doc.get('runtime_live_trade', False)),
+                'runtime_active_symbol': doc.get('runtime_active_symbol'),
+                'exchange_balance': _safe_float(doc.get('runtime_exchange_balance'), 0.0) if doc.get('runtime_exchange_balance') is not None else None,
+                'exchange_equity': _safe_float(doc.get('runtime_exchange_equity'), 0.0) if doc.get('runtime_exchange_equity') is not None else None,
+                'exchange_status': doc.get('runtime_exchange_status'),
+                'positions_count': _safe_int(doc.get('runtime_exchange_positions_count'), 0) if doc.get('runtime_exchange_positions_count') is not None else None,
+                'last_cycle_at': _parse_dt(doc.get('runtime_last_cycle_at')),
+                'last_result': doc.get('runtime_last_result'),
+                'last_block_reason': doc.get('runtime_last_block_reason'),
+                'last_symbol': doc.get('runtime_last_symbol'),
+                'last_decision': doc.get('runtime_last_decision'),
+                'last_event': metadata.get('last_event'),
+                'scanner_score': metadata.get('scanner_score'),
+                'strategy_model': metadata.get('strategy_model'),
+                'capital_threshold': metadata.get('capital_threshold'),
+            })
+        return rows
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_admin_operator_snapshots error: {e}")
+        except Exception:
+            pass
+        return []
+
+
 def get_user_active_trade_snapshot(user_id: int) -> dict | None:
     try:
         uid = int(user_id)
@@ -724,6 +803,7 @@ def touch_user_operational_state(
             {'$set': payload, '$setOnInsert': {'created_at': now}},
             upsert=True,
         )
+        runtime_metadata = payload.get('metadata') or {}
         users_col.update_one(
             {'user_id': uid},
             {
@@ -735,6 +815,16 @@ def touch_user_operational_state(
                     'runtime_checked_at': now,
                     'runtime_live_trade': payload['live_trade'],
                     'runtime_active_symbol': payload['active_symbol'],
+                    'runtime_metadata': runtime_metadata,
+                    'runtime_exchange_balance': _safe_float(runtime_metadata.get('exchange_available_balance'), 0.0) if runtime_metadata.get('exchange_available_balance') is not None else None,
+                    'runtime_exchange_equity': _safe_float(runtime_metadata.get('exchange_account_value'), 0.0) if runtime_metadata.get('exchange_account_value') is not None else None,
+                    'runtime_exchange_status': runtime_metadata.get('exchange_status'),
+                    'runtime_exchange_positions_count': _safe_int(runtime_metadata.get('positions_count'), 0) if runtime_metadata.get('positions_count') is not None else None,
+                    'runtime_last_cycle_at': _parse_dt(runtime_metadata.get('last_cycle_at')) or now,
+                    'runtime_last_result': runtime_metadata.get('last_result'),
+                    'runtime_last_block_reason': runtime_metadata.get('last_block_reason'),
+                    'runtime_last_symbol': runtime_metadata.get('last_symbol'),
+                    'runtime_last_decision': runtime_metadata.get('last_decision'),
                 }
             },
         )
