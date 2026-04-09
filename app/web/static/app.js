@@ -1056,37 +1056,61 @@ function renderOperations(data) {
   });
 }
 
+function resolveReferralLink(data) {
+  const directLink = String(data.referral_link || '').trim();
+  if (directLink) return directLink;
+  const botUsername = String(data.bot_username || 'TradingXHiperPro_bot').trim().replace(/^@+/, '');
+  const referralCode = String(data.referral_code || data.user_id || '').trim();
+  if (!botUsername || !referralCode) return '';
+  return `https://t.me/${botUsername}?start=${referralCode}`;
+}
+
+function buildReferralLinkCard(data) {
+  const article = document.createElement('article');
+  article.className = 'kpi-card referral-link-card';
+
+  const referralLink = resolveReferralLink(data);
+  const referralCode = String(data.referral_code || data.user_id || '').trim();
+  const escapedLink = escapeHtml(referralLink);
+  const escapedCode = escapeHtml(referralCode);
+  const botUsername = escapeHtml(String(data.bot_username || 'TradingXHiperPro_bot').trim().replace(/^@+/, ''));
+  const safeHref = referralLink ? escapeHtml(referralLink) : '';
+
+  article.innerHTML = `
+    <span class="kpi-label">Enlace referido</span>
+    <div class="payment-copy-block">
+      <span class="payment-copy-label">Este es el enlace que el usuario debe copiar y compartir.</span>
+      <div class="payment-copy-row referral-link-row">
+        <span class="payment-copy-value referral-link-value" title="${escapedLink}">${escapedLink || 'No disponible todavía.'}</span>
+      </div>
+      <div class="payment-copy-row referral-action-row">
+        <button class="inline-copy-button" type="button" data-copy-text="${escapedLink}" data-copy-success="Enlace referido copiado." ${referralLink ? '' : 'disabled'}>Copiar enlace</button>
+        <button class="inline-copy-button" type="button" data-action="share-referral" ${referralLink ? '' : 'disabled'}>Compartir</button>
+        ${referralLink ? `<a class="inline-copy-button referral-open-link" href="${safeHref}" target="_blank" rel="noopener noreferrer">Abrir enlace</a>` : ''}
+      </div>
+    </div>
+    <div class="payment-copy-block">
+      <span class="payment-copy-label">Código referido</span>
+      <div class="payment-copy-row">
+        <span class="payment-copy-value" title="${escapedCode}">${escapedCode || '—'}</span>
+        <button class="inline-copy-button" type="button" data-copy-text="${escapedCode}" data-copy-success="Código referido copiado." ${referralCode ? '' : 'disabled'}>Copiar código</button>
+      </div>
+    </div>
+    <div class="kpi-subtext">Bot: @${botUsername}</div>
+  `;
+  return article;
+}
+
 function buildReferralProgramCard(data) {
   const article = document.createElement('article');
   article.className = 'kpi-card referral-program-card';
 
-  const referralLink = String(data.referral_link || '').trim();
-  const referralCode = String(data.referral_code || '').trim();
-  const escapedLink = escapeHtml(referralLink);
-  const escapedCode = escapeHtml(referralCode);
   const rewardRows = Array.isArray(data.reward_table)
     ? data.reward_table.map((item) => `<div class="kpi-subtext">${escapeHtml(item.purchase_label || 'Premium')} → <strong>${escapeHtml(item.reward_label || 'Sin recompensa')}</strong></div>`).join('')
     : '';
 
   article.innerHTML = `
-    <span class="kpi-label">Enlace referido</span>
-    <div class="payment-copy-block">
-      <span class="payment-copy-label">Compártelo desde Telegram o cópialo manualmente.</span>
-      <div class="payment-copy-row">
-        <span class="payment-copy-value" title="${escapedLink}">${escapeHtml(truncateMiddle(referralLink, 36))}</span>
-        <button class="inline-copy-button" type="button" data-copy-text="${escapedLink}" data-copy-success="Enlace referido copiado.">Copiar enlace</button>
-      </div>
-    </div>
-    <div class="payment-copy-block">
-      <span class="payment-copy-label">Código</span>
-      <div class="payment-copy-row">
-        <span class="payment-copy-value" title="${escapedCode}">${escapedCode || '—'}</span>
-        <div class="payment-copy-row referral-action-row">
-          <button class="inline-copy-button" type="button" data-copy-text="${escapedCode}" data-copy-success="Código referido copiado.">Copiar código</button>
-          <button class="inline-copy-button" type="button" data-action="share-referral">Compartir</button>
-        </div>
-      </div>
-    </div>
+    <span class="kpi-label">Reglas del programa</span>
     <div class="kpi-subtext">${escapeHtml(data.valid_referral_rule || 'El referido cuenta cuando compra un plan válido.')}</div>
     <div class="kpi-subtext">${escapeHtml(data.reward_rule || 'La recompensa se aplica automáticamente en Premium.')}</div>
     ${rewardRows}
@@ -1098,9 +1122,9 @@ function renderReferrals(data) {
   state.referrals = data;
   elements.referralStats.innerHTML = '';
   elements.referralStats.append(
-    buildKpiCard('Usuario', data.user_id || '—', 'ID autenticado contra backend.'),
+    buildReferralLinkCard(data),
     buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Referidos válidos acreditados una sola vez.'),
-    buildKpiCard('Código referido', data.referral_code || '—', `Bot: @${data.bot_username || 'TradingXHiperPro_bot'}`),
+    buildKpiCard('Código referido', data.referral_code || data.user_id || '—', `Bot: @${data.bot_username || 'TradingXHiperPro_bot'}`),
     buildReferralProgramCard(data),
   );
 }
