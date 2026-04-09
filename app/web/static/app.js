@@ -170,6 +170,16 @@ function accessDetail(data) {
   return data.plan_active ? 'Acceso vigente' : 'Sin acceso vigente';
 }
 
+function renderSummaryMetrics(metrics = []) {
+  const rows = Array.isArray(metrics) ? metrics.filter((item) => item && item.label) : [];
+  if (!rows.length) return '';
+  return `
+    <div class="list-item-grid summary-metrics-grid">
+      ${rows.map((item) => `<div><span class="metric-label">${escapeHtml(item.label)}</span><strong>${escapeHtml(String(item.value ?? '—'))}</strong></div>`).join('')}
+    </div>
+  `;
+}
+
 function renderEventSummary(container, title, summary, emptyCopy) {
   if (!container) return;
   if (!summary || (!summary.title && !summary.detail)) {
@@ -184,6 +194,7 @@ function renderEventSummary(container, title, summary, emptyCopy) {
   item.innerHTML = `
     <div class="list-item-title">${summary.title || title}</div>
     <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+    ${renderSummaryMetrics(summary.metrics || [])}
   `;
   container.appendChild(item);
 }
@@ -203,6 +214,7 @@ function renderLiveTradeSummary(container, summary, emptyCopy) {
   item.innerHTML = `
     <div class="list-item-title">${summary.title || 'Operación activa'}</div>
     <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+    ${renderSummaryMetrics(summary.metrics || [])}
     <div class="list-item-meta subtle">${summary.started_at ? `Abierta ${formatDate(summary.started_at)}` : 'Sin timestamp de apertura.'}</div>
   `;
   container.appendChild(item);
@@ -594,7 +606,7 @@ function buildPerformanceCard(windowLabel, stats) {
     <div class="performance-subtext">PF ${stats.profit_factor === Infinity ? '∞' : formatNumber(stats.profit_factor, 2)} · Win ${formatNumber(stats.win_rate, 2)}%</div>
     <div class="performance-metrics">
       <div class="performance-mini"><span class="mini-label">Trades</span><strong>${stats.total}</strong></div>
-      <div class="performance-mini"><span class="mini-label">PnL</span><strong>${formatNumber(stats.pnl_total, 4)}</strong></div>
+      <div class="performance-mini"><span class="mini-label">PnL neto</span><strong>${formatNumber(stats.pnl_total, 4)}</strong></div>
       <div class="performance-mini"><span class="mini-label">Wins</span><strong>${stats.wins}</strong></div>
       <div class="performance-mini"><span class="mini-label">Losses</span><strong>${stats.losses}</strong></div>
     </div>
@@ -1046,6 +1058,10 @@ function renderOperations(data) {
         <div><span class="metric-label">Entry</span><strong>${trade.entry_price ?? '—'}</strong></div>
         <div><span class="metric-label">Exit</span><strong>${trade.exit_price ?? '—'}</strong></div>
         <div><span class="metric-label">Qty</span><strong>${trade.qty ?? '—'}</strong></div>
+        <div><span class="metric-label">Valor</span><strong>${trade.notional_usdc != null ? `${formatNumber(trade.notional_usdc, 4)} USDC` : '—'}</strong></div>
+        <div><span class="metric-label">PnL bruto</span><strong>${formatNumber(trade.gross_pnl ?? 0, 4)}</strong></div>
+        <div><span class="metric-label">Fees</span><strong>${formatNumber(trade.fees ?? 0, 4)}</strong></div>
+        <div><span class="metric-label">PnL neto</span><strong>${formatNumber(trade.profit ?? 0, 4)}</strong></div>
         <div><span class="metric-label">Score</span><strong>${trade.best_score ?? '—'}</strong></div>
         <div><span class="metric-label">Razón</span><strong>${trade.exit_reason || trade.close_source || '—'}</strong></div>
         <div><span class="metric-label">Fuente</span><strong>${trade.pnl_source || '—'}</strong></div>
