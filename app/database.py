@@ -18,7 +18,7 @@ import re
 import socket
 import sys
 
-from app.crypto_utils import decrypt_private_key, encrypt_private_key
+from app.crypto_utils import PrivateKeyDecryptError, decrypt_private_key, encrypt_private_key
 
 # ============================================================
 # CONEXIÓN MONGODB
@@ -988,6 +988,9 @@ def get_user_cycle_policy(user_id: int) -> dict:
             '_id': 0,
             'wallet': 1,
             'private_key': 1,
+            'private_key_runtime_status': 1,
+            'private_key_runtime_error': 1,
+            'private_key_runtime_checked_at': 1,
             'trading_status': 1,
             'plan': 1,
             'plan_expires_at': 1,
@@ -1001,9 +1004,12 @@ def get_user_cycle_policy(user_id: int) -> dict:
     plan_active = _plan_is_active(u)
     live_trade = bool(active_trade)
     active_symbol = active_trade.get('symbol') if isinstance(active_trade, dict) else None
+    private_key_runtime_status = str(u.get('private_key_runtime_status') or '').strip().lower() or None
+    private_key_runtime_error = str(u.get('private_key_runtime_error') or '').strip() or None
+    private_key_invalid = private_key_runtime_status in {'decrypt_error', 'invalid', 'unsupported_version'}
 
-    entries_allowed = bool(desired_trading_status == 'active' and plan_active and has_wallet and has_private_key)
-    manager_allowed = bool(live_trade and has_wallet and has_private_key)
+    entries_allowed = bool(desired_trading_status == 'active' and plan_active and has_wallet and has_private_key and not private_key_invalid)
+    manager_allowed = bool(live_trade and has_wallet and has_private_key and not private_key_invalid)
     manager_only = bool(manager_allowed and not entries_allowed)
     should_run_cycle = bool(entries_allowed or manager_allowed)
 
@@ -1028,6 +1034,16 @@ def get_user_cycle_policy(user_id: int) -> dict:
         runtime_state = 'access_blocked'
         runtime_mode = 'blocked'
         runtime_message = 'No hay acceso vigente para abrir nuevas operaciones.'
+    elif private_key_invalid:
+        runtime_state = 'configuration_blocked'
+        runtime_mode = 'blocked'
+        runtime_message = (
+            'La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp antes de reactivar la operativa.'
+            if not live_trade
+            else 'La private key almacenada no pudo validarse. Hay una posición activa que no puede ser gestionada automáticamente hasta reparar la credencial.'
+        )
+        if private_key_runtime_error:
+            runtime_message = f"{runtime_message} Detalle técnico: {private_key_runtime_error[:140]}"
     elif not has_wallet or not has_private_key:
         runtime_state = 'configuration_blocked'
         runtime_mode = 'blocked'
@@ -1057,6 +1073,9 @@ def get_user_cycle_policy(user_id: int) -> dict:
         'has_wallet': has_wallet,
         'has_private_key': has_private_key,
         'plan_active': plan_active,
+        'private_key_runtime_status': private_key_runtime_status,
+        'private_key_runtime_error': private_key_runtime_error,
+        'private_key_invalid': private_key_invalid,
     }
 
 
@@ -1176,6 +1195,11 @@ def create_user(user_id: int, username: str):
             "private_key_encrypted": False,
             "private_key_version": None,
             "private_key_updated_at": None,
+            "private_key_runtime_status": None,
+            "private_key_runtime_error": None,
+            "private_key_runtime_checked_at": None,
+            "private_key_runtime_failure_count": 0,
+            "private_key_runtime_last_failure_at": None,
             "capital": 0.0,
             "trading_status": "inactive",
 
@@ -1204,6 +1228,76 @@ def save_user_wallet(user_id: int, wallet: str):
     users_col.update_one({"user_id": int(user_id)}, {"$set": {"wallet": wallet}})
     log_user_activity(int(user_id), 'Wallet actualizada', 'La wallet operativa fue actualizada desde la plataforma.', tone='info', event_type='wallet_updated', metadata={'wallet_masked': str(wallet)[:8] + '...' + str(wallet)[-6:] if wallet else None})
 
+
+def clear_user_private_key_runtime_issue(user_id: int) -> bool:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+    now = _now_utc()
+    try:
+        users_col.update_one(
+            {"user_id": uid},
+            {
+                "$set": {
+                    "private_key_runtime_status": "ok",
+                    "private_key_runtime_error": None,
+                    "private_key_runtime_checked_at": now,
+                    "private_key_runtime_last_recovered_at": now,
+                    "private_key_runtime_failure_count": 0,
+                },
+                "$unset": {
+                    "private_key_runtime_last_failure_at": "",
+                    "private_key_runtime_failure_kind": "",
+                    "private_key_runtime_cipher_version": "",
+                },
+            },
+        )
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ clear_user_private_key_runtime_issue error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def mark_user_private_key_runtime_issue(
+    user_id: int,
+    *,
+    reason: str,
+    failure_kind: str = 'decrypt_error',
+    version: str | None = None,
+) -> bool:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return False
+    now = _now_utc()
+    try:
+        users_col.update_one(
+            {"user_id": uid},
+            {
+                "$set": {
+                    "private_key_runtime_status": str(failure_kind or 'decrypt_error').strip().lower() or 'decrypt_error',
+                    "private_key_runtime_error": str(reason or 'No se pudo validar la private key almacenada.')[:300],
+                    "private_key_runtime_checked_at": now,
+                    "private_key_runtime_last_failure_at": now,
+                    "private_key_runtime_failure_kind": str(failure_kind or 'decrypt_error').strip().lower() or 'decrypt_error',
+                    "private_key_runtime_cipher_version": str(version).strip() if version else None,
+                },
+                "$inc": {"private_key_runtime_failure_count": 1},
+            },
+        )
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ mark_user_private_key_runtime_issue error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return False
+
+
 def save_user_private_key(user_id: int, pk: str):
     encrypted_pk, version = encrypt_private_key(pk)
     users_col.update_one(
@@ -1217,6 +1311,7 @@ def save_user_private_key(user_id: int, pk: str):
             }
         },
     )
+    clear_user_private_key_runtime_issue(int(user_id))
     log_user_activity(int(user_id), 'Clave operativa actualizada', 'La private key quedó registrada de forma segura.', tone='info', event_type='private_key_updated')
 
 def get_raw_user_private_key_record(user_id: int) -> dict | None:
@@ -1415,20 +1510,40 @@ def get_user_wallet(user_id: int):
     return u.get("wallet") if u else None
 
 def get_user_private_key(user_id: int):
+    uid = int(user_id)
     u = users_col.find_one(
-        {"user_id": int(user_id)},
-        {"_id": 0, "private_key": 1, "private_key_encrypted": 1, "private_key_version": 1},
+        {"user_id": uid},
+        {
+            "_id": 0,
+            "private_key": 1,
+            "private_key_encrypted": 1,
+            "private_key_version": 1,
+            "private_key_runtime_status": 1,
+        },
     )
     if not u:
         return None
     value = u.get("private_key")
     if not value:
         return None
-    return decrypt_private_key(
-        value,
-        encrypted=bool(u.get("private_key_encrypted", False)),
-        version=u.get("private_key_version"),
-    )
+    try:
+        decrypted = decrypt_private_key(
+            value,
+            encrypted=bool(u.get("private_key_encrypted", False)),
+            version=u.get("private_key_version"),
+        )
+    except PrivateKeyDecryptError as exc:
+        mark_user_private_key_runtime_issue(
+            uid,
+            reason=str(exc),
+            failure_kind='decrypt_error',
+            version=u.get("private_key_version"),
+        )
+        raise
+
+    if str(u.get('private_key_runtime_status') or '').strip().lower() == 'decrypt_error':
+        clear_user_private_key_runtime_issue(uid)
+    return decrypted
 
 def get_user_capital(user_id: int):
     u = users_col.find_one({"user_id": int(user_id)})
@@ -1548,6 +1663,13 @@ def ensure_access_on_activate(user_id: int) -> dict:
     u = users_col.find_one({"user_id": int(user_id)})
     if not u:
         return {"allowed": False, "message": "❌ Usuario no registrado."}
+
+    private_key_runtime_status = str(u.get('private_key_runtime_status') or '').strip().lower() or None
+    if private_key_runtime_status in {'decrypt_error', 'invalid', 'unsupported_version'}:
+        return {
+            "allowed": False,
+            "message": "⛔ La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp antes de activar trading.",
+        }
 
     # Premium activo
     if _plan_is_active(u) and (u.get("plan") == "premium"):
@@ -2405,6 +2527,10 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
             "private_key": 1,
             "private_key_encrypted": 1,
             "private_key_version": 1,
+            "private_key_runtime_status": 1,
+            "private_key_runtime_error": 1,
+            "private_key_runtime_checked_at": 1,
+            "private_key_runtime_failure_count": 1,
             "terms_timestamp": 1,
             "trading_status": 1,
             "plan": 1,
@@ -2434,6 +2560,11 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "wallet_configured": bool(u.get("wallet")),
         "private_key_configured": bool(u.get("private_key")),
         "private_key_storage": ("encrypted" if bool(u.get("private_key")) and bool(u.get("private_key_encrypted", False)) else ("legacy_plaintext" if bool(u.get("private_key")) else "not_configured")),
+        "private_key_health": ("invalid" if str(u.get("private_key_runtime_status") or "").strip().lower() in {"decrypt_error", "invalid", "unsupported_version"} else ("configured" if bool(u.get("private_key")) else "not_configured")),
+        "private_key_runtime_status": u.get("private_key_runtime_status"),
+        "private_key_runtime_error": u.get("private_key_runtime_error"),
+        "private_key_runtime_checked_at": _parse_dt(u.get("private_key_runtime_checked_at")),
+        "private_key_runtime_failure_count": int(u.get("private_key_runtime_failure_count", 0) or 0),
         "trading_status": u.get("trading_status") or "inactive",
         "plan": u.get("plan") or "none",
         "plan_expires_at": exp,
@@ -2496,6 +2627,10 @@ def _build_admin_user_projection() -> dict:
         "private_key_encrypted": 1,
         "private_key_version": 1,
         "private_key_updated_at": 1,
+        "private_key_runtime_status": 1,
+        "private_key_runtime_error": 1,
+        "private_key_runtime_checked_at": 1,
+        "private_key_runtime_failure_count": 1,
         "trading_status": 1,
         "plan": 1,
         "plan_expires_at": 1,
