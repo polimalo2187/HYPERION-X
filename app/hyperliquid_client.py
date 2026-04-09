@@ -19,6 +19,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP, InvalidOperation
 # En vez de bloquear al bot, intentamos cerrarla y devolvemos False.
 OPEN_POSITION_MIN_NOTIONAL_USDC = 5.0
 
+from app.crypto_utils import PrivateKeyDecryptError
 from app.config import (
     HYPER_BASE_URL,
     REQUEST_TIMEOUT,
@@ -376,7 +377,32 @@ def get_account_snapshot(user_id: int) -> Dict[str, Any]:
     no respondió.
     """
     wallet = get_user_wallet(user_id)
-    private_key = get_user_private_key(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        private_key = None
+        base: Dict[str, Any] = {
+            "wallet_configured": bool(wallet),
+            "private_key_configured": True,
+            "status": "blocked",
+            "label": "Private key inválida",
+            "tone": "danger",
+            "message": "La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp para reactivar la operativa.",
+            "available_balance": 0.0,
+            "account_value": 0.0,
+            "capital_threshold": float(MIN_CAPITAL),
+            "capital_sufficient": False,
+            "positions_count": 0,
+            "has_open_position": False,
+            "active_symbols": [],
+            "exchange_reachable": False,
+            "credentials_repair_required": True,
+        }
+        if not wallet:
+            base["message"] = "Falta configurar la wallet para consultar el exchange."
+            base["label"] = "Falta configuración"
+            base["tone"] = "blocked"
+        return base
 
     base: Dict[str, Any] = {
         "wallet_configured": bool(wallet),
@@ -1138,7 +1164,10 @@ def place_market_order(
     reduce_only: bool = False,
 ):
     wallet = get_user_wallet(user_id)
-    private_key = get_user_private_key(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        return {"ok": False, "filled": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
     if not wallet or not private_key:
         return {"ok": False, "filled": False, "reason": "NO_WALLET_OR_KEY"}
 
@@ -1373,7 +1402,10 @@ def place_stop_loss(
       {"ok": False, "reason": "...", ...}               si el exchange lo rechazó
     """
     wallet = get_user_wallet(user_id)
-    private_key = get_user_private_key(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        return {"ok": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
     if not wallet or not private_key:
         return {"ok": False, "reason": "NO_WALLET_OR_KEY"}
 
@@ -1482,7 +1514,10 @@ def cancel_all_orders_for_symbol(
     que puedan quedar colgados después de cerrar la posición.
     """
     wallet = get_user_wallet(user_id)
-    private_key = get_user_private_key(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        return {"ok": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
     if not wallet or not private_key:
         return {"ok": False, "reason": "NO_WALLET_OR_KEY"}
 
