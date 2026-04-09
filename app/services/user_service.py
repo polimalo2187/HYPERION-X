@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
-from app.config import ADMIN_WHATSAPP_LINK
+from app.config import ADMIN_WHATSAPP_LINK, BOT_USERNAME
 from app.database import (
     accept_terms,
     create_user,
@@ -824,9 +824,38 @@ def _normalize_trade_stats(payload: dict) -> dict:
 
 
 def get_referrals_summary(user_id: int) -> dict:
+    uid = int(user_id)
+    bot_username = str(BOT_USERNAME or '').strip().lstrip('@') or 'TradingXHiperPro_bot'
+    referral_code = str(uid)
+    referral_link = f'https://t.me/{bot_username}?start={referral_code}'
+    reward_table = [
+        {
+            'purchase_days': 15,
+            'purchase_label': 'Premium 15 días',
+            'reward_days': 7,
+            'reward_label': '7 días Premium',
+        },
+        {
+            'purchase_days': 30,
+            'purchase_label': 'Premium 30 días',
+            'reward_days': 15,
+            'reward_label': '15 días Premium',
+        },
+    ]
+    share_text = (
+        'Únete a mi bot y activa tu Premium desde este enlace: '
+        f'{referral_link}'
+    )
     return {
-        'user_id': int(user_id),
-        'referral_valid_count': int(get_referral_valid_count(int(user_id)) or 0),
+        'user_id': uid,
+        'referral_code': referral_code,
+        'referral_valid_count': int(get_referral_valid_count(uid) or 0),
+        'bot_username': bot_username,
+        'referral_link': referral_link,
+        'share_text': share_text,
+        'reward_table': reward_table,
+        'valid_referral_rule': 'El referido cuenta como válido cuando compra Premium 15 o Premium 30.',
+        'reward_rule': 'La recompensa se acredita una sola vez por referido válido y siempre se otorga en Premium.',
     }
 
 
