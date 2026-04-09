@@ -724,6 +724,24 @@ function syncBillingActionButtons() {
   }
 }
 
+
+function resolveRequestedTradingStatus(entity) {
+  return entity?.trading_requested_status || entity?.trading_status || 'inactive';
+}
+
+function resolveEffectiveTradingLabel(entity) {
+  return entity?.trading_effective_label || entity?.operational_label || entity?.trading_effective_status || entity?.trading_status || 'inactive';
+}
+
+function resolveEffectiveTradingDetail(entity) {
+  return entity?.trading_effective_detail || entity?.operational_detail || 'Sin lectura operativa actual.';
+}
+
+function isTradingEffectivelyActive(entity) {
+  const status = String(entity?.trading_effective_status || '').toLowerCase();
+  return status === 'active' || status === 'manager_only';
+}
+
 function buildControlSummary(control) {
   const blockers = formatBlockers(control.activation_blockers_copy || control.activation_blockers);
   const exchange = control.exchange_snapshot || {};
@@ -754,10 +772,12 @@ function renderDashboard(data) {
   state.dashboard = data;
   const usernameText = data.username ? `@${data.username}` : `ID ${data.user_id || '—'}`;
   const readinessText = data.status_summary || 'not_ready';
-  const tradingText = data.trading_status || 'inactive';
+  const tradingText = resolveRequestedTradingStatus(data);
+  const effectiveTradingLabel = resolveEffectiveTradingLabel(data);
+  const effectiveTradingDetail = resolveEffectiveTradingDetail(data);
   const planText = planLabel(data.plan);
   const exchange = data.exchange_snapshot || {};
-  const operationalLabel = data.operational_label || tradingText;
+  const operationalLabel = data.operational_label || effectiveTradingLabel;
   const accessText = accessLabel(data);
   const walletText = data.wallet_configured ? truncateMiddle(data.wallet || 'Configurada', 18) : 'Pendiente';
 
@@ -782,7 +802,7 @@ function renderDashboard(data) {
   elements.userIdentity.textContent = usernameText;
   elements.userIdentitySubtext.textContent = data.user_id ? `Telegram ID ${data.user_id}` : 'Usuario no resuelto';
   elements.userReadiness.textContent = readinessText;
-  elements.userTradingStatus.textContent = `${operationalLabel} · ${data.operational_detail || ('Trading ' + tradingText)}`;
+  elements.userTradingStatus.textContent = `${effectiveTradingLabel} · ${effectiveTradingDetail}`;
   elements.walletConfigured.textContent = data.wallet_configured ? 'Wallet configurada' : 'Wallet pendiente';
   elements.privateKeyConfigured.textContent = data.private_key_configured ? 'Private key cargada' : 'Private key faltante';
 
@@ -791,6 +811,7 @@ function renderDashboard(data) {
     buildKpiCard('Plan', planText, data.plan_active ? 'Acceso operativo habilitado.' : 'Acceso inactivo.'),
     buildKpiCard('Días restantes', data.plan_days_remaining ?? 0, data.plan_active ? 'Se calculan sobre el vencimiento actual.' : 'Sin días vigentes.'),
     buildKpiCard('Trading solicitado', tradingText, 'Estado deseado guardado por el usuario.'),
+    buildKpiCard('Estado visible', effectiveTradingLabel, effectiveTradingDetail),
     buildKpiCard('Motor real', operationalLabel, data.operational_detail || 'Lectura operativa del motor.'),
     buildKpiCard('Políticas', data.terms_accepted ? 'Confirmadas' : 'Pendientes', 'Bloquean la activación si falta la confirmación.'),
     buildKpiCard('Wallet', data.wallet_configured ? 'Sí' : 'No', 'Configuración sensible del usuario.'),
@@ -826,8 +847,8 @@ function renderControl(control) {
   elements.controlReadinessBox.textContent = buildControlSummary(control);
   elements.termsStatusText.textContent = control.terms_accepted ? 'Confirmadas' : 'Pendientes de confirmación';
   elements.acceptTermsButton.disabled = control.terms_accepted;
-  elements.activateTradingButton.disabled = !control.activation_ready || control.trading_status === 'active';
-  elements.pauseTradingButton.disabled = control.trading_status !== 'active';
+  elements.activateTradingButton.disabled = !control.activation_ready || isTradingEffectivelyActive(control);
+  elements.pauseTradingButton.disabled = resolveRequestedTradingStatus(control) !== 'active';
 
   if (!elements.walletInput.value && control.wallet) {
     elements.walletInput.value = control.wallet;
@@ -840,7 +861,8 @@ function renderControl(control) {
     buildKpiCard('Private key', control.private_key_configured ? 'Configurada' : 'Pendiente', control.security_posture === 'encrypted_at_rest' ? 'Cifrada en reposo.' : 'Nunca se reexpone por API.'),
     buildKpiCard('Seguridad', control.security_posture === 'encrypted_at_rest' ? 'Cifrada' : (control.security_posture === 'legacy_plaintext' ? 'Legacy' : 'Sin key'), control.security_posture === 'legacy_plaintext' ? 'Requiere rotación para endurecer.' : 'Estado del almacenamiento sensible.'),
     buildKpiCard('Políticas', control.terms_accepted ? 'Confirmadas' : 'Pendientes', 'Bloquean la activación si falta la confirmación.'),
-    buildKpiCard('Solicitud', control.trading_status || 'inactive', 'Estado deseado por el usuario desde la MiniApp.'),
+    buildKpiCard('Solicitud', resolveRequestedTradingStatus(control), 'Estado deseado por el usuario desde la MiniApp.'),
+    buildKpiCard('Estado visible', resolveEffectiveTradingLabel(control), resolveEffectiveTradingDetail(control)),
     buildKpiCard('Estado real', control.operational_label || 'Sin lectura', control.operational_detail || 'Lectura operativa actual.'),
     buildKpiCard('Modo operativo', control.operational_mode || 'unknown', control.operational_live_trade ? `Trade vivo ${control.operational_active_symbol || ''}`.trim() : 'Sin trade activo gestionado ahora mismo.'),
     buildKpiCard('Plan', planLabel(control.plan), control.plan_active ? `Plan vigente · ${control.plan_days_remaining || 0} día(s) restantes.` : 'Sin acceso vigente.'),
@@ -1203,7 +1225,7 @@ function renderAdminOperatorSnapshots(rows) {
     article.className = 'activity-item';
     const username = row.username ? `@${row.username}` : `Usuario ${row.user_id || '—'}`;
     const plan = planLabel(row.plan || 'none');
-    const titleBits = [username, plan, String(row.trading_status || 'inactive').toUpperCase()];
+    const titleBits = [username, plan, String(resolveEffectiveTradingLabel(row) || 'inactive').toUpperCase()];
     const detailBits = [];
     if (row.exchange_balance !== null && row.exchange_balance !== undefined) detailBits.push(`Capital ${formatNumber(row.exchange_balance, 4)} USDT`);
     if (row.exchange_equity !== null && row.exchange_equity !== undefined) detailBits.push(`Equity ${formatNumber(row.exchange_equity, 4)} USDT`);
@@ -1380,7 +1402,7 @@ function buildAdminSearchResultItem(user) {
     <div class="list-item-header">
       <div>
         <div class="list-item-title">${user.username ? `@${user.username}` : `ID ${user.user_id}`}</div>
-        <div class="list-item-meta">Plan ${user.plan || 'none'} · Trading ${user.trading_status || 'inactive'} · Key ${user.private_key_storage || 'not_configured'} · Salud ${user.private_key_health || 'not_configured'}</div>
+        <div class="list-item-meta">Plan ${user.plan || 'none'} · Estado ${resolveEffectiveTradingLabel(user)} · Solicitud ${resolveRequestedTradingStatus(user)} · Key ${user.private_key_storage || 'not_configured'} · Salud ${user.private_key_health || 'not_configured'}</div>
       </div>
       <button class="secondary-button" type="button" data-admin-user-id="${user.user_id}">Cargar</button>
     </div>
@@ -1398,7 +1420,7 @@ function renderAdminSelectedUser(user) {
   elements.adminUserTitle.textContent = user.username ? `@${user.username}` : `Usuario ${user.user_id}`;
   const remainingDays = Number(user.plan_days_remaining || 0);
   const expiryCopy = user.plan_active && user.plan_expires_at ? ` · Vence ${formatDate(user.plan_expires_at)} · ${remainingDays} día(s) restantes` : '';
-  elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'}${expiryCopy} · Trading ${user.trading_status || 'inactive'}`;
+  elements.adminUserSubtitle.textContent = `ID ${user.user_id} · Plan ${user.plan || 'none'}${expiryCopy} · Estado ${resolveEffectiveTradingLabel(user)} · Solicitud ${resolveRequestedTradingStatus(user)}`;
   updateAdminPlanGrantHint(user);
   if (elements.adminPlanSelect && !elements.adminPlanSelect.value) {
     elements.adminPlanSelect.value = 'premium';
@@ -1414,7 +1436,8 @@ function renderAdminSelectedUser(user) {
     buildKpiCard('Salud credencial', user.private_key_health === 'invalid' ? 'Requiere reparación' : (user.private_key_configured ? 'Válida' : 'Pendiente'), user.private_key_runtime_error || (user.private_key_runtime_checked_at ? `Validada ${formatDate(user.private_key_runtime_checked_at)}` : 'Sin verificación runtime todavía.')),
     buildKpiCard('Plan', user.plan || 'none', user.plan_active ? `Vence ${formatDate(user.plan_expires_at)} · ${user.plan_days_remaining || 0} día(s)` : 'Sin acceso vigente.'),
     buildKpiCard('Políticas', user.terms_accepted ? 'Confirmadas' : 'Pendientes', user.terms_timestamp ? `Confirmadas ${formatDate(user.terms_timestamp)}` : 'Sin confirmación registrada.'),
-    buildKpiCard('Trading', user.trading_status || 'inactive', user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.'),
+    buildKpiCard('Solicitud trading', resolveRequestedTradingStatus(user), 'Estado pedido por el usuario o por soporte.'),
+    buildKpiCard('Estado visible', resolveEffectiveTradingLabel(user), resolveEffectiveTradingDetail(user) || (user.last_open_at ? `Última apertura ${formatDate(user.last_open_at)}` : 'Sin aperturas registradas.')),
     buildKpiCard('Referidos válidos', user.referral_valid_count || 0, user.private_key_version ? `Cipher ${user.private_key_version}` : 'Sin versión de cifrado.')
   );
 
@@ -1435,10 +1458,10 @@ function renderAdminSelectedUser(user) {
   );
 
   if (elements.adminActivateTradingButton) {
-    elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured || user.private_key_health === 'invalid';
+    elements.adminActivateTradingButton.disabled = !user.terms_accepted || !user.wallet_configured || !user.private_key_configured || user.private_key_health === 'invalid' || isTradingEffectivelyActive(user);
   }
   if (elements.adminPauseTradingButton) {
-    elements.adminPauseTradingButton.disabled = user.trading_status !== 'active';
+    elements.adminPauseTradingButton.disabled = resolveRequestedTradingStatus(user) !== 'active';
   }
   if (elements.adminMigrateKeyButton) {
     elements.adminMigrateKeyButton.disabled = !user.private_key_configured || user.private_key_storage === 'encrypted';
