@@ -80,7 +80,7 @@ def _access_copy(profile: dict) -> dict:
 def _readiness_score(profile: dict) -> tuple[int, int]:
     checks = [
         bool(profile.get('wallet_configured')),
-        bool(profile.get('private_key_configured')),
+        bool(profile.get('private_key_configured')) and str(profile.get('private_key_health') or '').lower() != 'invalid',
         bool(profile.get('terms_accepted')),
         bool(profile.get('plan_active')),
         str(profile.get('trading_status') or '').lower() == 'active',
@@ -284,6 +284,11 @@ def get_user_profile(user_id: int) -> dict:
         'terms_accepted': bool(profile.get('terms_accepted')),
         'terms_timestamp': _serialize_dt(profile.get('terms_timestamp')),
         'private_key_storage': profile.get('private_key_storage', 'not_configured'),
+        'private_key_health': profile.get('private_key_health', 'not_configured'),
+        'private_key_runtime_status': profile.get('private_key_runtime_status'),
+        'private_key_runtime_error': profile.get('private_key_runtime_error'),
+        'private_key_runtime_checked_at': _serialize_dt(profile.get('private_key_runtime_checked_at')),
+        'private_key_runtime_failure_count': _safe_int(profile.get('private_key_runtime_failure_count'), 0),
         'referral_valid_count': int(profile.get('referral_valid_count', 0) or 0),
         'last_open_at': _serialize_dt(profile.get('last_open_at')),
         'last_close_at': _serialize_dt(profile.get('last_close_at')),
