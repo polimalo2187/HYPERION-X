@@ -38,6 +38,7 @@ from app.database import (
     add_weekly_ref_fee,
     get_user_referrer,
     get_user_wallet,
+    save_last_close,
 )
 import app.database as database_module
 
@@ -1381,11 +1382,78 @@ def _active_trade_opened_since_ms(active_trade: Optional[dict[str, Any]]) -> Opt
     return None
 
 
+def _format_trade_open_user_message(*, symbol: str, direction: str, entry_price: float, qty_coin: float, notional_usdc: float, opened_at_ms: Optional[int] = None) -> str:
+    asset = str(symbol or '').replace('-PERP', '') or 'ACTIVO'
+    lines = [
+        '🟢 Nueva operación abierta',
+        f'Símbolo: {symbol}',
+        f'Lado: {str(direction or "").upper()}',
+        f'Entrada: {float(entry_price):.6f}',
+        f'Tamaño: {float(qty_coin):.8f} {asset}',
+        f'Valor aprox: {float(notional_usdc):.4f} USDC',
+    ]
+    if opened_at_ms:
+        try:
+            opened_at = datetime.utcfromtimestamp(int(opened_at_ms) / 1000.0).strftime('%Y-%m-%d %H:%M:%S UTC')
+            lines.append(f'Hora: {opened_at}')
+        except Exception:
+            pass
+    lines.append('El motor quedó gestionando la posición en la MiniApp.')
+    return '\\n'.join(lines)
+
+
+def _format_trade_close_user_message(*, symbol: str, direction: str, entry_price: float, exit_price: float, qty_coin: float, notional_usdc: float, net_profit: float, gross_pnl: float, fees: float, exit_reason: str, pnl_source: str) -> str:
+    asset = str(symbol or '').replace('-PERP', '') or 'ACTIVO'
+    header = '✅ Operación cerrada' if float(net_profit) >= 0 else '🔴 Operación cerrada'
+    lines = [
+        header,
+        f'Símbolo: {symbol}',
+        f'Lado: {str(direction or "").upper()}',
+        f'Entrada: {float(entry_price):.6f}',
+        f'Salida: {float(exit_price):.6f}',
+        f'Tamaño: {float(qty_coin):.8f} {asset}',
+        f'Valor aprox: {float(notional_usdc):.4f} USDC',
+        f'PnL bruto exchange: {float(gross_pnl):.6f} USDC',
+        f'Fees exchange: {float(fees):.6f} USDC',
+        f'PnL neto: {float(net_profit):.6f} USDC',
+    ]
+    if exit_reason:
+        lines.append(f'Motivo: {str(exit_reason)}')
+    if pnl_source:
+        lines.append(f'Fuente PnL: {str(pnl_source)}')
+    return '\\n'.join(lines)
+
+
 def _read_trade_realized_pnl(user_id: int, symbol: str, active_trade: Optional[dict[str, Any]]) -> Optional[dict[str, float]]:
     since_ms = _active_trade_opened_since_ms(active_trade)
-    if since_ms is not None:
+
+    def _try_read_once() -> Optional[dict[str, float]]:
+        if since_ms is not None:
+            try:
+                diag_pnl = get_recent_closed_pnl(user_id, symbol, since_ms=since_ms)
+                fills = int(diag_pnl.get("fills", 0) or 0)
+                if fills > 0:
+                    pnl = float(diag_pnl.get("pnl", 0.0) or 0.0)
+                    fees = float(diag_pnl.get("fees", 0.0) or 0.0)
+                    net = float(diag_pnl.get("net", 0.0) or 0.0)
+                    payload = {
+                        "pnl": round(pnl, 6),
+                        "fees": round(fees, 6),
+                        "net": round(net, 6),
+                        "fills": fills,
+                        "since_ms": int(since_ms),
+                        "source": "recent_window",
+                    }
+                    log(
+                        f"PnL_REAL_TOTAL {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills} since_ms={since_ms}",
+                        "INFO",
+                    )
+                    return payload
+            except Exception as e:
+                log(f"No se pudo leer PnL REAL total para {symbol}: {e}", "WARN")
+
         try:
-            diag_pnl = get_recent_closed_pnl(user_id, symbol, since_ms=since_ms)
+            diag_pnl = get_last_closed_pnl(user_id, symbol, lookback_ms=2 * 60 * 60 * 1000)
             fills = int(diag_pnl.get("fills", 0) or 0)
             if fills > 0:
                 pnl = float(diag_pnl.get("pnl", 0.0) or 0.0)
@@ -1396,39 +1464,28 @@ def _read_trade_realized_pnl(user_id: int, symbol: str, active_trade: Optional[d
                     "fees": round(fees, 6),
                     "net": round(net, 6),
                     "fills": fills,
-                    "since_ms": int(since_ms),
-                    "source": "recent_window",
+                    "since_ms": 0,
+                    "source": "last_close_batch",
                 }
                 log(
-                    f"PnL_REAL_TOTAL {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills} since_ms={since_ms}",
+                    f"PnL_REAL_BATCH {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills}",
                     "INFO",
                 )
                 return payload
         except Exception as e:
-            log(f"No se pudo leer PnL REAL total para {symbol}: {e}", "WARN")
+            log(f"No se pudo leer PnL REAL batch para {symbol}: {e}", "WARN")
 
-    try:
-        diag_pnl = get_last_closed_pnl(user_id, symbol, lookback_ms=2 * 60 * 60 * 1000)
-        fills = int(diag_pnl.get("fills", 0) or 0)
-        if fills > 0:
-            pnl = float(diag_pnl.get("pnl", 0.0) or 0.0)
-            fees = float(diag_pnl.get("fees", 0.0) or 0.0)
-            net = float(diag_pnl.get("net", 0.0) or 0.0)
-            payload = {
-                "pnl": round(pnl, 6),
-                "fees": round(fees, 6),
-                "net": round(net, 6),
-                "fills": fills,
-                "since_ms": 0,
-                "source": "last_close_batch",
-            }
-            log(
-                f"PnL_REAL_BATCH {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills}",
-                "INFO",
-            )
+        return None
+
+    # Los fills del exchange pueden tardar unos segundos tras el cierre.
+    # Reintentamos antes de caer en PnL estimado para evitar desajustes con Hyperliquid.
+    attempts = 8
+    for idx in range(attempts):
+        payload = _try_read_once()
+        if payload is not None:
             return payload
-    except Exception as e:
-        log(f"No se pudo leer PnL REAL batch para {symbol}: {e}", "WARN")
+        if idx < attempts - 1:
+            time.sleep(0.75)
 
     return None
 
@@ -1450,6 +1507,7 @@ def _register_trade_safe(
     pnl_source: str = "",
     realized_fills: int = 0,
     close_source: str = "",
+    notional_usdc: float = 0.0,
 ) -> None:
     errs = []
     try:
@@ -1469,6 +1527,7 @@ def _register_trade_safe(
             exit_reason=str(exit_reason or ""),
             close_source=str(close_source or ""),
             direction=str(direction or ""),
+            notional_usdc=float(notional_usdc or 0.0),
         )
         return
     except Exception as e:
@@ -1552,6 +1611,7 @@ def _finalize_trade_close(
             pnl_source=str(pnl_source),
             realized_fills=int(realized_fills),
             close_source=str(source),
+            notional_usdc=float(qty_usdc_for_profit),
         )
     except Exception as e:
         log(f"register_trade error {symbol} src={source} err={e}", "ERROR")
@@ -1560,6 +1620,42 @@ def _finalize_trade_close(
         _risk_record_close(user_id, profit)
     except Exception as e:
         log(f"risk_record_close error {symbol} src={source} err={e}", "ERROR")
+
+    try:
+        save_last_close(
+            user_id,
+            {
+                "symbol": symbol,
+                "side": str(side or "").upper(),
+                "direction": str(direction or ""),
+                "entry_price": float(entry_price),
+                "exit_price": float(exit_price),
+                "qty": float(qty_coin),
+                "notional_usdc": float(qty_usdc_for_profit),
+                "profit": float(profit),
+                "gross_pnl": float(gross_pnl),
+                "fees": float(fees),
+                "pnl_source": str(pnl_source),
+                "realized_fills": int(realized_fills),
+                "close_source": str(source),
+                "exit_reason": str(exit_reason),
+                "message": _format_trade_close_user_message(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=float(entry_price),
+                    exit_price=float(exit_price),
+                    qty_coin=float(qty_coin),
+                    notional_usdc=float(qty_usdc_for_profit),
+                    net_profit=float(profit),
+                    gross_pnl=float(gross_pnl),
+                    fees=float(fees),
+                    exit_reason=str(exit_reason),
+                    pnl_source=str(pnl_source),
+                ),
+            },
+        )
+    except Exception as e:
+        log(f"save_last_close error {symbol} src={source} err={e}", "ERROR")
 
     _register_post_close_cooldown(user_id)
 
@@ -2803,9 +2899,29 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         )
         _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')})
 
+        open_payload = {
+            "symbol": symbol,
+            "coin": symbol,
+            "side": str(direction or '').upper(),
+            "direction": str(direction or '').upper(),
+            "entry_price": float(entry_price),
+            "qty": float(size_real),
+            "notional_usdc": float(notional_real),
+            "opened_at": datetime.utcnow().isoformat(),
+            "opened_at_ms": int(entry_started_at_ms),
+            "manager_started": bool(started),
+            "message": _format_trade_open_user_message(
+                symbol=symbol,
+                direction=direction,
+                entry_price=float(entry_price),
+                qty_coin=float(size_real),
+                notional_usdc=float(notional_real),
+                opened_at_ms=int(entry_started_at_ms),
+            ),
+        }
         return {
             "event": "OPEN",
-            "open": {"message": f"🟢 Trade abierto {symbol} ({direction.upper()})"},
+            "open": open_payload,
             "manager": {"started": started, "symbol": symbol},
         }
 
