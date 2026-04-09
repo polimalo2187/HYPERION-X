@@ -1231,12 +1231,13 @@ def _extract_strategy_management_params(src: Optional[dict[str, Any]]) -> Option
     if tp_activate <= 0.0 or trail_retrace <= 0.0 or force_min_profit <= 0.0 or force_min_strength <= 0.0:
         return None
 
-    if partial_tp_activation <= 0.0:
-        partial_tp_activation = max(0.0, tp_activate * 0.84)
-    if partial_tp_close_fraction <= 0.0:
-        partial_tp_close_fraction = 0.42
+    # Política operativa actual: no se permiten cierres parciales de TP.
+    # Cuando el manager decida cerrar por profit/trailing, debe cerrar 100%
+    # de la posición. Neutralizamos aquí cualquier parámetro legacy.
+    partial_tp_activation = 999999.0
+    partial_tp_close_fraction = 0.0
     if break_even_activation <= 0.0:
-        break_even_activation = max(partial_tp_activation + 0.0003, tp_activate * 0.96)
+        break_even_activation = max(0.0, tp_activate * 0.96)
     if break_even_offset <= 0.0:
         break_even_offset = 0.0008
 
@@ -1897,8 +1898,9 @@ def _manage_trade_until_close(
     trailing_active = bool(active_runtime.get("trailing_active", False))
     partial_tp_taken = bool(active_runtime.get("partial_tp_taken", False))
     break_even_armed = bool(active_runtime.get("break_even_armed", False))
-    partial_tp_activation_price = float((active_runtime.get("partial_tp_activation_price", mgmt.get("partial_tp_activation_price", 0.0)) or 0.0))
-    partial_tp_close_fraction = float((active_runtime.get("partial_tp_close_fraction", mgmt.get("partial_tp_close_fraction", 0.0)) or 0.0))
+    # Full TP only: cualquier runtime viejo con parcial queda neutralizado aquí.
+    partial_tp_activation_price = 999999.0
+    partial_tp_close_fraction = 0.0
     break_even_activation_price = float((active_runtime.get("break_even_activation_price", mgmt.get("break_even_activation_price", 0.0)) or 0.0))
     break_even_offset_price = float((active_runtime.get("break_even_offset_price", mgmt.get("break_even_offset_price", 0.0)) or 0.0))
     best_pnl_pct = float(active_runtime.get("best_pnl_pct", 0.0) or 0.0)
@@ -1927,6 +1929,8 @@ def _manage_trade_until_close(
         peak_price=float(peak_price),
         last_price=float(entry_price),
         last_pnl_pct=0.0,
+        partial_tp_activation_price=float(partial_tp_activation_price),
+        partial_tp_close_fraction=float(partial_tp_close_fraction),
         strength_check_ts=float(strength_check_ts),
         manager_heartbeat_ts=time.time(),
     )
