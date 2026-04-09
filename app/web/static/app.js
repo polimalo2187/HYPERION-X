@@ -1151,7 +1151,11 @@ function renderAdminComponentTelemetry(systemRuntime) {
     const sub = [];
     if (meta.symbol) sub.push(`Símbolo ${meta.symbol}`);
     if (meta.last_decision) sub.push(`Decisión ${meta.last_decision}`);
-    if (meta.available_balance !== null && meta.available_balance !== undefined) sub.push(`Capital ${formatNumber(meta.available_balance, 4)} USDT`);
+    const capital = meta.available_balance ?? meta.exchange_available_balance;
+    if (capital !== null && capital !== undefined) sub.push(`Capital ${formatNumber(capital, 4)} USDT`);
+    if (meta.users_loaded !== null && meta.users_loaded !== undefined) sub.push(`Usuarios ${meta.users_loaded}`);
+    if (meta.phase) sub.push(`Fase ${meta.phase}`);
+    if (meta.runtime_source) sub.push(`Fuente ${meta.runtime_source}`);
     if (!sub.length && item.message) sub.push(item.message);
     elements.adminComponentTelemetry.append(
       buildKpiCard(label, String(status).toUpperCase(), `${sub.join(' · ') || 'Sin lectura útil.'} · Frescura ${freshness}`)
