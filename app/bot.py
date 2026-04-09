@@ -57,7 +57,8 @@ from app.database import (
     # Stats por usuario (admin)
     get_user_trade_stats,
     reset_user_trade_stats_epoch,
-    touch_runtime_component,
+    publish_runtime_component,
+    describe_runtime_identity,
 )
 
 from app.hyperliquid_client import get_balance
@@ -72,6 +73,55 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+
+_RUNTIME_ALERTS: dict[str, float] = {}
+
+
+def _build_runtime_issue_message(component: str, outcome: dict) -> str:
+    identity = (outcome or {}).get('identity') or {}
+    parts = [
+        '⚠️ Runtime heartbeat con fallo',
+        f"Componente: {component}",
+        f"Rol: {identity.get('process_role') or 'unknown'}",
+        f"Instancia: {identity.get('runtime_instance') or 'unknown'}",
+        f"DB: {identity.get('db_name') or 'unknown'}",
+    ]
+    mongo_target = identity.get('mongo_target')
+    if mongo_target:
+        parts.append(f"Mongo: {mongo_target}")
+    errors = []
+    if outcome.get('primary_error'):
+        errors.append(f"primary={outcome['primary_error']}")
+    if outcome.get('shadow_error'):
+        errors.append(f"shadow={outcome['shadow_error']}")
+    if outcome.get('readback_error'):
+        errors.append(f"readback={outcome['readback_error']}")
+    if errors:
+        parts.append('Errores: ' + ' | '.join(errors[:3]))
+    if outcome.get('verified') is False:
+        parts.append('Verificación: readback no confirmado')
+    return '\n'.join(parts)
+
+
+async def _send_runtime_issue_alert(context: ContextTypes.DEFAULT_TYPE, component: str, outcome: dict, cooldown_seconds: int = 300):
+    try:
+        admin_id = int(ADMIN_TELEGRAM_ID or 0)
+    except Exception:
+        admin_id = 0
+    if admin_id <= 0:
+        return
+
+    dedupe_key = f"runtime:{component}:{(outcome or {}).get('primary_error')}:{(outcome or {}).get('shadow_error')}:{(outcome or {}).get('readback_error')}"
+    now = asyncio.get_running_loop().time()
+    last_sent = float(_RUNTIME_ALERTS.get(dedupe_key) or 0.0)
+    if now - last_sent < float(cooldown_seconds or 300):
+        return
+    _RUNTIME_ALERTS[dedupe_key] = now
+
+    try:
+        await context.bot.send_message(chat_id=admin_id, text=_build_runtime_issue_message(component, outcome))
+    except Exception as exc:
+        logging.error('No se pudo enviar alerta de runtime component=%s error=%s', component, exc)
 
 
 # ============================================================
@@ -768,7 +818,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def bot_runtime_heartbeat(context: ContextTypes.DEFAULT_TYPE):
-    touch_runtime_component(
+    outcome = publish_runtime_component(
         'telegram_bot',
         'online',
         metadata={
@@ -776,7 +826,11 @@ async def bot_runtime_heartbeat(context: ContextTypes.DEFAULT_TYPE):
             'miniapp_url_configured': bool(MINIAPP_URL),
             'admin_telegram_id': int(ADMIN_TELEGRAM_ID or 0),
         },
+        verify_readback=True,
     )
+    if not outcome.get('healthy'):
+        logging.error('Heartbeat telegram_bot no saludable: %s', outcome)
+        await _send_runtime_issue_alert(context, 'telegram_bot', outcome)
 
 
 def run_bot():
@@ -796,7 +850,7 @@ def run_bot():
 
     # ✅ CORRECCIÓN CRÍTICA:
     # Se pasa la MISMA Application al trading loop
-    touch_runtime_component(
+    startup_runtime = publish_runtime_component(
         'telegram_bot',
         'online',
         metadata={
@@ -805,7 +859,11 @@ def run_bot():
             'admin_telegram_id': int(ADMIN_TELEGRAM_ID or 0),
             'phase': 'startup',
         },
+        verify_readback=False,
     )
+    if not startup_runtime.get('ok'):
+        logging.error('No se pudo publicar heartbeat startup telegram_bot: %s', startup_runtime)
+    logging.info('Runtime identity bot: %s', describe_runtime_identity())
 
     app.job_queue.run_repeating(bot_runtime_heartbeat, interval=30, first=1)
     app.job_queue.run_once(
