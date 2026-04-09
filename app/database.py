@@ -552,6 +552,34 @@ def get_system_runtime_snapshot() -> dict:
         {'_id': 0, 'user_id': 1, 'username': 1, 'last_close_at': 1, 'last_close': 1},
         sort=[('last_close_at', -1)],
     )
+    if not latest_close_doc:
+        latest_trade = trades_col.find_one(
+            {},
+            {'_id': 0, 'user_id': 1, 'symbol': 1, 'side': 1, 'direction': 1, 'entry_price': 1, 'exit_price': 1, 'qty': 1, 'notional_usdc': 1, 'profit': 1, 'gross_pnl': 1, 'fees': 1, 'pnl_source': 1, 'realized_fills': 1, 'close_source': 1, 'exit_reason': 1, 'timestamp': 1},
+            sort=[('timestamp', -1)],
+        )
+        if latest_trade:
+            latest_close_doc = {
+                'user_id': latest_trade.get('user_id'),
+                'username': (users_col.find_one({'user_id': latest_trade.get('user_id')}, {'_id': 0, 'username': 1}) or {}).get('username'),
+                'last_close_at': latest_trade.get('timestamp'),
+                'last_close': {
+                    'symbol': latest_trade.get('symbol'),
+                    'side': latest_trade.get('side'),
+                    'direction': latest_trade.get('direction'),
+                    'entry_price': latest_trade.get('entry_price'),
+                    'exit_price': latest_trade.get('exit_price'),
+                    'qty': latest_trade.get('qty'),
+                    'notional_usdc': latest_trade.get('notional_usdc'),
+                    'profit': latest_trade.get('profit'),
+                    'gross_pnl': latest_trade.get('gross_pnl'),
+                    'fees': latest_trade.get('fees'),
+                    'pnl_source': latest_trade.get('pnl_source'),
+                    'realized_fills': latest_trade.get('realized_fills'),
+                    'close_source': latest_trade.get('close_source'),
+                    'exit_reason': latest_trade.get('exit_reason'),
+                },
+            }
 
     active_trades_collection_name = os.getenv('ACTIVE_TRADES_COLLECTION', 'active_trades')
     active_trades_collection = db[active_trades_collection_name]
@@ -2297,12 +2325,19 @@ def save_last_close(user_id: int, close_data: dict):
     """
     Guarda la información de la última operación CERRADA.
     Se sobreescribe siempre (solo informativo).
+    Además deja una notificación pendiente para que el trading loop
+    pueda enviar el cierre al usuario/admin cuando el manager cierra en background.
     """
     now = datetime.utcnow()
     payload = dict(close_data or {})
     users_col.update_one(
         {"user_id": int(user_id)},
-        {"$set": {"last_close": payload, "last_close_at": now}}
+        {"$set": {
+            "last_close": payload,
+            "last_close_at": now,
+            "pending_close_notification": payload,
+            "pending_close_notification_at": now,
+        }}
     )
     symbol = payload.get('symbol') or payload.get('coin') or 'Operación'
     side = str(payload.get('side') or payload.get('direction') or '').upper()
@@ -2329,15 +2364,69 @@ def save_last_close(user_id: int, close_data: dict):
     title = f"Cierre {symbol}" if not side else f"Cierre {symbol} · {side}"
     log_user_activity(int(user_id), title, detail, tone=tone, event_type='trade_closed', metadata={'symbol': symbol, 'side': side or None, 'profit': pnl}, occurred_at=now)
 
+
+def pop_pending_close_notification(user_id: int) -> dict | None:
+    """
+    Consume la última notificación pendiente de cierre.
+    Se usa para cierres ejecutados por el manager en background, donde el loop
+    no recibe un evento CLOSE directo pero sí debe notificar y reflejar el cierre.
+    """
+    try:
+        uid = int(user_id)
+    except Exception:
+        return None
+
+    doc = users_col.find_one(
+        {"user_id": uid},
+        {"_id": 0, "pending_close_notification": 1, "pending_close_notification_at": 1},
+    ) or {}
+    payload = doc.get("pending_close_notification")
+    if not isinstance(payload, dict) or not payload:
+        return None
+
+    users_col.update_one(
+        {"user_id": uid},
+        {"$unset": {"pending_close_notification": "", "pending_close_notification_at": ""}},
+    )
+    return payload
+
 def get_last_operation(user_id: int) -> dict:
     """
     Retorna last_open y last_close para mostrar en el botón Información.
+    Si last_close no está poblado pero sí existe un trade cerrado en trades_col,
+    construye un fallback para no dejar la MiniApp sin datos de cierre.
     """
     u = users_col.find_one(
         {"user_id": int(user_id)},
         {"_id": 0, "last_open": 1, "last_close": 1}
-    )
-    return u or {}
+    ) or {}
+
+    if not isinstance(u.get("last_close"), dict) or not u.get("last_close"):
+        latest_trade = trades_col.find_one(
+            {"user_id": int(user_id)},
+            {"_id": 0},
+            sort=[("timestamp", -1)],
+        )
+        if latest_trade:
+            symbol = latest_trade.get("symbol") or "Operación"
+            direction = str(latest_trade.get("direction") or latest_trade.get("side") or "")
+            u["last_close"] = {
+                "symbol": symbol,
+                "side": str(latest_trade.get("side") or "").upper(),
+                "direction": direction,
+                "entry_price": latest_trade.get("entry_price"),
+                "exit_price": latest_trade.get("exit_price"),
+                "qty": latest_trade.get("qty"),
+                "notional_usdc": latest_trade.get("notional_usdc"),
+                "profit": latest_trade.get("profit"),
+                "gross_pnl": latest_trade.get("gross_pnl"),
+                "fees": latest_trade.get("fees"),
+                "pnl_source": latest_trade.get("pnl_source"),
+                "realized_fills": latest_trade.get("realized_fills"),
+                "close_source": latest_trade.get("close_source"),
+                "exit_reason": latest_trade.get("exit_reason"),
+            }
+    return u
 
 def admin_set_user_trading_status(user_id: int, status: str) -> bool:
     normalized = str(status or '').strip().lower()
