@@ -338,8 +338,11 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   border: 1px solid rgba(255,255,255,0.06);
 }
 .kpi-subtext, .performance-subtext { margin-top: 8px; font-size: 13px; }
-.referral-program-card { grid-column: span 2; display: grid; gap: 10px; }
-.referral-program-card .payment-copy-value { max-width: 100%; }
+.referral-link-card, .referral-program-card { grid-column: span 2; display: grid; gap: 10px; }
+.referral-link-card .payment-copy-value, .referral-program-card .payment-copy-value { max-width: 100%; }
+.referral-link-row { align-items: flex-start; }
+.referral-link-value { white-space: normal; word-break: break-all; line-height: 1.5; }
+.referral-open-link { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 .referral-action-row { justify-content: flex-end; }
 
 .readiness-list { display: grid; gap: 12px; }
