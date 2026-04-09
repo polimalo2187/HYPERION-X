@@ -1298,6 +1298,74 @@ def mark_user_private_key_runtime_issue(
         return False
 
 
+def reset_user_private_key_credentials(user_id: int) -> dict:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return {'ok': False, 'result': 'invalid_user_id', 'message': 'Usuario inválido'}
+
+    user = users_col.find_one(
+        {'user_id': uid},
+        {
+            '_id': 0,
+            'user_id': 1,
+            'wallet': 1,
+            'private_key': 1,
+            'private_key_encrypted': 1,
+            'private_key_version': 1,
+            'trading_status': 1,
+        },
+    )
+    if not user:
+        return {'ok': False, 'result': 'user_not_found', 'message': 'Usuario no encontrado'}
+
+    now = _now_utc()
+    had_private_key = bool(user.get('private_key'))
+    preserve_wallet = bool(user.get('wallet'))
+    try:
+        users_col.update_one(
+            {'user_id': uid},
+            {
+                '$set': {
+                    'private_key': None,
+                    'private_key_encrypted': False,
+                    'private_key_version': None,
+                    'private_key_updated_at': None,
+                    'private_key_runtime_status': None,
+                    'private_key_runtime_error': None,
+                    'private_key_runtime_checked_at': None,
+                    'private_key_runtime_failure_count': 0,
+                    'private_key_runtime_last_recovered_at': None,
+                    'trading_status': 'inactive',
+                    'last_bot_error': None,
+                    'last_bot_error_at': None,
+                    'updated_at': now,
+                },
+                '$unset': {
+                    'private_key_runtime_last_failure_at': '',
+                    'private_key_runtime_failure_kind': '',
+                    'private_key_runtime_cipher_version': '',
+                },
+            },
+        )
+    except Exception as e:
+        try:
+            db_log(f"⚠ reset_user_private_key_credentials error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return {'ok': False, 'result': 'db_error', 'message': 'No se pudo resetear la credencial del usuario'}
+
+    return {
+        'ok': True,
+        'result': 'credentials_reset',
+        'message': 'Credencial operativa reseteada. El usuario debe volver a configurar su private key.',
+        'user_id': uid,
+        'had_private_key': had_private_key,
+        'wallet_preserved': preserve_wallet,
+        'trading_paused': True,
+    }
+
+
 def save_user_private_key(user_id: int, pk: str):
     encrypted_pk, version = encrypt_private_key(pk)
     users_col.update_one(
