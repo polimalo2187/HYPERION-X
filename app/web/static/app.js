@@ -170,6 +170,12 @@ function accessDetail(data) {
   return data.plan_active ? 'Acceso vigente' : 'Sin acceso vigente';
 }
 
+function renderMultilineText(value, emptyCopy = '—') {
+  const raw = String(value ?? '').replace(/\\n/g, '\n').trim();
+  const normalized = raw || emptyCopy;
+  return escapeHtml(normalized).replace(/\n/g, '<br>');
+}
+
 function renderSummaryMetrics(metrics = []) {
   const rows = Array.isArray(metrics) ? metrics.filter((item) => item && item.label) : [];
   if (!rows.length) return '';
@@ -193,7 +199,7 @@ function renderEventSummary(container, title, summary, emptyCopy) {
   item.className = 'list-item';
   item.innerHTML = `
     <div class="list-item-title">${summary.title || title}</div>
-    <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+    <div class="list-item-meta">${renderMultilineText(summary.detail || emptyCopy, emptyCopy)}</div>
     ${renderSummaryMetrics(summary.metrics || [])}
   `;
   container.appendChild(item);
@@ -213,7 +219,7 @@ function renderLiveTradeSummary(container, summary, emptyCopy) {
   item.className = 'list-item';
   item.innerHTML = `
     <div class="list-item-title">${summary.title || 'Operación activa'}</div>
-    <div class="list-item-meta">${summary.detail || emptyCopy}</div>
+    <div class="list-item-meta">${renderMultilineText(summary.detail || emptyCopy, emptyCopy)}</div>
     ${renderSummaryMetrics(summary.metrics || [])}
     <div class="list-item-meta subtle">${summary.started_at ? `Abierta ${formatDate(summary.started_at)}` : 'Sin timestamp de apertura.'}</div>
   `;
@@ -385,7 +391,7 @@ function buildActivityItem(title, item, emptyCopy) {
       </div>
       <span class="status-pill neutral">${item.symbol || '—'}</span>
     </div>
-    <div class="list-item-meta">${item.event || 'Sin payload resumido.'}</div>
+    <div class="list-item-meta">${renderMultilineText(item.event || 'Sin payload resumido.', 'Sin payload resumido.')}</div>
   `;
   return article;
 }
