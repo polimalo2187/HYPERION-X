@@ -20,7 +20,7 @@ from app.database import (
     mark_expiry_notified,
     save_last_open,
     save_last_close,
-    touch_runtime_component,
+    publish_runtime_component,
     get_user_cycle_policy,
     touch_user_operational_state,
     get_user_public_snapshot,
@@ -144,6 +144,58 @@ async def send_admin_push_safe(app: Application, text: str, *, dedupe_key: str |
         log(f"Error admin push: {e}", "ERROR")
 
 
+
+def _runtime_failure_message(component: str, outcome: dict) -> str:
+    identity = (outcome or {}).get('identity') or {}
+    bits = [
+        '⚠️ Heartbeat runtime con incidencia',
+        f"Componente: {component}",
+        f"Rol: {identity.get('process_role') or 'unknown'}",
+        f"Instancia: {identity.get('runtime_instance') or 'unknown'}",
+        f"DB: {identity.get('db_name') or 'unknown'}",
+    ]
+    mongo_target = identity.get('mongo_target')
+    if mongo_target:
+        bits.append(f"Mongo: {mongo_target}")
+    if outcome.get('primary_error'):
+        bits.append(f"Primary: {outcome['primary_error']}")
+    if outcome.get('shadow_error'):
+        bits.append(f"Shadow: {outcome['shadow_error']}")
+    if outcome.get('readback_error'):
+        bits.append(f"Readback: {outcome['readback_error']}")
+    if outcome.get('verified') is False:
+        bits.append('Readback no confirmado')
+    return '\n'.join(bits)
+
+
+async def _publish_runtime_component_safe(
+    app: Application,
+    component: str,
+    state: str = 'online',
+    *,
+    metadata: dict | None = None,
+    verify_readback: bool = False,
+    cooldown_seconds: int = 300,
+    dedupe_suffix: str | None = None,
+) -> dict:
+    outcome = publish_runtime_component(
+        component,
+        state,
+        metadata=metadata,
+        verify_readback=verify_readback,
+    )
+    if not outcome.get('healthy'):
+        log(f"Runtime heartbeat falló component={component} outcome={outcome}", 'ERROR')
+        dedupe_key = f"runtime:{component}:{dedupe_suffix or state}:{outcome.get('primary_error')}:{outcome.get('shadow_error')}:{outcome.get('readback_error')}"
+        await send_admin_push_safe(
+            app,
+            _runtime_failure_message(component, outcome),
+            dedupe_key=dedupe_key,
+            cooldown_seconds=int(cooldown_seconds or 300),
+        )
+    return outcome
+
+
 def _compose_admin_open_message(user_id: int, open_data: dict) -> str:
     symbol = (open_data or {}).get('symbol') or (open_data or {}).get('coin') or '—'
     side = str((open_data or {}).get('side') or (open_data or {}).get('direction') or '—').upper()
@@ -201,13 +253,16 @@ async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.
                 pass
 
             try:
-                touch_runtime_component(
+                await _publish_runtime_component_safe(
+                    app,
                     'scanner',
                     'online',
                     metadata={
                         'user_id': int(user_id),
                         'phase': 'execute_cycle',
                     },
+                    verify_readback=False,
+                    dedupe_suffix='execute_cycle',
                 )
                 loop = asyncio.get_running_loop()
 
@@ -216,7 +271,8 @@ async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.
                     timeout=TRADE_TIMEOUT_SECONDS
                 )
 
-                touch_runtime_component(
+                await _publish_runtime_component_safe(
+                    app,
                     'scanner',
                     'online',
                     metadata={
@@ -226,17 +282,19 @@ async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.
                         'symbol': (((result or {}).get('manager') or {}).get('symbol') if isinstance(result, dict) else None)
                             or (((result or {}).get('open') or {}).get('symbol') if isinstance(result, dict) else None),
                     },
+                    verify_readback=False,
+                    dedupe_suffix='cycle_finished',
                 )
                 return result
 
             except asyncio.TimeoutError:
-                touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'timeout', 'error': 'execute_user_cycle timeout'})
+                await _publish_runtime_component_safe(app, 'scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'timeout', 'error': 'execute_user_cycle timeout'}, verify_readback=False, dedupe_suffix='timeout')
                 log(f"Timeout ejecución usuario {user_id}", "WARN")
                 await send_admin_push_safe(app, f"⚠️ Timeout en ciclo de trading\nUsuario: {_admin_user_label(user_id)}\nEl ciclo excedió {TRADE_TIMEOUT_SECONDS}s.", dedupe_key=f"timeout:{user_id}", cooldown_seconds=300)
                 return None
 
             except Exception as e:
-                touch_runtime_component('scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'exception', 'error': str(e)[:300]})
+                await _publish_runtime_component_safe(app, 'scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'exception', 'error': str(e)[:300]}, verify_readback=False, dedupe_suffix='exception')
                 log(f"Error crítico usuario {user_id}: {e}", "ERROR")
                 await send_admin_push_safe(app, f"🚨 Error crítico de ejecución\nUsuario: {_admin_user_label(user_id)}\nDetalle: {str(e)[:250]}", dedupe_key=f"cycle_error:{user_id}:{str(e)[:80]}", cooldown_seconds=300)
                 return None
@@ -253,7 +311,8 @@ async def trading_loop(app: Application):
 
     log("Trading Loop iniciado — BANK GRADE 24/7")
     log(f"Startup grace: {STARTUP_GRACE_SECONDS}s (no escanea/operará durante este tiempo)")
-    touch_runtime_component(
+    await _publish_runtime_component_safe(
+        app,
         'trading_loop',
         'online',
         metadata={
@@ -261,6 +320,8 @@ async def trading_loop(app: Application):
             'scan_interval': SCAN_INTERVAL,
             'startup_grace_seconds': STARTUP_GRACE_SECONDS,
         },
+        verify_readback=True,
+        dedupe_suffix='started',
     )
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
@@ -271,19 +332,23 @@ async def trading_loop(app: Application):
             if STARTUP_GRACE_SECONDS > 0:
                 elapsed = time.time() - float(_loop_started_at or time.time())
                 if elapsed < float(STARTUP_GRACE_SECONDS):
-                    touch_runtime_component(
+                    await _publish_runtime_component_safe(
+                        app,
                         'trading_loop',
                         'online',
                         metadata={
                             'phase': 'startup_grace',
                             'seconds_remaining': max(0, int(float(STARTUP_GRACE_SECONDS) - elapsed)),
                         },
+                        verify_readback=False,
+                        dedupe_suffix='startup_grace',
                     )
                     await asyncio.sleep(1.0)
                     continue
 
             users = get_all_users() or []
-            touch_runtime_component(
+            await _publish_runtime_component_safe(
+                app,
                 'trading_loop',
                 'online',
                 metadata={
@@ -291,6 +356,8 @@ async def trading_loop(app: Application):
                     'users_loaded': len(users),
                     'max_concurrent_users': MAX_CONCURRENT_USERS,
                 },
+                verify_readback=True,
+                dedupe_suffix='loop_tick',
             )
             log(f"Usuarios activos: {len(users)}")
 
@@ -357,7 +424,8 @@ async def trading_loop(app: Application):
                 task_user_ids.append(user_id)
 
             if not tasks:
-                touch_runtime_component(
+                await _publish_runtime_component_safe(
+                    app,
                     'scanner',
                     'online',
                     metadata={
@@ -365,18 +433,23 @@ async def trading_loop(app: Application):
                         'users_loaded': len(users),
                         'users_ready': 0,
                     },
+                    verify_readback=True,
+                    dedupe_suffix='idle',
                 )
                 await asyncio.sleep(max(1, int(SCAN_INTERVAL or 1)))
                 continue
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            touch_runtime_component(
+            await _publish_runtime_component_safe(
+                app,
                 'trading_loop',
                 'online',
                 metadata={
                     'phase': 'batch_completed',
                     'tasks_executed': len(tasks),
                 },
+                verify_readback=True,
+                dedupe_suffix='batch_completed',
             )
 
             for user_id, result in zip(task_user_ids, results):
@@ -410,7 +483,8 @@ async def trading_loop(app: Application):
                 event_name = str(result.get('event') or '').upper()
 
                 if event_name in ('OPEN', 'BOTH'):
-                    touch_runtime_component(
+                    await _publish_runtime_component_safe(
+                        app,
                         'trading_loop',
                         'online',
                         metadata={
@@ -419,6 +493,8 @@ async def trading_loop(app: Application):
                             'last_event': event_name.lower(),
                             'symbol': ((result.get('open') or {}).get('symbol')),
                         },
+                        verify_readback=False,
+                        dedupe_suffix='user_cycle_open',
                     )
                     touch_user_operational_state(
                         user_id,
@@ -431,7 +507,8 @@ async def trading_loop(app: Application):
                         metadata={'phase': 'open_event', 'last_result': event_name.lower(), 'last_symbol': ((result.get('open') or {}).get('symbol')), 'last_cycle_at': datetime.utcnow()},
                     )
                 elif event_name in ('CLOSE', 'RECONCILE_CLOSED', 'BOTH'):
-                    touch_runtime_component(
+                    await _publish_runtime_component_safe(
+                        app,
                         'trading_loop',
                         'online',
                         metadata={
@@ -440,6 +517,8 @@ async def trading_loop(app: Application):
                             'last_event': event_name.lower(),
                             'symbol': ((result.get('close') or {}).get('symbol')),
                         },
+                        verify_readback=False,
+                        dedupe_suffix='user_cycle_close',
                     )
                     policy = get_user_cycle_policy(user_id)
                     touch_user_operational_state(
@@ -454,7 +533,8 @@ async def trading_loop(app: Application):
                     )
                 else:
                     policy = get_user_cycle_policy(user_id)
-                    touch_runtime_component(
+                    await _publish_runtime_component_safe(
+                        app,
                         'trading_loop',
                         'online',
                         metadata={
@@ -463,6 +543,8 @@ async def trading_loop(app: Application):
                             'last_event': (event_name or 'none').lower(),
                             'symbol': policy.get('active_symbol'),
                         },
+                        verify_readback=False,
+                        dedupe_suffix='user_cycle_idle',
                     )
                     touch_user_operational_state(
                         user_id,
