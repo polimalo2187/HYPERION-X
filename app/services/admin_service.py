@@ -21,6 +21,7 @@ from app.database import (
     log_admin_action,
     migrate_legacy_private_keys,
     migrate_user_private_key_to_encrypted,
+    reset_user_private_key_credentials,
     reset_user_trade_stats_epoch,
     search_users_for_admin,
     log_user_activity,
@@ -222,6 +223,42 @@ def admin_reset_user_stats(user_id: int, actor_user_id: int | None = None, actor
     _log_action('reset_user_stats', actor_user_id, actor_username, detail, reason=reason, message=message)
     return {
         'result': 'stats_reset',
+        'message': message,
+        'user': detail,
+    }
+
+
+def admin_reset_user_credentials(user_id: int, actor_user_id: int | None = None, actor_username: str | None = None, reason: str | None = None) -> dict:
+    outcome = reset_user_private_key_credentials(int(user_id))
+    result = outcome.get('result')
+    if result == 'user_not_found':
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Usuario no encontrado')
+    if not outcome.get('ok'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=outcome.get('message') or 'No se pudo resetear la credencial del usuario')
+    detail = admin_get_user_detail(int(user_id))
+    message = outcome.get('message') or 'Credencial operativa reseteada'
+    log_user_activity(
+        int(user_id),
+        'Credencial operativa reseteada',
+        'Soporte administrativo eliminó la private key almacenada y pausó el trading hasta que el usuario vuelva a configurarla.',
+        tone='warning',
+        event_type='credential_reset',
+    )
+    _log_action(
+        'reset_user_credentials',
+        actor_user_id,
+        actor_username,
+        detail,
+        reason=reason,
+        message=message,
+        metadata={
+            'wallet_preserved': bool(outcome.get('wallet_preserved')),
+            'trading_paused': bool(outcome.get('trading_paused')),
+            'had_private_key': bool(outcome.get('had_private_key')),
+        },
+    )
+    return {
+        'result': 'credentials_reset',
         'message': message,
         'user': detail,
     }
