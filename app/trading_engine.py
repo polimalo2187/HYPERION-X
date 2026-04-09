@@ -2390,6 +2390,20 @@ def execute_trade_cycle(user_id: int) -> dict | None:
 
         manager_only = bool(policy.get('manager_only', False))
         exchange_snapshot = get_account_snapshot(user_id)
+        if bool((exchange_snapshot or {}).get('credentials_repair_required')):
+            log(f"Usuario {user_id} con credencial operativa inválida — ciclo bloqueado hasta reparación", "ERROR")
+            _publish_operational_snapshot(
+                user_id,
+                'configuration_blocked',
+                'La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp antes de reactivar la operativa.',
+                mode='blocked',
+                live_trade=bool(exchange_snapshot.get('has_open_position')),
+                active_symbol=((exchange_snapshot.get('active_symbols') or [None])[0]),
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'credentials_invalid', 'last_decision': 'credentials_invalid', 'last_block_reason': 'private_key_decrypt_error', 'last_cycle_at': datetime.utcnow()},
+            )
+            _publish_scanner_runtime('online', user_id=user_id, decision='credentials_invalid', exchange_snapshot=exchange_snapshot, extra={'phase': 'credentials_invalid'})
+            return {'event': 'CREDENTIALS_INVALID'}
         _publish_scanner_runtime(
             'online',
             user_id=user_id,
