@@ -24,7 +24,9 @@ from app.database import (
     get_user_cycle_policy,
     touch_user_operational_state,
     get_user_public_snapshot,
+    mark_user_private_key_runtime_issue,
 )
+from app.crypto_utils import PrivateKeyDecryptError
 from app.trading_engine import execute_trade_cycle
 from app.config import SCAN_INTERVAL, ADMIN_TELEGRAM_ID
 
@@ -288,16 +290,51 @@ async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.
                 return result
 
             except asyncio.TimeoutError:
-                await _publish_runtime_component_safe(app, 'scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'timeout', 'error': 'execute_user_cycle timeout'}, verify_readback=False, dedupe_suffix='timeout')
+                touch_user_operational_state(
+                    user_id,
+                    'error',
+                    f'El ciclo operativo excedió {TRADE_TIMEOUT_SECONDS}s y fue abortado para proteger el loop.',
+                    mode='error',
+                    source='trading_loop',
+                    metadata={'phase': 'timeout', 'timeout_seconds': TRADE_TIMEOUT_SECONDS},
+                )
+                await _publish_runtime_component_safe(app, 'scanner', 'online', metadata={'user_id': int(user_id), 'phase': 'user_timeout', 'warning_kind': 'timeout', 'error': 'execute_user_cycle timeout'}, verify_readback=False, dedupe_suffix='user_timeout')
                 log(f"Timeout ejecución usuario {user_id}", "WARN")
                 await send_admin_push_safe(app, f"⚠️ Timeout en ciclo de trading\nUsuario: {_admin_user_label(user_id)}\nEl ciclo excedió {TRADE_TIMEOUT_SECONDS}s.", dedupe_key=f"timeout:{user_id}", cooldown_seconds=300)
-                return None
+                return {'event': 'USER_TIMEOUT', 'user_id': int(user_id)}
+
+            except PrivateKeyDecryptError as e:
+                mark_user_private_key_runtime_issue(
+                    int(user_id),
+                    reason=str(e),
+                    failure_kind='decrypt_error',
+                )
+                touch_user_operational_state(
+                    user_id,
+                    'configuration_blocked',
+                    'La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp para reactivar la operativa.',
+                    mode='blocked',
+                    source='credential_guard',
+                    metadata={'phase': 'private_key_decrypt_error', 'credential_status': 'decrypt_error', 'credential_error': str(e)[:180]},
+                )
+                await _publish_runtime_component_safe(app, 'scanner', 'online', metadata={'user_id': int(user_id), 'phase': 'user_credentials_blocked', 'warning_kind': 'private_key_decrypt_error', 'error': str(e)[:300]}, verify_readback=False, dedupe_suffix='user_credentials_blocked')
+                log(f"Private key inválida usuario {user_id}: {e}", "ERROR")
+                await send_admin_push_safe(app, f"🚨 Credencial operativa inválida\nUsuario: {_admin_user_label(user_id)}\nDetalle: {str(e)[:250]}\nAcción: el usuario quedó bloqueado hasta reconfigurar su private key en la MiniApp.", dedupe_key=f"invalid_private_key:{user_id}", cooldown_seconds=21600)
+                return {'event': 'USER_CREDENTIALS_INVALID', 'user_id': int(user_id), 'reason': 'private_key_decrypt_error'}
 
             except Exception as e:
-                await _publish_runtime_component_safe(app, 'scanner', 'error', metadata={'user_id': int(user_id), 'phase': 'exception', 'error': str(e)[:300]}, verify_readback=False, dedupe_suffix='exception')
+                touch_user_operational_state(
+                    user_id,
+                    'error',
+                    f'El ciclo devolvió una excepción operativa: {str(e)[:180]}',
+                    mode='error',
+                    source='trading_loop',
+                    metadata={'phase': 'exception', 'error': str(e)[:180]},
+                )
+                await _publish_runtime_component_safe(app, 'scanner', 'online', metadata={'user_id': int(user_id), 'phase': 'user_exception', 'warning_kind': 'user_exception', 'error': str(e)[:300]}, verify_readback=False, dedupe_suffix='user_exception')
                 log(f"Error crítico usuario {user_id}: {e}", "ERROR")
                 await send_admin_push_safe(app, f"🚨 Error crítico de ejecución\nUsuario: {_admin_user_label(user_id)}\nDetalle: {str(e)[:250]}", dedupe_key=f"cycle_error:{user_id}:{str(e)[:80]}", cooldown_seconds=300)
-                return None
+                return {'event': 'USER_EXCEPTION', 'user_id': int(user_id), 'reason': str(e)[:120]}
 
 # ============================================================
 # LOOP PRINCIPAL
