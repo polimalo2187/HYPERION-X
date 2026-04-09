@@ -90,6 +90,8 @@ const elements = {
   adminRecentActions: $('adminRecentActions'),
   adminMonitorStats: $('adminMonitorStats'),
   adminMonitorFeed: $('adminMonitorFeed'),
+  adminComponentTelemetry: $('adminComponentTelemetry'),
+  adminOperatorSnapshots: $('adminOperatorSnapshots'),
   adminClearMonitorButton: $('adminClearMonitorButton'),
   adminClearMonitorStatus: $('adminClearMonitorStatus'),
   adminLivePositions: $('adminLivePositions'),
@@ -1132,6 +1134,66 @@ function renderAdminLivePositions(rows) {
   });
 }
 
+function renderAdminComponentTelemetry(systemRuntime) {
+  if (!elements.adminComponentTelemetry) return;
+  const components = (systemRuntime && systemRuntime.components) || {};
+  const list = [
+    ['telegram_bot', 'Canal Telegram'],
+    ['trading_loop', 'Motor trading'],
+    ['scanner', 'Scanner'],
+  ];
+  elements.adminComponentTelemetry.innerHTML = '';
+  list.forEach(([key, label]) => {
+    const item = components[key] || {};
+    const status = item.status || 'offline';
+    const meta = item.metadata || {};
+    const freshness = item.freshness_seconds === null || item.freshness_seconds === undefined ? 'sin lectura' : `${item.freshness_seconds}s`;
+    const sub = [];
+    if (meta.symbol) sub.push(`Símbolo ${meta.symbol}`);
+    if (meta.last_decision) sub.push(`Decisión ${meta.last_decision}`);
+    if (meta.available_balance !== null && meta.available_balance !== undefined) sub.push(`Capital ${formatNumber(meta.available_balance, 4)} USDT`);
+    if (!sub.length && item.message) sub.push(item.message);
+    elements.adminComponentTelemetry.append(
+      buildKpiCard(label, String(status).toUpperCase(), `${sub.join(' · ') || 'Sin lectura útil.'} · Frescura ${freshness}`)
+    );
+  });
+}
+
+function renderAdminOperatorSnapshots(rows) {
+  if (!elements.adminOperatorSnapshots) return;
+  const items = Array.isArray(rows) ? rows : [];
+  if (!items.length) {
+    elements.adminOperatorSnapshots.className = 'list-stack empty-state';
+    elements.adminOperatorSnapshots.textContent = 'Sin lecturas operativas recientes.';
+    return;
+  }
+  elements.adminOperatorSnapshots.className = 'list-stack';
+  elements.adminOperatorSnapshots.innerHTML = '';
+  items.forEach((row) => {
+    const article = document.createElement('article');
+    article.className = 'activity-item';
+    const username = row.username ? `@${row.username}` : `Usuario ${row.user_id || '—'}`;
+    const plan = planLabel(row.plan || 'none');
+    const titleBits = [username, plan, String(row.trading_status || 'inactive').toUpperCase()];
+    const detailBits = [];
+    if (row.exchange_balance !== null && row.exchange_balance !== undefined) detailBits.push(`Capital ${formatNumber(row.exchange_balance, 4)} USDT`);
+    if (row.exchange_equity !== null && row.exchange_equity !== undefined) detailBits.push(`Equity ${formatNumber(row.exchange_equity, 4)} USDT`);
+    if (row.last_symbol) detailBits.push(`Símbolo ${row.last_symbol}`);
+    if (row.last_decision) detailBits.push(`Decisión ${row.last_decision}`);
+    if (row.last_block_reason) detailBits.push(`Bloqueo ${row.last_block_reason}`);
+    if (row.positions_count !== null && row.positions_count !== undefined) detailBits.push(`Posiciones ${row.positions_count}`);
+    const message = row.runtime_message || 'Sin detalle operativo reciente.';
+    article.innerHTML = `
+      <div class="activity-dot ${pillClass(row.exchange_status || row.runtime_state || 'neutral')}"></div>
+      <div class="activity-copy">
+        <div class="activity-title">${titleBits.join(' · ')}</div>
+        <div class="activity-detail">${message}${detailBits.length ? ` · ${detailBits.join(' · ')}` : ''}</div>
+      </div>
+      <div class="activity-time">${formatDate(row.runtime_checked_at || row.last_cycle_at)}</div>
+    `;
+    elements.adminOperatorSnapshots.appendChild(article);
+  });
+}
 
 function renderAdmin(data) {
   state.admin = data;
@@ -1140,6 +1202,8 @@ function renderAdmin(data) {
   const security = data.security || {};
   const monitor = data.monitor || {};
   const monitorCounts = monitor.counts || {};
+  const systemRuntime = data.system_runtime || {};
+  const operatorSnapshots = data.operator_snapshots || [];
 
   elements.adminVisualStats.innerHTML = '';
   elements.adminVisualStats.append(
@@ -1182,6 +1246,8 @@ function renderAdmin(data) {
     );
   }
   renderAdminMonitorFeed(monitor.events || []);
+  renderAdminComponentTelemetry(systemRuntime);
+  renderAdminOperatorSnapshots(operatorSnapshots);
   renderAdminLivePositions(monitor.active_positions || []);
 
   if (elements.adminBulkMigrationStatus) {
