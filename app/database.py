@@ -10,7 +10,7 @@
 # ============================================================
 
 from datetime import datetime, timedelta
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 import hashlib
 import os
 import pytz
@@ -41,6 +41,7 @@ user_activity_col = db["user_activity"]
 payment_orders_col = db["payment_orders"]
 payment_verification_logs_col = db["payment_verification_logs"]
 subscription_events_col = db["subscription_events"]
+referral_reward_events_col = db["referral_reward_events"]
 
 # ============================================================
 # ZONA HORARIA (CUBA) – vencimientos por medianoche
@@ -198,12 +199,25 @@ try:
     payment_verification_logs_col.create_index('user_id')
     subscription_events_col.create_index('user_id')
     subscription_events_col.create_index('order_id')
+    referral_reward_events_col.create_index('referrer_id')
+    referral_reward_events_col.create_index('referred_user_id')
+    referral_reward_events_col.create_index('source_order_id', unique=True)
 except Exception as _payment_index_exc:
     print(f"[DB {_now_utc().isoformat()}] ⚠ payment index init error: {_payment_index_exc}", file=sys.stdout, flush=True)
 
 # ============================================================
 # UTILIDADES (blindaje)
 # ============================================================
+
+
+REFERRAL_PREMIUM_REWARD_TABLE = {15: 7, 30: 15}
+
+
+def get_referral_reward_days_for_purchase(days: int) -> int:
+    try:
+        return int(REFERRAL_PREMIUM_REWARD_TABLE.get(int(days), 0) or 0)
+    except Exception:
+        return 0
 
 
 
@@ -1532,45 +1546,289 @@ def get_referral_valid_count(referrer_id: int) -> int:
 
 def _mark_referral_valid(target_user_id: int):
     """
-    Cuando un usuario activa Premium por primera vez:
-    - si tiene referrer y aún no fue contado, incrementa referral_valid_count en el referidor
-    - marca referral_counted=True en el usuario
+    Compatibilidad legacy.
+    Delega en el nuevo registro transaccional de conversión referida.
+    """
+    result = register_referral_conversion(int(target_user_id))
+    return bool(result.get('counted'))
+
+
+def register_referral_conversion(target_user_id: int) -> dict:
+    """
+    Marca una conversión de referido válida una sola vez.
+
+    Regla de negocio actual:
+    - El referido cuenta como válido en su primera compra Premium (15 o 30 días).
+    - El conteo del referrer se incrementa una sola vez.
+    - No aplica recompensa aquí; solo registra la conversión válida.
     """
     try:
-        target_user_id = int(target_user_id)
-        u = users_col.find_one(
-            {"user_id": target_user_id},
-            {"_id": 0, "referrer": 1, "referral_counted": 1}
+        uid = int(target_user_id)
+    except Exception:
+        return {'ok': False, 'counted': False, 'result': 'invalid_user_id'}
+
+    now = _now_utc()
+    try:
+        claimed = users_col.find_one_and_update(
+            {
+                'user_id': uid,
+                'referrer': {'$ne': None},
+                '$or': [
+                    {'referral_counted': False},
+                    {'referral_counted': {'$exists': False}},
+                ],
+            },
+            {
+                '$set': {
+                    'referral_counted': True,
+                    'referral_converted_at': now,
+                    'updated_at': now,
+                }
+            },
+            projection={'_id': 0, 'user_id': 1, 'referrer': 1},
+            return_document=ReturnDocument.AFTER,
         )
-        if not u:
-            return
-
-        if bool(u.get("referral_counted", False)):
-            return
-
-        referrer_id = u.get("referrer")
-        if not referrer_id:
-            # igual marcamos counted para no reintentar en el futuro
-            users_col.update_one({"user_id": target_user_id}, {"$set": {"referral_counted": True}})
-            return
-
-        # 1) marcar counted solo si aún es False (evita doble conteo)
-        res = users_col.update_one(
-            {"user_id": target_user_id, "$or": [{"referral_counted": False}, {"referral_counted": {"$exists": False}}]},
-            {"$set": {"referral_counted": True}}
-        )
-        if res.modified_count != 1:
-            return
-
-        # 2) incrementar contador en el referidor
-        users_col.update_one(
-            {"user_id": int(referrer_id)},
-            {"$inc": {"referral_valid_count": 1}}
-        )
-        db_log(f"👥 Referido válido contado: referrer={referrer_id} user={target_user_id}")
-
     except Exception as e:
-        db_log(f"❌ Error _mark_referral_valid user={target_user_id}: {e}")
+        db_log(f"❌ Error register_referral_conversion user={uid}: {e}")
+        return {'ok': False, 'counted': False, 'result': 'db_error', 'error': str(e)}
+
+    if claimed:
+        referrer_id = int(claimed.get('referrer'))
+        try:
+            users_col.update_one(
+                {'user_id': referrer_id},
+                {
+                    '$inc': {'referral_valid_count': 1},
+                    '$set': {'updated_at': now},
+                },
+            )
+        except Exception as e:
+            db_log(f"❌ Error incrementando referral_valid_count referrer={referrer_id} user={uid}: {e}")
+            return {
+                'ok': False,
+                'counted': False,
+                'result': 'referrer_increment_failed',
+                'referrer_id': referrer_id,
+                'error': str(e),
+            }
+        db_log(f"👥 Referido válido contado: referrer={referrer_id} user={uid}")
+        return {
+            'ok': True,
+            'counted': True,
+            'result': 'counted',
+            'referrer_id': referrer_id,
+            'converted_at': now,
+        }
+
+    try:
+        existing = users_col.find_one({'user_id': uid}, {'_id': 0, 'referrer': 1, 'referral_counted': 1}) or {}
+    except Exception as e:
+        db_log(f"❌ Error leyendo conversión referida user={uid}: {e}")
+        return {'ok': False, 'counted': False, 'result': 'db_error', 'error': str(e)}
+
+    if not existing:
+        return {'ok': False, 'counted': False, 'result': 'user_not_found'}
+    referrer_id = existing.get('referrer')
+    if not referrer_id:
+        return {'ok': True, 'counted': False, 'result': 'no_referrer'}
+    if bool(existing.get('referral_counted', False)):
+        return {'ok': True, 'counted': False, 'result': 'already_counted', 'referrer_id': int(referrer_id)}
+    return {'ok': True, 'counted': False, 'result': 'not_eligible', 'referrer_id': int(referrer_id)}
+
+
+def _build_referral_reward_event(
+    *,
+    referrer_id: int,
+    referred_user_id: int,
+    source_order_id: str,
+    purchase_days: int,
+    reward_days: int,
+    tx_hash: str | None = None,
+    amount_usdt: float | None = None,
+    referrer_previous_plan: str | None = None,
+    referrer_previous_expires_at: datetime | None = None,
+    referrer_new_expires_at: datetime | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    now = _now_utc()
+    return {
+        'referrer_id': int(referrer_id),
+        'referred_user_id': int(referred_user_id),
+        'source_order_id': str(source_order_id),
+        'reward_plan': 'premium',
+        'purchase_plan': 'premium',
+        'purchase_days': int(purchase_days),
+        'reward_days': int(reward_days),
+        'tx_hash': str(tx_hash or '') or None,
+        'amount_usdt': float(amount_usdt) if amount_usdt is not None else None,
+        'referrer_previous_plan': str(referrer_previous_plan or 'none'),
+        'referrer_previous_expires_at': referrer_previous_expires_at,
+        'referrer_new_expires_at': referrer_new_expires_at,
+        'metadata': metadata or {},
+        'created_at': now,
+        'updated_at': now,
+    }
+
+
+def apply_referral_reward_for_premium_purchase(
+    referred_user_id: int,
+    purchase_days: int,
+    *,
+    source_order_id: str,
+    tx_hash: str | None = None,
+    amount_usdt: float | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """
+    Aplica la recompensa del sistema referido una sola vez por referido válido.
+
+    Regla vigente:
+    - Premium 15 días comprado por el referido => 7 días premium al referrer.
+    - Premium 30 días comprado por el referido => 15 días premium al referrer.
+    - La recompensa solo se concede en la primera compra válida del referido.
+    """
+    try:
+        referred_uid = int(referred_user_id)
+        purchase_day_value = int(purchase_days)
+    except Exception:
+        return {'ok': False, 'applied': False, 'result': 'invalid_input'}
+
+    reward_days = get_referral_reward_days_for_purchase(purchase_day_value)
+    if reward_days <= 0:
+        return {'ok': True, 'applied': False, 'result': 'reward_not_configured'}
+
+    conversion = register_referral_conversion(referred_uid)
+    if not conversion.get('ok'):
+        return {'ok': False, 'applied': False, 'result': conversion.get('result') or 'conversion_failed', 'conversion': conversion}
+    if not conversion.get('counted'):
+        return {
+            'ok': True,
+            'applied': False,
+            'result': conversion.get('result') or 'not_eligible',
+            'conversion': conversion,
+        }
+
+    referrer_id = int(conversion.get('referrer_id'))
+    referrer = users_col.find_one({'user_id': referrer_id}, {'_id': 0, 'plan': 1, 'plan_expires_at': 1, 'username': 1})
+    if not referrer:
+        db_log(f"❌ apply_referral_reward_for_premium_purchase referrer missing referred={referred_uid} referrer={referrer_id}")
+        return {'ok': False, 'applied': False, 'result': 'referrer_not_found', 'conversion': conversion}
+
+    previous_plan = referrer.get('plan') or 'none'
+    previous_exp = _parse_dt(referrer.get('plan_expires_at'))
+    new_exp = _midnight_cuba_after_days_from_base(previous_exp, reward_days)
+    now = _now_utc()
+
+    users_col.update_one(
+        {'user_id': referrer_id},
+        {
+            '$set': {
+                'plan': 'premium',
+                'plan_expires_at': new_exp,
+                'expiry_notified_on': None,
+                'last_referral_reward_at': now,
+                'last_referral_reward_days': reward_days,
+                'last_referral_reward_source_order_id': str(source_order_id),
+                'last_referral_reward_purchase_days': purchase_day_value,
+                'updated_at': now,
+            }
+        },
+    )
+
+    reward_event = _build_referral_reward_event(
+        referrer_id=referrer_id,
+        referred_user_id=referred_uid,
+        source_order_id=str(source_order_id),
+        purchase_days=purchase_day_value,
+        reward_days=reward_days,
+        tx_hash=tx_hash,
+        amount_usdt=amount_usdt,
+        referrer_previous_plan=previous_plan,
+        referrer_previous_expires_at=previous_exp,
+        referrer_new_expires_at=new_exp,
+        metadata=metadata,
+    )
+    try:
+        referral_reward_events_col.insert_one(reward_event)
+    except Exception as e:
+        db_log(f"⚠ referral reward event insert error order={source_order_id} referrer={referrer_id}: {e}")
+
+    users_col.update_one(
+        {'user_id': referred_uid},
+        {
+            '$set': {
+                'referral_rewarded_at': now,
+                'referral_reward_source_order_id': str(source_order_id),
+                'referral_reward_purchase_days': purchase_day_value,
+                'referral_reward_days': reward_days,
+                'referral_reward_referrer_id': referrer_id,
+                'referral_reward_status': 'applied',
+                'updated_at': now,
+            }
+        },
+    )
+
+    log_subscription_event(
+        referrer_id,
+        'referral_reward',
+        plan='premium',
+        days=reward_days,
+        source='referral_program',
+        before_plan=previous_plan,
+        before_expires_at=previous_exp,
+        after_plan='premium',
+        after_expires_at=new_exp,
+        order_id=str(source_order_id),
+        metadata={
+            **(metadata or {}),
+            'referred_user_id': referred_uid,
+            'purchase_days': purchase_day_value,
+            'tx_hash': tx_hash,
+            'amount_usdt': float(amount_usdt) if amount_usdt is not None else None,
+        },
+    )
+    log_user_activity(
+        referrer_id,
+        'Recompensa de referido aplicada',
+        f'Recibiste {reward_days} día(s) Premium porque tu referido activó Premium {purchase_day_value} días.',
+        tone='success',
+        event_type='referral_reward',
+        metadata={
+            'referred_user_id': referred_uid,
+            'purchase_days': purchase_day_value,
+            'reward_days': reward_days,
+            'source_order_id': str(source_order_id),
+        },
+        occurred_at=now,
+    )
+    log_user_activity(
+        referred_uid,
+        'Compra validada como referido',
+        'Tu compra contó como referido válido para el programa actual.',
+        tone='info',
+        event_type='referral_conversion',
+        metadata={
+            'referrer_id': referrer_id,
+            'purchase_days': purchase_day_value,
+            'reward_days_for_referrer': reward_days,
+            'source_order_id': str(source_order_id),
+        },
+        occurred_at=now,
+    )
+    db_log(
+        f"🎁 Recompensa referida aplicada referrer={referrer_id} referred={referred_uid} purchase_days={purchase_day_value} reward_days={reward_days}"
+    )
+    return {
+        'ok': True,
+        'applied': True,
+        'result': 'reward_applied',
+        'referrer_id': referrer_id,
+        'referred_user_id': referred_uid,
+        'purchase_days': purchase_day_value,
+        'reward_days': reward_days,
+        'new_expires_at': new_exp,
+        'conversion': conversion,
+    }
 
 
 def get_user_wallet(user_id: int):
@@ -2948,6 +3206,25 @@ def apply_payment_premium_purchase(user_id: int, days: int, *, order_id: str, tx
         },
         occurred_at=now,
     )
+
+    try:
+        referral_reward = apply_referral_reward_for_premium_purchase(
+            uid,
+            day_value,
+            source_order_id=str(order_id),
+            tx_hash=tx_hash,
+            amount_usdt=float(amount_usdt) if amount_usdt is not None else None,
+            metadata=metadata,
+        )
+    except Exception as referral_exc:
+        db_log(f"⚠ apply_payment_premium_purchase referral reward error user={uid} order={order_id}: {referral_exc}")
+        referral_reward = {
+            'ok': False,
+            'applied': False,
+            'result': 'reward_exception',
+            'error': str(referral_exc),
+        }
+
     return {
         'ok': True,
         'message': f'Premium activado por {day_value} días',
@@ -2957,4 +3234,5 @@ def apply_payment_premium_purchase(user_id: int, days: int, *, order_id: str, tx
         'previous_expires_at': previous_exp,
         'new_expires_at': exp_utc,
         'new_days_remaining': _days_remaining_from_exp(exp_utc),
+        'referral_reward': referral_reward,
     }
