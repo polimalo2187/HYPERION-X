@@ -9,6 +9,8 @@ from app.database import (
     get_admin_action_history,
     get_admin_trade_stats,
     get_admin_live_monitor_snapshot,
+    get_admin_operator_snapshots,
+    get_system_runtime_snapshot,
     clear_admin_monitor_feed as clear_admin_monitor_feed_db,
     get_admin_user_snapshot,
     get_admin_visual_stats,
@@ -95,12 +97,16 @@ def get_admin_overview() -> dict:
         lambda: get_admin_live_monitor_snapshot(limit_events=30, limit_positions=20) or {},
         {'events': [], 'active_positions': [], 'counts': {'events': 0, 'active_positions': 0, 'trade_events': 0, 'payment_events': 0}},
     )
+    operator_snapshots = _safe('operator_snapshots', lambda: get_admin_operator_snapshots(limit=20) or [], [])
+    system_runtime = _safe('system_runtime', lambda: get_system_runtime_snapshot() or {}, {})
     return {
         'visual': visual,
         'trade_stats_30d': trade_stats,
         'security': security,
         'recent_actions': recent_actions,
         'monitor': monitor,
+        'operator_snapshots': operator_snapshots,
+        'system_runtime': system_runtime,
         'partial': bool(section_errors),
         'section_errors': section_errors,
     }
