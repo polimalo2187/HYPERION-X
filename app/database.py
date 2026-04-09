@@ -11,10 +11,12 @@
 
 from datetime import datetime, timedelta
 from pymongo import MongoClient
+import hashlib
 import os
-import re
-import sys
 import pytz
+import re
+import socket
+import sys
 
 from app.crypto_utils import decrypt_private_key, encrypt_private_key
 
@@ -73,6 +75,91 @@ def _parse_dt(x):
         return datetime.fromisoformat(str(x))
     except Exception:
         return None
+
+
+_PROCESS_BOOTED_AT = _now_utc()
+_HOSTNAME = socket.gethostname() or 'unknown-host'
+_HOSTNAME_SHORT = _HOSTNAME.split('.', 1)[0] or _HOSTNAME
+_PROCESS_PID = int(os.getpid())
+
+
+def _runtime_hash(value: str | None, length: int = 10) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    return hashlib.sha1(raw.encode('utf-8')).hexdigest()[: max(6, int(length))]
+
+
+def _extract_mongo_target(uri: str | None) -> str | None:
+    raw = str(uri or '').strip()
+    if not raw:
+        return None
+    raw = re.sub(r'^[a-zA-Z0-9+.-]+://', '', raw)
+    if '@' in raw:
+        raw = raw.split('@', 1)[1]
+    raw = raw.split('/', 1)[0]
+    raw = raw.split('?', 1)[0]
+    return raw or None
+
+
+def _infer_process_role() -> str:
+    explicit = str(os.getenv('PROCESS_ROLE') or os.getenv('APP_RUNTIME_ROLE') or '').strip().lower()
+    if explicit:
+        return explicit
+    argv = ' '.join(sys.argv).lower()
+    if 'uvicorn' in argv or 'web_main:app' in argv or 'web_main.py' in argv:
+        return 'web_api'
+    if 'main.py' in argv:
+        return 'bot_worker'
+    return 'runtime'
+
+
+def get_runtime_identity() -> dict:
+    mongo_target = _extract_mongo_target(MONGO_URI)
+    process_role = _infer_process_role()
+    runtime_instance = f"{process_role}:{_HOSTNAME_SHORT}:{_PROCESS_PID}"
+    return {
+        'process_role': process_role,
+        'runtime_instance': runtime_instance,
+        'runtime_instance_fingerprint': _runtime_hash(runtime_instance),
+        'host': _HOSTNAME,
+        'host_short': _HOSTNAME_SHORT,
+        'pid': _PROCESS_PID,
+        'db_name': DB_NAME,
+        'db_fingerprint': _runtime_hash(DB_NAME.lower()),
+        'mongo_target': mongo_target,
+        'mongo_target_fingerprint': _runtime_hash(str(mongo_target or '').lower()),
+        'booted_at': _PROCESS_BOOTED_AT,
+        'argv_hint': ' '.join(sys.argv[:3]),
+    }
+
+
+def _runtime_identity_metadata() -> dict:
+    identity = get_runtime_identity()
+    return {
+        'writer_process_role': identity.get('process_role'),
+        'writer_runtime_instance': identity.get('runtime_instance'),
+        'writer_runtime_instance_fingerprint': identity.get('runtime_instance_fingerprint'),
+        'writer_host': identity.get('host_short') or identity.get('host'),
+        'writer_pid': identity.get('pid'),
+        'writer_db_name': identity.get('db_name'),
+        'writer_db_fingerprint': identity.get('db_fingerprint'),
+        'writer_mongo_target': identity.get('mongo_target'),
+        'writer_mongo_target_fingerprint': identity.get('mongo_target_fingerprint'),
+        'writer_booted_at': _serialize_runtime_dt(identity.get('booted_at')),
+    }
+
+
+def describe_runtime_identity() -> str:
+    identity = get_runtime_identity()
+    parts = [
+        f"rol={identity.get('process_role')}",
+        f"instancia={identity.get('runtime_instance')}",
+        f"db={identity.get('db_name')}",
+    ]
+    if identity.get('mongo_target'):
+        parts.append(f"mongo={identity.get('mongo_target')}")
+    return ' · '.join(parts)
 
 # ============================================================
 # LOG EN VIVO (SERVIDOR)
@@ -137,17 +224,38 @@ def _runtime_shadow_key(component: str) -> str:
     return f"runtime_component::{str(component or '').strip().lower()}"
 
 
-def touch_runtime_component(component: str, state: str = 'online', *, metadata: dict | None = None) -> bool:
+def publish_runtime_component(
+    component: str,
+    state: str = 'online',
+    *,
+    metadata: dict | None = None,
+    verify_readback: bool = False,
+    readback_max_age_seconds: int = 180,
+) -> dict:
     name = str(component or '').strip().lower()
     if not name:
-        return False
+        return {
+            'ok': False,
+            'healthy': False,
+            'component': '',
+            'state': str(state or 'online').strip().lower() or 'online',
+            'primary_ok': False,
+            'shadow_ok': False,
+            'verified': False,
+            'readback_source': None,
+            'error': 'component_empty',
+            'identity': get_runtime_identity(),
+        }
+
     now = _now_utc()
+    meta_payload = dict(_runtime_identity_metadata())
+    meta_payload.update(dict(metadata or {}))
     payload = {
         'component': name,
         'state': str(state or 'online').strip().lower() or 'online',
         'last_seen_at': now,
         'updated_at': now,
-        'metadata': metadata or {},
+        'metadata': meta_payload,
     }
 
     primary_ok = False
@@ -175,19 +283,64 @@ def touch_runtime_component(component: str, state: str = 'online', *, metadata: 
     except Exception as e:
         shadow_error = e
 
+    verified = False
+    readback_source = None
+    readback_error = None
+    readback_doc = None
     if primary_ok or shadow_ok:
         if not primary_ok:
             try:
                 db_log(f"⚠ runtime primary write failed component={name}; usando shadow: {primary_error}")
             except Exception:
                 pass
-        return True
+        if verify_readback:
+            try:
+                readback_doc = get_runtime_component(name)
+                readback_source = ((readback_doc or {}).get('metadata') or {}).get('runtime_source')
+                last_seen = (readback_doc or {}).get('last_seen_at')
+                age_seconds = None
+                if isinstance(last_seen, datetime):
+                    age_seconds = max(0, int((now - last_seen).total_seconds()))
+                verified = bool(
+                    readback_doc
+                    and str((readback_doc or {}).get('state') or '').strip().lower() == payload['state']
+                    and age_seconds is not None
+                    and age_seconds <= max(1, int(readback_max_age_seconds or 180))
+                )
+                if not verified:
+                    readback_error = f'readback_mismatch age={age_seconds}'
+            except Exception as e:
+                readback_error = str(e)
+                verified = False
 
-    try:
-        db_log(f"⚠ touch_runtime_component error component={name}: primary={primary_error} shadow={shadow_error}")
-    except Exception:
-        pass
-    return False
+    if not (primary_ok or shadow_ok):
+        try:
+            db_log(f"⚠ touch_runtime_component error component={name}: primary={primary_error} shadow={shadow_error}")
+        except Exception:
+            pass
+
+    ok = bool(primary_ok or shadow_ok)
+    healthy = bool(ok and (not verify_readback or verified))
+    return {
+        'ok': ok,
+        'healthy': healthy,
+        'component': name,
+        'state': payload['state'],
+        'primary_ok': primary_ok,
+        'shadow_ok': shadow_ok,
+        'verified': verified,
+        'readback_source': readback_source,
+        'readback_state': (readback_doc or {}).get('state') if readback_doc else None,
+        'primary_error': str(primary_error) if primary_error else None,
+        'shadow_error': str(shadow_error) if shadow_error else None,
+        'readback_error': readback_error,
+        'identity': get_runtime_identity(),
+        'metadata': meta_payload,
+    }
+
+
+def touch_runtime_component(component: str, state: str = 'online', *, metadata: dict | None = None) -> bool:
+    return bool(publish_runtime_component(component, state, metadata=metadata).get('ok'))
 
 
 def get_runtime_component(component: str) -> dict | None:
@@ -281,6 +434,85 @@ def _runtime_component_snapshot(component: str, *, warning_after_seconds: int, c
     }
 
 
+def _safe_collection_count(collection, query: dict | None = None) -> int | None:
+    try:
+        return int(collection.count_documents(query or {}))
+    except Exception:
+        return None
+
+
+def _safe_latest_runtime_doc(collection, query: dict | None = None) -> dict | None:
+    try:
+        return collection.find_one(query or {}, {'_id': 0, 'component': 1, 'updated_at': 1, 'last_seen_at': 1, 'metadata': 1}, sort=[('updated_at', -1)])
+    except Exception:
+        return None
+
+
+def _build_runtime_bridge_diagnostics(components: dict) -> dict:
+    expected = ['telegram_bot', 'trading_loop', 'scanner']
+    backend_identity = get_runtime_identity()
+    runtime_status_count = _safe_collection_count(runtime_status_col)
+    runtime_shadow_count = _safe_collection_count(runtime_components_shadow_col)
+    runtime_status_expected = _safe_collection_count(runtime_status_col, {'component': {'$in': expected}})
+    runtime_shadow_expected = _safe_collection_count(runtime_components_shadow_col, {'component': {'$in': expected}})
+    latest_primary = _safe_latest_runtime_doc(runtime_status_col)
+    latest_shadow = _safe_latest_runtime_doc(runtime_components_shadow_col)
+
+    missing_components = [name for name in expected if not components.get(name) or (components.get(name) or {}).get('state') == 'missing']
+    writer_db_names = sorted({
+        str(((components.get(name) or {}).get('metadata') or {}).get('writer_db_name') or '').strip()
+        for name in expected
+        if str(((components.get(name) or {}).get('metadata') or {}).get('writer_db_name') or '').strip()
+    })
+    writer_mongo_fingerprints = sorted({
+        str(((components.get(name) or {}).get('metadata') or {}).get('writer_mongo_target_fingerprint') or '').strip()
+        for name in expected
+        if str(((components.get(name) or {}).get('metadata') or {}).get('writer_mongo_target_fingerprint') or '').strip()
+    })
+
+    status = 'healthy'
+    message = 'Los heartbeats esperados están presentes en la DB leída por esta API.'
+    hints: list[str] = []
+
+    if len(missing_components) == len(expected):
+        status = 'critical'
+        if (runtime_status_count or 0) == 0 and (runtime_shadow_count or 0) == 0:
+            message = 'Esta API no encuentra ningún heartbeat en runtime_status ni en runtime_components_shadow.'
+            hints.append('Lo más probable es que el worker/bot esté escribiendo en otra DB/servicio, o que no pueda persistir en Mongo.')
+        else:
+            message = 'Esta API sí ve documentos runtime en la DB actual, pero no ve telegram_bot/trading_loop/scanner.'
+            hints.append('Revisar despliegue parcial, nombres de componente o limpieza accidental de las colecciones de runtime.')
+    elif missing_components:
+        status = 'warning'
+        message = f"Faltan heartbeats para: {', '.join(missing_components)}."
+        hints.append('El sistema está parcial o intermitente.')
+
+    if writer_db_names and backend_identity.get('db_name') not in writer_db_names:
+        status = 'critical'
+        hints.append('La API está leyendo una DB distinta a la reportada por los escritores de heartbeat.')
+    if writer_mongo_fingerprints and backend_identity.get('mongo_target_fingerprint') and backend_identity.get('mongo_target_fingerprint') not in writer_mongo_fingerprints:
+        status = 'critical'
+        hints.append('La API apunta a un cluster/host Mongo distinto al de los escritores de heartbeat.')
+
+    return {
+        'status': status,
+        'message': message,
+        'missing_components': missing_components,
+        'runtime_status_count': runtime_status_count,
+        'runtime_components_shadow_count': runtime_shadow_count,
+        'runtime_status_expected_count': runtime_status_expected,
+        'runtime_components_shadow_expected_count': runtime_shadow_expected,
+        'latest_primary_component': (latest_primary or {}).get('component'),
+        'latest_primary_updated_at': _parse_dt((latest_primary or {}).get('updated_at')),
+        'latest_shadow_component': (latest_shadow or {}).get('component'),
+        'latest_shadow_updated_at': _parse_dt((latest_shadow or {}).get('updated_at')),
+        'writer_db_names': writer_db_names,
+        'writer_mongo_target_fingerprints': writer_mongo_fingerprints,
+        'hints': hints,
+        'backend_identity': backend_identity,
+    }
+
+
 def get_system_runtime_snapshot() -> dict:
     now = _now_utc()
     components = {
@@ -364,6 +596,8 @@ def get_system_runtime_snapshot() -> dict:
             'payload': payload if isinstance(payload, dict) else None,
         }
 
+    bridge_diagnostics = _build_runtime_bridge_diagnostics(components)
+
     return {
         'overall_status': overall_status,
         'checked_at': now,
@@ -379,6 +613,8 @@ def get_system_runtime_snapshot() -> dict:
             'scanner_last_symbol': scanner_meta.get('symbol'),
             'scanner_last_user_id': scanner_meta.get('user_id'),
         },
+        'backend_identity': bridge_diagnostics.get('backend_identity') or get_runtime_identity(),
+        'bridge_diagnostics': bridge_diagnostics,
         'issues': issues,
     }
 
