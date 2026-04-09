@@ -99,6 +99,10 @@ def _trade_result_meta(profit: Any) -> dict:
     return {'label': 'Flat', 'tone': 'neutral'}
 
 
+def _metric(label: str, value: Any) -> dict:
+    return {'label': str(label), 'value': value if value is not None else '—'}
+
+
 def _build_operation_snapshot(payload: Any, fallback_title: str) -> dict:
     data = dict(payload or {}) if isinstance(payload, dict) else {}
     symbol = data.get('symbol') or data.get('coin') or data.get('asset') or '—'
@@ -470,8 +474,13 @@ def _normalize_trade_row(trade: dict) -> dict:
     ts = normalized.get('timestamp')
     normalized['timestamp'] = _serialize_dt(ts)
     profit_value = _safe_float(normalized.get('profit'), 0.0)
+    gross_pnl = _safe_float(normalized.get('gross_pnl'), profit_value)
+    fees = _safe_float(normalized.get('fees'), 0.0)
     meta = _trade_result_meta(profit_value)
     normalized['profit'] = profit_value
+    normalized['gross_pnl'] = gross_pnl
+    normalized['fees'] = fees
+    normalized['notional_usdc'] = _safe_float(normalized.get('notional_usdc'), 0.0) if normalized.get('notional_usdc') is not None else None
     normalized['result_label'] = meta['label']
     normalized['result_tone'] = {'success': 'success', 'danger': 'danger', 'neutral': 'neutral'}.get(meta['tone'], 'neutral')
     return normalized
@@ -506,19 +515,48 @@ def _build_last_operation_summary(payload: Any, fallback_title: str, empty_detai
     title = payload.get('symbol') or payload.get('coin') or fallback_title
     side = str(payload.get('side') or payload.get('direction') or '').upper()
     detail_parts = []
-    if payload.get('entry_price') is not None:
-        detail_parts.append(f"Entrada {payload.get('entry_price')}")
-    if payload.get('exit_price') is not None:
-        detail_parts.append(f"Salida {payload.get('exit_price')}")
-    if payload.get('qty') is not None:
-        detail_parts.append(f"Qty {payload.get('qty')}")
-    if payload.get('profit') is not None:
-        detail_parts.append(f"PnL {round(_safe_float(payload.get('profit'), 0.0), 4)}")
+    metrics = []
+    entry = payload.get('entry_price')
+    exit_price = payload.get('exit_price')
+    qty = payload.get('qty')
+    notional = payload.get('notional_usdc')
+    net = payload.get('profit')
+    gross = payload.get('gross_pnl')
+    fees = payload.get('fees')
+    source = payload.get('pnl_source')
+    reason = payload.get('exit_reason') or payload.get('close_source')
+    if entry is not None:
+        detail_parts.append(f"Entrada {entry}")
+        metrics.append(_metric('Entrada', entry))
+    if exit_price is not None:
+        detail_parts.append(f"Salida {exit_price}")
+        metrics.append(_metric('Salida', exit_price))
+    if qty is not None:
+        detail_parts.append(f"Qty {qty}")
+        metrics.append(_metric('Qty', qty))
+    if notional is not None:
+        detail_parts.append(f"Valor {round(_safe_float(notional, 0.0), 4)} USDC")
+        metrics.append(_metric('Valor', f"{round(_safe_float(notional, 0.0), 4)} USDC"))
+    if gross is not None:
+        detail_parts.append(f"Bruto {round(_safe_float(gross, 0.0), 4)}")
+        metrics.append(_metric('Bruto', f"{round(_safe_float(gross, 0.0), 4)} USDC"))
+    if fees is not None:
+        detail_parts.append(f"Fees {round(_safe_float(fees, 0.0), 4)}")
+        metrics.append(_metric('Fees', f"{round(_safe_float(fees, 0.0), 4)} USDC"))
+    if net is not None:
+        detail_parts.append(f"Neto {round(_safe_float(net, 0.0), 4)}")
+        metrics.append(_metric('PnL neto', f"{round(_safe_float(net, 0.0), 4)} USDC"))
+    if source:
+        detail_parts.append(f"Fuente {source}")
+        metrics.append(_metric('Fuente', source))
+    if reason:
+        detail_parts.append(f"Motivo {reason}")
     if payload.get('message'):
         detail_parts.append(str(payload.get('message')))
     return {
         'title': f"{title} · {side}" if side else str(title),
         'detail': ' · '.join(detail_parts) if detail_parts else empty_detail,
+        'metrics': metrics[:8],
     }
 
 
@@ -592,21 +630,34 @@ def _build_active_trade_summary(payload: Any) -> dict | None:
     last_price = payload.get('last_price')
     pnl = payload.get('last_pnl_pct')
     qty = payload.get('qty_coin_for_log') or payload.get('qty') or payload.get('size')
+    notional = payload.get('qty_usdc_for_profit') or payload.get('notional_usdc')
+    mode = payload.get('mode')
     detail_parts = []
+    metrics = []
     if entry is not None:
         detail_parts.append(f'Entrada {entry}')
+        metrics.append(_metric('Entrada', entry))
     if last_price is not None:
         detail_parts.append(f'Último precio {last_price}')
+        metrics.append(_metric('Último', last_price))
     if qty is not None:
         detail_parts.append(f'Qty {qty}')
+        metrics.append(_metric('Qty', qty))
+    if notional is not None:
+        detail_parts.append(f'Valor {round(_safe_float(notional, 0.0), 4)} USDC')
+        metrics.append(_metric('Valor', f"{round(_safe_float(notional, 0.0), 4)} USDC"))
     if pnl is not None:
         detail_parts.append(f'PnL vivo {round(_safe_float(pnl, 0.0), 4)}%')
+        metrics.append(_metric('PnL vivo', f"{round(_safe_float(pnl, 0.0), 4)}%"))
+    if mode:
+        metrics.append(_metric('Modo', mode))
     return {
         'title': f"{symbol} · {side}" if side else str(symbol),
         'detail': ' · '.join(detail_parts) if detail_parts else 'Hay una operación activa registrada en este momento.',
         'started_at': payload.get('started_at') or payload.get('persisted_at'),
         'symbol': symbol,
         'side': side,
+        'metrics': metrics[:6],
     }
 
 
