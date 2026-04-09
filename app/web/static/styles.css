@@ -338,6 +338,9 @@ button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   border: 1px solid rgba(255,255,255,0.06);
 }
 .kpi-subtext, .performance-subtext { margin-top: 8px; font-size: 13px; }
+.referral-program-card { grid-column: span 2; display: grid; gap: 10px; }
+.referral-program-card .payment-copy-value { max-width: 100%; }
+.referral-action-row { justify-content: flex-end; }
 
 .readiness-list { display: grid; gap: 12px; }
 .readiness-item {
