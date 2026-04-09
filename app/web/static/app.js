@@ -520,6 +520,27 @@ async function copyTextToClipboard(value, successMessage = 'Copiado correctament
   }
 }
 
+function shareReferralLink() {
+  const data = state.referrals || {};
+  const referralLink = String(data.referral_link || '').trim();
+  if (!referralLink) {
+    setStatus('Todavía no hay un enlace referido disponible.', 'warning');
+    return;
+  }
+  const shareText = String(data.share_text || referralLink).trim();
+  const telegramShareUrl = `https://t.me/share/url?url=${encodeURIComponent(referralLink)}&text=${encodeURIComponent(shareText)}`;
+  try {
+    if (state.telegram && typeof state.telegram.openTelegramLink === 'function') {
+      state.telegram.openTelegramLink(telegramShareUrl);
+    } else {
+      window.open(telegramShareUrl, '_blank', 'noopener');
+    }
+    setStatus('Abriendo Telegram para compartir tu enlace referido.', 'info');
+  } catch (error) {
+    copyTextToClipboard(referralLink, 'Enlace referido copiado. Compártelo manualmente.');
+  }
+}
+
 function buildCopyableAddress(address, label = 'Wallet receptora') {
   const full = String(address || '').trim();
   if (!full) {
@@ -1035,12 +1056,52 @@ function renderOperations(data) {
   });
 }
 
+function buildReferralProgramCard(data) {
+  const article = document.createElement('article');
+  article.className = 'kpi-card referral-program-card';
+
+  const referralLink = String(data.referral_link || '').trim();
+  const referralCode = String(data.referral_code || '').trim();
+  const escapedLink = escapeHtml(referralLink);
+  const escapedCode = escapeHtml(referralCode);
+  const rewardRows = Array.isArray(data.reward_table)
+    ? data.reward_table.map((item) => `<div class="kpi-subtext">${escapeHtml(item.purchase_label || 'Premium')} → <strong>${escapeHtml(item.reward_label || 'Sin recompensa')}</strong></div>`).join('')
+    : '';
+
+  article.innerHTML = `
+    <span class="kpi-label">Enlace referido</span>
+    <div class="payment-copy-block">
+      <span class="payment-copy-label">Compártelo desde Telegram o cópialo manualmente.</span>
+      <div class="payment-copy-row">
+        <span class="payment-copy-value" title="${escapedLink}">${escapeHtml(truncateMiddle(referralLink, 36))}</span>
+        <button class="inline-copy-button" type="button" data-copy-text="${escapedLink}" data-copy-success="Enlace referido copiado.">Copiar enlace</button>
+      </div>
+    </div>
+    <div class="payment-copy-block">
+      <span class="payment-copy-label">Código</span>
+      <div class="payment-copy-row">
+        <span class="payment-copy-value" title="${escapedCode}">${escapedCode || '—'}</span>
+        <div class="payment-copy-row referral-action-row">
+          <button class="inline-copy-button" type="button" data-copy-text="${escapedCode}" data-copy-success="Código referido copiado.">Copiar código</button>
+          <button class="inline-copy-button" type="button" data-action="share-referral">Compartir</button>
+        </div>
+      </div>
+    </div>
+    <div class="kpi-subtext">${escapeHtml(data.valid_referral_rule || 'El referido cuenta cuando compra un plan válido.')}</div>
+    <div class="kpi-subtext">${escapeHtml(data.reward_rule || 'La recompensa se aplica automáticamente en Premium.')}</div>
+    ${rewardRows}
+  `;
+  return article;
+}
+
 function renderReferrals(data) {
   state.referrals = data;
   elements.referralStats.innerHTML = '';
   elements.referralStats.append(
     buildKpiCard('Usuario', data.user_id || '—', 'ID autenticado contra backend.'),
-    buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Contados en esta base.')
+    buildKpiCard('Referidos válidos', data.referral_valid_count || 0, 'Referidos válidos acreditados una sola vez.'),
+    buildKpiCard('Código referido', data.referral_code || '—', `Bot: @${data.bot_username || 'TradingXHiperPro_bot'}`),
+    buildReferralProgramCard(data),
   );
 }
 
@@ -2075,10 +2136,19 @@ function bindActions() {
   if (elements.billingCancelButton) elements.billingCancelButton.addEventListener('click', cancelPaymentAction);
 
   document.addEventListener('click', async (event) => {
+    const shareButton = event.target.closest('[data-action="share-referral"]');
+    if (shareButton) {
+      event.preventDefault();
+      shareReferralLink();
+      return;
+    }
     const button = event.target.closest('[data-copy-text]');
     if (!button) return;
     event.preventDefault();
-    await copyTextToClipboard(button.getAttribute('data-copy-text'), 'Wallet copiada al portapapeles.');
+    await copyTextToClipboard(
+      button.getAttribute('data-copy-text'),
+      button.getAttribute('data-copy-success') || 'Copiado correctamente.',
+    );
   });
 
   if (elements.adminSearchForm) {
