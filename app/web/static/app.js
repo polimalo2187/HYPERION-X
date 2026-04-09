@@ -111,6 +111,7 @@ const elements = {
   adminActivateTradingButton: $('adminActivateTradingButton'),
   adminPauseTradingButton: $('adminPauseTradingButton'),
   adminMigrateKeyButton: $('adminMigrateKeyButton'),
+  adminResetCredentialsButton: $('adminResetCredentialsButton'),
   adminResetStatsButton: $('adminResetStatsButton'),
   adminBulkMigrateButton: $('adminBulkMigrateButton'),
   adminBulkMigrationStatus: $('adminBulkMigrationStatus'),
@@ -385,6 +386,7 @@ function adminActionLabel(action) {
     activate_user_trading: 'Reanudar trading',
     pause_user_trading: 'Pausar trading',
     migrate_user_private_key: 'Migrar private key',
+    reset_user_credentials: 'Resetear credencial',
     reset_user_stats: 'Resetear rendimiento',
     bulk_migrate_legacy_keys: 'Migración masiva de keys legacy',
     activate_premium_fixed_30d: 'Activación fija Premium 30d',
@@ -1466,6 +1468,9 @@ function renderAdminSelectedUser(user) {
   if (elements.adminMigrateKeyButton) {
     elements.adminMigrateKeyButton.disabled = !user.private_key_configured || user.private_key_storage === 'encrypted';
   }
+  if (elements.adminResetCredentialsButton) {
+    elements.adminResetCredentialsButton.disabled = !user.private_key_configured;
+  }
 }
 
 async function apiFetch(path, options = {}) {
@@ -1954,6 +1959,21 @@ async function resetStatsForSelectedUser() {
   );
 }
 
+async function resetCredentialsForSelectedUser() {
+  await runAdminSelectedAction(
+    elements.adminResetCredentialsButton,
+    (userId) => `/api/v1/admin/users/${userId}/security/reset-credentials`,
+    'No se pudo resetear la credencial del usuario.',
+    'warning',
+    'Confirmación reforzada · Resetear credencial operativa',
+    [
+      'Se borrará la private key almacenada del usuario.',
+      'La wallet pública se conservará para facilitar la reconfiguración.',
+      'El trading quedará pausado hasta que el usuario vuelva a configurar su key.',
+    ],
+  );
+}
+
 async function clearAdminMonitorFeed() {
   if (!elements.adminClearMonitorButton) return;
   const confirmed = await requestStrongConfirmation(
@@ -2089,6 +2109,9 @@ function bindActions() {
   }
   if (elements.adminMigrateKeyButton) {
     elements.adminMigrateKeyButton.addEventListener('click', migrateKeyForSelectedUser);
+  }
+  if (elements.adminResetCredentialsButton) {
+    elements.adminResetCredentialsButton.addEventListener('click', resetCredentialsForSelectedUser);
   }
   if (elements.adminResetStatsButton) {
     elements.adminResetStatsButton.addEventListener('click', resetStatsForSelectedUser);
