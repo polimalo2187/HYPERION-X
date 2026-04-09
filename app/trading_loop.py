@@ -25,6 +25,7 @@ from app.database import (
     touch_user_operational_state,
     get_user_public_snapshot,
     mark_user_private_key_runtime_issue,
+    pop_pending_close_notification,
 )
 from app.crypto_utils import PrivateKeyDecryptError
 from app.trading_engine import execute_trade_cycle
@@ -629,6 +630,25 @@ async def trading_loop(app: Application):
                         await send_admin_push_safe(app, _compose_admin_close_message(user_id, close_data))
                     except Exception as e:
                         log(f"Error push admin CLOSE user {user_id}: {e}", "ERROR")
+
+                # Cierres disparados por el manager en background no vuelven como event=CLOSE.
+                # Consumimos aquí una notificación pendiente para que Telegram/admin y la MiniApp
+                # siempre reflejen el cierre real.
+                pending_close = None
+                if result.get("event") not in ("CLOSE", "BOTH"):
+                    try:
+                        pending_close = pop_pending_close_notification(user_id)
+                    except Exception as e:
+                        log(f"Error leyendo pending_close_notification user {user_id}: {e}", "ERROR")
+
+                if pending_close:
+                    msg = pending_close.get("message")
+                    if msg:
+                        await send_message_safe(app, user_id, msg)
+                    try:
+                        await send_admin_push_safe(app, _compose_admin_close_message(user_id, pending_close))
+                    except Exception as e:
+                        log(f"Error push admin pending CLOSE user {user_id}: {e}", "ERROR")
 
         except Exception as e:
             log(f"FALLO SISTÉMICO trading_loop: {e}", "CRITICAL")
