@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/styles.css?v=phase40-admin-clear-feed" />
+    <link rel="stylesheet" href="/static/styles.css?v=phase41-runtime-observability" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -504,6 +504,17 @@
             <article class="glass-card panel-card panel-span-2">
               <div class="panel-head">
                 <div>
+                  <span class="section-tag">ADMIN · TELEMETRÍA VIVA</span>
+                  <h3>Motor, scanner y elegibilidad</h3>
+                </div>
+              </div>
+              <div id="adminComponentTelemetry" class="stats-grid compact"></div>
+              <div id="adminOperatorSnapshots" class="list-stack empty-state">Sin lecturas operativas recientes.</div>
+            </article>
+
+            <article class="glass-card panel-card panel-span-2">
+              <div class="panel-head">
+                <div>
                   <span class="section-tag">ADMIN · POSICIONES VIVAS</span>
                   <h3>Operaciones abiertas en el sistema</h3>
                 </div>
@@ -606,6 +617,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js?v=phase40-admin-clear-feed"></script>
+    <script src="/static/app.js?v=phase41-runtime-observability"></script>
   </body>
 </html>
