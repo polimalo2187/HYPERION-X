@@ -2272,6 +2272,8 @@ def save_last_open(user_id: int, open_data: dict):
         detail_parts.append(f"Entrada {payload.get('entry_price')}")
     if payload.get('qty') is not None:
         detail_parts.append(f"Qty {payload.get('qty')}")
+    if payload.get('notional_usdc') is not None:
+        detail_parts.append(f"Valor {payload.get('notional_usdc')} USDC")
     if payload.get('message'):
         detail_parts.append(str(payload.get('message')))
     detail = ' · '.join(detail_parts) if detail_parts else 'Se registró una nueva apertura en el bot.'
@@ -2298,8 +2300,16 @@ def save_last_close(user_id: int, close_data: dict):
         detail_parts.append(f"Entrada {payload.get('entry_price')}")
     if payload.get('exit_price') is not None:
         detail_parts.append(f"Salida {payload.get('exit_price')}")
+    if payload.get('qty') is not None:
+        detail_parts.append(f"Qty {payload.get('qty')}")
+    if payload.get('notional_usdc') is not None:
+        detail_parts.append(f"Valor {payload.get('notional_usdc')} USDC")
+    if payload.get('gross_pnl') is not None:
+        detail_parts.append(f"Bruto {round(_safe_float(payload.get('gross_pnl'), 0.0), 4)}")
+    if payload.get('fees') is not None:
+        detail_parts.append(f"Fees {round(_safe_float(payload.get('fees'), 0.0), 4)}")
     if pnl is not None:
-        detail_parts.append(f"PnL {round(pnl, 4)}")
+        detail_parts.append(f"Neto {round(pnl, 4)}")
     if payload.get('message'):
         detail_parts.append(str(payload.get('message')))
     detail = ' · '.join(detail_parts) if detail_parts else 'Se registró un cierre en el bot.'
