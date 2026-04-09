@@ -1181,6 +1181,19 @@ def get_user_operational_runtime(user_id: int) -> dict | None:
         return None
 
 
+def _safe_int(x, default: int = 0) -> int:
+    try:
+        if x is None:
+            return int(default)
+        if isinstance(x, bool):
+            return int(x)
+        if isinstance(x, int):
+            return x
+        return int(float(x))
+    except Exception:
+        return int(default)
+
+
 def _safe_float(x, default: float = 0.0) -> float:
     try:
         if x is None:
