@@ -11,6 +11,7 @@ import os
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_NAME = "TradingXHyperProBot"
+BOT_USERNAME = os.getenv("BOT_USERNAME", "TradingXHiperPro_bot").strip().lstrip("@") or "TradingXHiperPro_bot"
 
 if not TELEGRAM_BOT_TOKEN:
     raise RuntimeError("❌ TELEGRAM_BOT_TOKEN no está definido en variables de entorno")
