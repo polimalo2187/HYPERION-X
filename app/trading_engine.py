@@ -30,7 +30,7 @@ from collections import deque
 from app.market_scanner import get_ranked_symbols, mark_symbol_recent
 from app.strategy import get_entry_signal, get_trade_management_params
 from app.risk import validate_trade_conditions
-from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_recent_closed_pnl, get_last_closed_pnl
+from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_recent_closed_pnl, get_last_closed_pnl, get_account_snapshot
 
 from app.database import (
     register_trade,
@@ -42,6 +42,72 @@ from app.database import (
 import app.database as database_module
 
 from app.config import OWNER_FEE_PERCENT, REFERRAL_FEE_PERCENT, SCANNER_SHORTLIST_DEPTH_FOR_L2
+
+
+def _publish_operational_snapshot(
+    user_id: int,
+    state: str,
+    message: str,
+    *,
+    mode: str | None = None,
+    live_trade: bool = False,
+    active_symbol: str | None = None,
+    exchange_snapshot: dict | None = None,
+    metadata: dict | None = None,
+) -> None:
+    payload = dict(metadata or {})
+    snapshot = dict(exchange_snapshot or {})
+    if snapshot:
+        payload.setdefault('exchange_status', snapshot.get('status'))
+        payload.setdefault('exchange_available_balance', snapshot.get('available_balance'))
+        payload.setdefault('exchange_account_value', snapshot.get('account_value'))
+        payload.setdefault('positions_count', snapshot.get('positions_count'))
+        payload.setdefault('capital_threshold', snapshot.get('capital_threshold'))
+        payload.setdefault('capital_sufficient', snapshot.get('capital_sufficient'))
+        payload.setdefault('exchange_message', snapshot.get('message'))
+        payload.setdefault('active_symbols', snapshot.get('active_symbols'))
+    payload.setdefault('last_cycle_at', datetime.utcnow())
+    try:
+        database_module.touch_user_operational_state(
+            int(user_id),
+            state,
+            message,
+            mode=mode,
+            source='trading_engine',
+            live_trade=bool(live_trade),
+            active_symbol=active_symbol,
+            metadata=payload,
+        )
+    except Exception:
+        pass
+
+
+def _publish_scanner_runtime(
+    component_state: str,
+    *,
+    user_id: int | None = None,
+    symbol: str | None = None,
+    decision: str | None = None,
+    exchange_snapshot: dict | None = None,
+    extra: dict | None = None,
+) -> None:
+    meta = dict(extra or {})
+    if user_id is not None:
+        meta['user_id'] = int(user_id)
+    if symbol:
+        meta['symbol'] = str(symbol).upper()
+    if decision:
+        meta['last_decision'] = str(decision)
+    if exchange_snapshot:
+        meta.setdefault('exchange_status', exchange_snapshot.get('status'))
+        meta.setdefault('available_balance', exchange_snapshot.get('available_balance'))
+        meta.setdefault('account_value', exchange_snapshot.get('account_value'))
+        meta.setdefault('positions_count', exchange_snapshot.get('positions_count'))
+        meta.setdefault('exchange_message', exchange_snapshot.get('message'))
+    try:
+        database_module.touch_runtime_component('scanner', component_state, metadata=meta)
+    except Exception:
+        pass
 
 # ============================================================
 # CONFIG
@@ -2323,55 +2389,166 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             return None
 
         manager_only = bool(policy.get('manager_only', False))
+        exchange_snapshot = get_account_snapshot(user_id)
+        _publish_scanner_runtime(
+            'online',
+            user_id=user_id,
+            decision='cycle_started',
+            exchange_snapshot=exchange_snapshot,
+            extra={'phase': 'engine_cycle_started'},
+        )
 
         # Reconciliación defensiva: si el exchange ya no tiene posición pero el bot
         # conserva estado activo en memoria, registramos el cierre y activamos cooldown.
         try:
             if _reconcile_orphan_closed_trade(user_id):
                 log(f"Usuario {user_id} — cierre reconciliado desde exchange", "CRITICAL")
+                _publish_operational_snapshot(
+                    user_id,
+                    'cycle_completed',
+                    'Se reconciliò un cierre detectado directamente desde el exchange.',
+                    mode='entries_enabled',
+                    live_trade=False,
+                    exchange_snapshot=exchange_snapshot,
+                    metadata={'last_result': 'reconcile_closed', 'last_decision': 'reconciled_from_exchange', 'last_cycle_at': datetime.utcnow()},
+                )
                 return {"event": "RECONCILE_CLOSED"}
         except Exception as e:
             log(f"Reconcile error user={user_id} err={e}\n{traceback.format_exc()}", "ERROR")
 
         watchdog_resp = _ensure_manager_watchdog(user_id)
         if watchdog_resp:
+            _publish_operational_snapshot(
+                user_id,
+                'manager_only',
+                'La cuenta mantiene una posición abierta bajo gestión activa del motor.',
+                mode='manager_only',
+                live_trade=True,
+                active_symbol=((watchdog_resp.get('manager') or {}).get('symbol')) if isinstance(watchdog_resp, dict) else None,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'manager_watchdog', 'last_decision': 'manager_watchdog', 'last_cycle_at': datetime.utcnow()},
+            )
             return watchdog_resp
 
         # ✅ Capital operativo REAL (exchange). Interés compuesto natural.
         # Se usa balance withdrawable para sizing seguro
         capital = float(get_balance(user_id) or 0.0)
         log(f"Capital (Exchange/withdrawable): {capital}")
+        _publish_operational_snapshot(
+            user_id,
+            'cycle_running',
+            'El motor leyó la cuenta del exchange y está evaluando elegibilidad operativa.',
+            mode='cycle_running',
+            live_trade=bool(exchange_snapshot.get('has_open_position')),
+            active_symbol=((exchange_snapshot.get('active_symbols') or [None])[0]),
+            exchange_snapshot=exchange_snapshot,
+            metadata={
+                'last_result': 'balance_read',
+                'last_decision': 'reading_exchange',
+                'last_cycle_at': datetime.utcnow(),
+                'exchange_available_balance': float(capital),
+                'exchange_account_value': exchange_snapshot.get('account_value'),
+                'positions_count': exchange_snapshot.get('positions_count'),
+            },
+        )
+        _publish_scanner_runtime(
+            'online',
+            user_id=user_id,
+            decision='balance_read',
+            exchange_snapshot=exchange_snapshot,
+            extra={'phase': 'balance_read', 'available_balance': float(capital), 'positions_count': exchange_snapshot.get('positions_count')},
+        )
 
         # ✅ Si ya existe posición abierta en el exchange, SIEMPRE priorizamos modo MANAGER.
         # Importante: con posiciones abiertas el balance withdrawable puede verse bajo,
         # así que NO debemos bloquear por MIN_CAPITAL_USDC (si no, se pierde la reanudación).
         if has_open_position(user_id):
             log("Ya hay una posición abierta en el exchange — entrando en modo MANAGER (SL/TRAIL)", "WARN")
+            _publish_operational_snapshot(
+                user_id,
+                'manager_only',
+                'Hay una posición activa en el exchange. El motor pasa a modo de gestión.',
+                mode='manager_only',
+                live_trade=True,
+                active_symbol=((exchange_snapshot.get('active_symbols') or [None])[0]),
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'open_position_detected', 'last_decision': 'manager_mode', 'last_cycle_at': datetime.utcnow(), 'last_block_reason': 'open_position_detected'},
+            )
             return _manage_existing_open_position(user_id)
 
         if manager_only:
             log(f"Usuario {user_id} en modo MANAGER_ONLY — no se evaluarán nuevas entradas", "INFO")
+            _publish_operational_snapshot(
+                user_id,
+                'manager_only',
+                'Nuevas entradas deshabilitadas. Solo gestión de posición activa.',
+                mode='manager_only',
+                live_trade=bool(exchange_snapshot.get('has_open_position')),
+                active_symbol=((exchange_snapshot.get('active_symbols') or [None])[0]),
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'manager_only_idle', 'last_decision': 'manager_only', 'last_cycle_at': datetime.utcnow()},
+            )
             return {'event': 'MANAGER_ONLY_IDLE'}
 
         # ✅ Guard: capital mínimo (evita órdenes ridículas) — solo aplica cuando NO hay posición abierta
         if capital < float(MIN_CAPITAL_USDC):
             log(f"Capital insuficiente ({capital} USDC) < {MIN_CAPITAL_USDC} — no se ejecuta trading", "WARN")
+            _publish_operational_snapshot(
+                user_id,
+                'configuration_blocked',
+                f'Capital insuficiente para operar: {capital:.4f} USDC observados.',
+                mode='blocked',
+                live_trade=False,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'capital_insufficient', 'last_decision': 'blocked', 'last_block_reason': 'capital_insufficient', 'last_cycle_at': datetime.utcnow()},
+            )
+            _publish_scanner_runtime('online', user_id=user_id, decision='capital_insufficient', exchange_snapshot=exchange_snapshot, extra={'phase': 'blocked_capital'})
             return None
 
 
         ok_trade, reason_trade = _can_trade_now(user_id)
         if not ok_trade:
             log(f"Bloqueo responsable: {reason_trade}", "INFO")
+            _publish_operational_snapshot(
+                user_id,
+                'configuration_blocked',
+                f'El motor bloqueó nuevas entradas: {reason_trade}',
+                mode='blocked',
+                live_trade=False,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'trade_gate_blocked', 'last_decision': 'blocked', 'last_block_reason': str(reason_trade), 'last_cycle_at': datetime.utcnow()},
+            )
+            _publish_scanner_runtime('online', user_id=user_id, decision='trade_gate_blocked', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_gate_blocked', 'reason': str(reason_trade)})
             return None
 
         ok_risk, reason_risk = _risk_governor_allows_new_entries(user_id)
         if not ok_risk:
             log(f"Bloqueo responsable: {reason_risk}", "INFO")
+            _publish_operational_snapshot(
+                user_id,
+                'configuration_blocked',
+                f'El gobernador de riesgo bloqueó nuevas entradas: {reason_risk}',
+                mode='blocked',
+                live_trade=False,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'risk_blocked', 'last_decision': 'risk_blocked', 'last_block_reason': str(reason_risk), 'last_cycle_at': datetime.utcnow()},
+            )
+            _publish_scanner_runtime('online', user_id=user_id, decision='risk_blocked', exchange_snapshot=exchange_snapshot, extra={'phase': 'risk_blocked', 'reason': str(reason_risk)})
             return None
 
         exclude = _get_excluded_symbols(user_id)
         selected = _select_best_signal_from_scanner_shortlist(user_id, exclude)
         if not selected:
+            _publish_operational_snapshot(
+                user_id,
+                'entries_enabled',
+                'Ciclo completado sin oportunidad accionable del scanner.',
+                mode='entries_enabled',
+                live_trade=False,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'no_signal', 'last_decision': 'scanner_no_signal', 'last_cycle_at': datetime.utcnow()},
+            )
+            _publish_scanner_runtime('online', user_id=user_id, decision='no_signal', exchange_snapshot=exchange_snapshot, extra={'phase': 'scanner_no_signal'})
             return None
 
         symbol = str(selected["symbol"]).upper()
@@ -2397,10 +2574,38 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             f"scanner_score={scanner_meta.get('score')} model={signal.get('strategy_model', 'strategy')}",
             "INFO",
         )
+        _publish_operational_snapshot(
+            user_id,
+            'cycle_running',
+            f'Scanner confirmó {symbol} {direction.upper()} como mejor oportunidad del ciclo.',
+            mode='entries_enabled',
+            live_trade=False,
+            active_symbol=symbol,
+            exchange_snapshot=exchange_snapshot,
+            metadata={
+                'last_result': 'signal_selected',
+                'last_decision': 'signal_selected',
+                'last_symbol': symbol,
+                'last_cycle_at': datetime.utcnow(),
+                'scanner_score': scanner_meta.get('score'),
+                'strategy_model': signal.get('strategy_model'),
+            },
+        )
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')})
 
         risk = validate_trade_conditions(capital, strength)
         if not risk.get("ok"):
             log(f"Trade cancelado: {risk.get('reason')}", "WARN")
+            _publish_operational_snapshot(
+                user_id,
+                'configuration_blocked',
+                f'La validación de riesgo canceló la entrada: {risk.get("reason")}',
+                mode='blocked',
+                live_trade=False,
+                active_symbol=symbol,
+                exchange_snapshot=exchange_snapshot,
+                metadata={'last_result': 'risk_validation_blocked', 'last_decision': 'risk_validation_blocked', 'last_symbol': symbol, 'last_block_reason': risk.get('reason'), 'last_cycle_at': datetime.utcnow()},
+            )
             return None
         mgmt = _coalesce_management_params(signal=signal, entry_strength=float(strength), best_score=float(signal.get("score", 0.0) or 0.0))
         try:
@@ -2571,6 +2776,18 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             log(f"MANAGER iniciado en background para {symbol} (user={user_id})", "WARN")
         else:
             log(f"MANAGER ya estaba corriendo para user={user_id} (skip start)", "INFO")
+
+        _publish_operational_snapshot(
+            user_id,
+            'entries_enabled',
+            f'Operación abierta en {symbol}. El motor quedó gestionando la posición.',
+            mode='entries_enabled',
+            live_trade=True,
+            active_symbol=symbol,
+            exchange_snapshot=exchange_snapshot,
+            metadata={'last_result': 'trade_opened', 'last_decision': 'trade_opened', 'last_symbol': symbol, 'last_cycle_at': datetime.utcnow(), 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')},
+        )
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')})
 
         return {
             "event": "OPEN",
