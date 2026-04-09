@@ -1622,41 +1622,63 @@ def _finalize_trade_close(
     except Exception as e:
         log(f"risk_record_close error {symbol} src={source} err={e}", "ERROR")
 
+    close_snapshot = {
+        "symbol": symbol,
+        "side": str(side or "").upper(),
+        "direction": str(direction or ""),
+        "entry_price": float(entry_price),
+        "exit_price": float(exit_price),
+        "qty": float(qty_coin),
+        "notional_usdc": float(qty_usdc_for_profit),
+        "profit": float(profit),
+        "gross_pnl": float(gross_pnl),
+        "fees": float(fees),
+        "pnl_source": str(pnl_source),
+        "realized_fills": int(realized_fills),
+        "close_source": str(source),
+        "exit_reason": str(exit_reason),
+        "message": _format_trade_close_user_message(
+            symbol=symbol,
+            direction=direction,
+            entry_price=float(entry_price),
+            exit_price=float(exit_price),
+            qty_coin=float(qty_coin),
+            notional_usdc=float(qty_usdc_for_profit),
+            net_profit=float(profit),
+            gross_pnl=float(gross_pnl),
+            fees=float(fees),
+            exit_reason=str(exit_reason),
+            pnl_source=str(pnl_source),
+        ),
+    }
     try:
-        save_last_close(
+        save_last_close(user_id, close_snapshot)
+    except Exception as e:
+        log(f"save_last_close error {symbol} src={source} err={e}", "ERROR")
+
+    try:
+        database_module.touch_user_operational_state(
             user_id,
-            {
-                "symbol": symbol,
-                "side": str(side or "").upper(),
-                "direction": str(direction or ""),
-                "entry_price": float(entry_price),
-                "exit_price": float(exit_price),
-                "qty": float(qty_coin),
-                "notional_usdc": float(qty_usdc_for_profit),
-                "profit": float(profit),
-                "gross_pnl": float(gross_pnl),
-                "fees": float(fees),
-                "pnl_source": str(pnl_source),
-                "realized_fills": int(realized_fills),
-                "close_source": str(source),
-                "exit_reason": str(exit_reason),
-                "message": _format_trade_close_user_message(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=float(entry_price),
-                    exit_price=float(exit_price),
-                    qty_coin=float(qty_coin),
-                    notional_usdc=float(qty_usdc_for_profit),
-                    net_profit=float(profit),
-                    gross_pnl=float(gross_pnl),
-                    fees=float(fees),
-                    exit_reason=str(exit_reason),
-                    pnl_source=str(pnl_source),
-                ),
+            'cycle_completed',
+            f'Último cierre {symbol} registrado. PnL neto {float(profit):.6f} USDC.',
+            mode='entries_enabled',
+            live_trade=False,
+            active_symbol=None,
+            source='engine_close',
+            metadata={
+                'last_result': 'trade_closed',
+                'last_decision': 'trade_closed',
+                'last_symbol': symbol,
+                'last_cycle_at': datetime.utcnow(),
+                'close_reason': str(exit_reason),
+                'close_profit': float(profit),
+                'close_gross_pnl': float(gross_pnl),
+                'close_fees': float(fees),
+                'close_pnl_source': str(pnl_source),
             },
         )
     except Exception as e:
-        log(f"save_last_close error {symbol} src={source} err={e}", "ERROR")
+        log(f"touch_user_operational_state close error {symbol} src={source} err={e}", "WARN")
 
     _register_post_close_cooldown(user_id)
 
