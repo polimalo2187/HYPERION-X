@@ -552,7 +552,10 @@ def _build_last_operation_summary(payload: Any, fallback_title: str, empty_detai
     if reason:
         detail_parts.append(f"Motivo {reason}")
     if payload.get('message'):
-        detail_parts.append(str(payload.get('message')))
+        raw_message = str(payload.get('message'))
+        normalized_message = raw_message.replace('\\n', '\n').strip()
+        if normalized_message:
+            detail_parts.append(normalized_message)
     return {
         'title': f"{title} · {side}" if side else str(title),
         'detail': ' · '.join(detail_parts) if detail_parts else empty_detail,
