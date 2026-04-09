@@ -129,6 +129,20 @@ def admin_reset_stats(
     )
 
 
+@router.post('/users/{user_id}/security/reset-credentials')
+def admin_reset_user_credentials(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_reset_user_credentials')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
+
+
 @router.post('/users/{user_id}/security/migrate-key')
 def admin_migrate_user_key(
     user_id: int,
