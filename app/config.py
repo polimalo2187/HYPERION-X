@@ -151,6 +151,11 @@ PRIVATE_KEY_ENCRYPTION_SECRET = os.getenv(
     "PRIVATE_KEY_ENCRYPTION_SECRET",
     WEBAPP_SESSION_SECRET,
 )
+PRIVATE_KEY_ENCRYPTION_SECRET_FALLBACKS = [
+    item.strip()
+    for item in os.getenv("PRIVATE_KEY_ENCRYPTION_SECRET_FALLBACKS", "").split(",")
+    if item.strip() and item.strip() != PRIVATE_KEY_ENCRYPTION_SECRET
+]
 
 MINIAPP_ALLOWED_ORIGINS = [
     origin.strip()
