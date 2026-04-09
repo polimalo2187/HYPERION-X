@@ -1137,12 +1137,34 @@ function renderAdminLivePositions(rows) {
 function renderAdminComponentTelemetry(systemRuntime) {
   if (!elements.adminComponentTelemetry) return;
   const components = (systemRuntime && systemRuntime.components) || {};
+  const backendIdentity = (systemRuntime && systemRuntime.backend_identity) || {};
+  const bridge = (systemRuntime && systemRuntime.bridge_diagnostics) || {};
   const list = [
     ['telegram_bot', 'Canal Telegram'],
     ['trading_loop', 'Motor trading'],
     ['scanner', 'Scanner'],
   ];
   elements.adminComponentTelemetry.innerHTML = '';
+
+  const backendBits = [];
+  if (backendIdentity.process_role) backendBits.push(`Rol ${backendIdentity.process_role}`);
+  if (backendIdentity.runtime_instance) backendBits.push(`Instancia ${backendIdentity.runtime_instance}`);
+  if (backendIdentity.db_name) backendBits.push(`DB ${backendIdentity.db_name}`);
+  if (backendIdentity.mongo_target) backendBits.push(`Mongo ${backendIdentity.mongo_target}`);
+  elements.adminComponentTelemetry.append(
+    buildKpiCard('Backend MiniApp', String((systemRuntime && systemRuntime.overall_status) || 'unknown').toUpperCase(), backendBits.join(' · ') || 'Sin identidad backend.')
+  );
+
+  const bridgeBits = [];
+  if (Array.isArray(bridge.missing_components) && bridge.missing_components.length) bridgeBits.push(`Faltan ${bridge.missing_components.join(', ')}`);
+  if (bridge.runtime_status_count !== null && bridge.runtime_status_count !== undefined) bridgeBits.push(`runtime_status ${bridge.runtime_status_count}`);
+  if (bridge.runtime_components_shadow_count !== null && bridge.runtime_components_shadow_count !== undefined) bridgeBits.push(`shadow ${bridge.runtime_components_shadow_count}`);
+  if (Array.isArray(bridge.hints) && bridge.hints.length) bridgeBits.push(bridge.hints[0]);
+  if (!bridgeBits.length && bridge.message) bridgeBits.push(bridge.message);
+  elements.adminComponentTelemetry.append(
+    buildKpiCard('Puente runtime', String((bridge.status || 'unknown')).toUpperCase(), bridgeBits.join(' · ') || 'Sin diagnóstico del puente runtime.')
+  );
+
   list.forEach(([key, label]) => {
     const item = components[key] || {};
     const status = item.status || 'offline';
@@ -1156,6 +1178,9 @@ function renderAdminComponentTelemetry(systemRuntime) {
     if (meta.users_loaded !== null && meta.users_loaded !== undefined) sub.push(`Usuarios ${meta.users_loaded}`);
     if (meta.phase) sub.push(`Fase ${meta.phase}`);
     if (meta.runtime_source) sub.push(`Fuente ${meta.runtime_source}`);
+    if (meta.writer_process_role) sub.push(`Writer ${meta.writer_process_role}`);
+    if (meta.writer_runtime_instance) sub.push(`Instancia ${meta.writer_runtime_instance}`);
+    if (meta.writer_db_name) sub.push(`DB writer ${meta.writer_db_name}`);
     if (!sub.length && item.message) sub.push(item.message);
     elements.adminComponentTelemetry.append(
       buildKpiCard(label, String(status).toUpperCase(), `${sub.join(' · ') || 'Sin lectura útil.'} · Frescura ${freshness}`)
