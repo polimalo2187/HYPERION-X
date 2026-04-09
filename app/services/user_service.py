@@ -123,6 +123,7 @@ def _friendly_blockers(blockers: list[str] | None) -> list[str]:
     labels = {
         'wallet_missing': 'Falta configurar la wallet.',
         'private_key_missing': 'Falta configurar la private key.',
+        'private_key_invalid': 'La private key guardada requiere reparación.',
         'terms_missing': 'Debes aceptar los términos operativos.',
     }
     return [labels.get(str(item), str(item)) for item in (blockers or [])]
@@ -275,6 +276,12 @@ def get_user_profile(user_id: int) -> dict:
         'wallet_configured': bool(profile.get('wallet_configured')),
         'private_key_configured': bool(profile.get('private_key_configured')),
         'trading_status': profile.get('trading_status', 'inactive'),
+        'trading_requested_status': profile.get('trading_requested_status', profile.get('trading_status', 'inactive')),
+        'trading_effective_status': profile.get('trading_effective_status', profile.get('trading_status', 'inactive')),
+        'trading_effective_label': profile.get('trading_effective_label'),
+        'trading_effective_tone': profile.get('trading_effective_tone'),
+        'trading_effective_detail': profile.get('trading_effective_detail'),
+        'credential_repair_required': bool(profile.get('credential_repair_required')),
         'plan': profile.get('plan', 'none'),
         'plan_active': bool(profile.get('plan_active')),
         'plan_days_remaining': _safe_int(profile.get('plan_days_remaining'), 0),
@@ -356,6 +363,7 @@ def get_control_summary(user_id: int) -> dict:
         'activation_ready': bool(
             profile['wallet_configured']
             and profile['private_key_configured']
+            and str(profile.get('private_key_health') or '').lower() != 'invalid'
             and terms_accepted
         ),
         'activation_blockers': [
@@ -363,6 +371,7 @@ def get_control_summary(user_id: int) -> dict:
             for blocker, is_missing in (
                 ('wallet_missing', not profile['wallet_configured']),
                 ('private_key_missing', not profile['private_key_configured']),
+                ('private_key_invalid', str(profile.get('private_key_health') or '').lower() == 'invalid'),
                 ('terms_missing', not terms_accepted),
             )
             if is_missing
@@ -372,6 +381,7 @@ def get_control_summary(user_id: int) -> dict:
             for blocker, is_missing in (
                 ('wallet_missing', not profile['wallet_configured']),
                 ('private_key_missing', not profile['private_key_configured']),
+                ('private_key_invalid', str(profile.get('private_key_health') or '').lower() == 'invalid'),
                 ('terms_missing', not terms_accepted),
             )
             if is_missing
