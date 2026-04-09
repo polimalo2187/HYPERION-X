@@ -2507,6 +2507,55 @@ def has_accepted_terms(user_id: int) -> bool:
 # HELPERS PÚBLICOS PARA API / MINIAPP
 # ============================================================
 
+
+def _derive_effective_trading_view(*, desired_status: str | None, runtime_state: str | None, runtime_message: str | None, private_key_health: str | None, wallet_configured: bool, private_key_configured: bool, terms_accepted: bool, plan_active: bool, live_trade: bool = False) -> dict:
+    desired = str(desired_status or 'inactive').strip().lower() or 'inactive'
+    state = str(runtime_state or '').strip().lower() or 'unknown'
+    detail = str(runtime_message or '').strip()
+    key_health = str(private_key_health or '').strip().lower() or 'not_configured'
+
+    def payload(status: str, label: str, tone: str, message: str) -> dict:
+        return {
+            'trading_requested_status': desired,
+            'trading_effective_status': status,
+            'trading_effective_label': label,
+            'trading_effective_tone': tone,
+            'trading_effective_detail': message,
+            'credential_repair_required': bool(key_health == 'invalid'),
+        }
+
+    if key_health == 'invalid':
+        base = 'La private key almacenada no pudo validarse. Reconfigúrala en la MiniApp antes de operar.'
+        if live_trade:
+            base = 'La private key almacenada no pudo validarse. Existe una posición activa que no podrá gestionarse correctamente hasta reparar la credencial.'
+        return payload('blocked', 'Bloqueado por credencial', 'blocked', detail or base)
+
+    if state == 'configuration_blocked':
+        return payload('blocked', 'Bloqueado por configuración', 'blocked', detail or 'Falta completar o reparar la configuración operativa.')
+    if state == 'access_blocked':
+        return payload('blocked', 'Bloqueado por acceso', 'blocked', detail or 'No existe acceso vigente para abrir nuevas operaciones.')
+    if state == 'manager_only':
+        return payload('manager_only', 'Gestión activa', 'warning', detail or 'El motor mantiene una posición activa, pero no abrirá nuevas entradas.')
+    if state in {'entries_enabled', 'cycle_running', 'cycle_completed'}:
+        return payload('active', 'Operativo', 'active', detail or 'La operativa está habilitada.')
+    if state == 'paused' or desired != 'active':
+        return payload('inactive', 'Pausado', 'inactive', detail or 'El usuario no solicitó nuevas entradas.')
+
+    blockers = []
+    if not wallet_configured:
+        blockers.append('wallet')
+    if not private_key_configured:
+        blockers.append('private key')
+    if not terms_accepted:
+        blockers.append('políticas')
+    if not plan_active:
+        blockers.append('acceso')
+
+    if blockers:
+        return payload('blocked', 'Bloqueado', 'blocked', detail or f"Faltan requisitos para operar: {', '.join(blockers)}.")
+    return payload('pending', 'Pendiente de sincronizar', 'info', detail or 'La solicitud está registrada, pero el motor todavía no refleja un estado final.')
+
+
 def get_user_public_snapshot(user_id: int) -> dict | None:
     """
     Snapshot seguro del usuario para API/MiniApp.
@@ -2553,6 +2602,19 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         return None
 
     exp = _parse_dt(u.get("plan_expires_at"))
+    private_key_health = ("invalid" if str(u.get("private_key_runtime_status") or "").strip().lower() in {"decrypt_error", "invalid", "unsupported_version"} else ("configured" if bool(u.get("private_key")) else "not_configured"))
+    plan_active = _plan_is_active(u)
+    effective_view = _derive_effective_trading_view(
+        desired_status=u.get("trading_status") or "inactive",
+        runtime_state=u.get("runtime_state") or 'unknown',
+        runtime_message=u.get("runtime_message"),
+        private_key_health=private_key_health,
+        wallet_configured=bool(u.get("wallet")),
+        private_key_configured=bool(u.get("private_key")),
+        terms_accepted=bool(u.get("terms_accepted", False)),
+        plan_active=plan_active,
+        live_trade=bool(u.get("runtime_live_trade", False)),
+    )
     return {
         "user_id": int(u.get("user_id")),
         "username": u.get("username"),
@@ -2560,7 +2622,7 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "wallet_configured": bool(u.get("wallet")),
         "private_key_configured": bool(u.get("private_key")),
         "private_key_storage": ("encrypted" if bool(u.get("private_key")) and bool(u.get("private_key_encrypted", False)) else ("legacy_plaintext" if bool(u.get("private_key")) else "not_configured")),
-        "private_key_health": ("invalid" if str(u.get("private_key_runtime_status") or "").strip().lower() in {"decrypt_error", "invalid", "unsupported_version"} else ("configured" if bool(u.get("private_key")) else "not_configured")),
+        "private_key_health": private_key_health,
         "private_key_runtime_status": u.get("private_key_runtime_status"),
         "private_key_runtime_error": u.get("private_key_runtime_error"),
         "private_key_runtime_checked_at": _parse_dt(u.get("private_key_runtime_checked_at")),
@@ -2568,8 +2630,8 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "trading_status": u.get("trading_status") or "inactive",
         "plan": u.get("plan") or "none",
         "plan_expires_at": exp,
-        "plan_active": _plan_is_active(u),
-        "plan_days_remaining": _days_remaining_from_exp(exp) if _plan_is_active(u) else 0,
+        "plan_active": plan_active,
+        "plan_days_remaining": _days_remaining_from_exp(exp) if plan_active else 0,
         "trial_used": bool(u.get("trial_used", False)),
         "terms_accepted": bool(u.get("terms_accepted", False)),
         "terms_timestamp": _parse_dt(u.get("terms_timestamp")),
@@ -2583,6 +2645,7 @@ def get_user_public_snapshot(user_id: int) -> dict | None:
         "runtime_checked_at": _parse_dt(u.get("runtime_checked_at")),
         "runtime_live_trade": bool(u.get("runtime_live_trade", False)),
         "runtime_active_symbol": u.get("runtime_active_symbol"),
+        **effective_view,
     }
 
 
