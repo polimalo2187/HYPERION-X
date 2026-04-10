@@ -643,34 +643,81 @@ def get_recent_closed_pnl(
     return out
 
 
-def get_last_closed_pnl(
+def _is_close_fill_hint(fill: Dict[str, Any]) -> bool:
+    try:
+        dir_raw = str(fill.get("dir") or fill.get("direction") or fill.get("sideLabel") or "").lower()
+    except Exception:
+        dir_raw = ""
+    if any(tok in dir_raw for tok in ("close", "reduce", "tp", "take_profit", "take-profit", "sl", "stop", "trail", "trailing")):
+        return True
+
+    try:
+        start_pos = float(fill.get("startPosition") or fill.get("start_pos") or 0.0)
+    except Exception:
+        start_pos = 0.0
+    try:
+        cp = float(fill.get("closedPnl") or 0.0)
+    except Exception:
+        cp = 0.0
+
+    return abs(cp) > 0.0 or abs(start_pos) > 0.0
+
+
+def get_last_closed_trade_snapshot(
     user_id: int,
     symbol: str,
+    *,
+    opened_after_ms: Optional[int] = None,
     lookback_ms: int = 2 * 60 * 60 * 1000,
     max_group_gap_ms: int = 4000,
-) -> Dict[str, float]:
+    expected_order_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Devuelve el PnL REAL más reciente de *cierre* para `symbol`, usando fills del exchange.
+    Lee del exchange el batch MÁS RECIENTE de cierre para `symbol` y devuelve
+    los datos exactos del cierre tal como vienen de los fills del exchange.
 
-    A diferencia de `get_recent_closed_pnl`, NO suma toda una ventana completa (que puede mezclar
-    múltiples trades). En su lugar, intenta aislar el "último batch" de fills que corresponde al
-    último cierre del símbolo (para este usuario).
+    Source of truth:
+      - closedPnl  -> PnL bruto reportado por exchange
+      - fee        -> fee reportado por exchange
+      - px/sz      -> precio y tamaño de los fills reales del cierre
 
-    Retorna: {"pnl": float, "fees": float, "net": float, "fills": int}
+    NO agrega una ventana amplia de fills para "inventar" el trade. Intenta aislar
+    el último batch de cierre real por order id (oid/orderId) y, si no existe,
+    por cercanía temporal.
 
-    Heurística robusta (esquema defensivo):
-      - Filtra por coin
-      - Ordena por timestamp descendente
-      - Encuentra el fill más reciente con `closedPnl` != 0 (o fee != 0)
-      - Agrupa los fills del mismo cierre por:
-          * mismo orderId/oid si existe, o
-          * timestamps cercanos (<= max_group_gap_ms) si no hay id
+    Retorna, si encuentra cierre:
+      {
+        "gross_pnl": float,
+        "fees": float,
+        "net_pnl": float,
+        "fills": int,
+        "exit_price": float,
+        "closed_qty": float,
+        "close_time_ms": int,
+        "close_order_id": str,
+        "source": "exchange_close_batch",
+      }
     """
     coin = norm_coin(symbol)
-    out = {"pnl": 0.0, "fees": 0.0, "net": 0.0, "fills": 0}
+    out: Dict[str, Any] = {
+        "gross_pnl": 0.0,
+        "fees": 0.0,
+        "net_pnl": 0.0,
+        "fills": 0,
+        "exit_price": 0.0,
+        "closed_qty": 0.0,
+        "close_time_ms": 0,
+        "close_order_id": "",
+        "source": "",
+    }
 
     now_ms = int(time.time() * 1000)
     since_ms = max(0, int(now_ms - int(lookback_ms)))
+    if opened_after_ms is not None:
+        try:
+            since_ms = max(since_ms, int(opened_after_ms))
+        except Exception:
+            pass
 
     raw = get_user_fills(user_id, start_time_ms=since_ms)
     if not isinstance(raw, list):
@@ -688,7 +735,6 @@ def get_last_closed_pnl(
         if coin and norm_coin(f_coin) != coin:
             continue
 
-        # timestamp (epoch ms) - soporta variantes
         ts = f.get("time")
         if ts is None:
             ts = f.get("timestamp")
@@ -699,7 +745,9 @@ def get_last_closed_pnl(
         except Exception:
             ts_i = 0
 
-        # ids posibles
+        if opened_after_ms is not None and ts_i and ts_i < int(opened_after_ms):
+            continue
+
         oid = f.get("oid") or f.get("orderId") or f.get("order_id") or f.get("order") or None
         try:
             oid_s = str(oid) if oid is not None else ""
@@ -708,6 +756,8 @@ def get_last_closed_pnl(
 
         cp = f.get("closedPnl")
         fee = f.get("fee")
+        px = f.get("px") or f.get("price") or f.get("avgPx") or f.get("avg_price")
+        sz = f.get("sz") or f.get("size") or f.get("qty") or f.get("quantity")
 
         try:
             cp_f = float(cp) if cp is not None else 0.0
@@ -719,26 +769,58 @@ def get_last_closed_pnl(
         except Exception:
             fee_f = 0.0
 
-        # guardamos incluso si cp=0 pero fee!=0, porque puede formar parte del batch
-        if cp_f == 0.0 and fee_f == 0.0:
+        try:
+            px_f = float(px) if px is not None else 0.0
+        except Exception:
+            px_f = 0.0
+
+        try:
+            sz_f = abs(float(sz)) if sz is not None else 0.0
+        except Exception:
+            sz_f = 0.0
+
+        # Solo aceptamos fills que claramente pertenezcan a un cierre real del exchange.
+        is_close_hint = _is_close_fill_hint(f)
+
+        # Los fills de entrada pueden traer fee>0 pero NO deben contaminar el batch de cierre.
+        if not is_close_hint and cp_f == 0.0:
             continue
 
-        normed.append({"ts": ts_i, "oid": oid_s, "cp": cp_f, "fee": fee_f})
+        normed.append({
+            "ts": ts_i,
+            "oid": oid_s,
+            "cp": cp_f,
+            "fee": fee_f,
+            "px": px_f,
+            "sz": sz_f,
+            "is_close_hint": bool(is_close_hint),
+        })
 
     if not normed:
         return out
 
     normed.sort(key=lambda x: x["ts"], reverse=True)
 
-    # Seleccionamos el fill más reciente con un cierre real (closedPnl != 0) si existe.
+    expected_oid = str(expected_order_id or "").strip()
+    if expected_oid:
+        expected_only = [x for x in normed if (x.get("oid") or "").strip() == expected_oid and bool(x.get("is_close_hint"))]
+        if expected_only:
+            normed = expected_only
+        else:
+            return out
+
     anchor = None
     for x in normed:
         if abs(float(x.get("cp") or 0.0)) > 0.0:
             anchor = x
             break
     if anchor is None:
-        # fallback: si no encontramos closedPnl, usamos el más reciente con fee (mejor que nada)
-        anchor = normed[0]
+        for x in normed:
+            if bool(x.get("is_close_hint")):
+                anchor = x
+                break
+    if anchor is None:
+        return out
 
     anchor_ts = int(anchor.get("ts") or 0)
     anchor_oid = (anchor.get("oid") or "").strip()
@@ -746,24 +828,69 @@ def get_last_closed_pnl(
     batch = []
     if anchor_oid:
         for x in normed:
-            if (x.get("oid") or "").strip() == anchor_oid:
+            if (x.get("oid") or "").strip() == anchor_oid and bool(x.get("is_close_hint")):
                 batch.append(x)
     else:
-        # fallback por cercanía temporal
         for x in normed:
-            if abs(int(x.get("ts") or 0) - anchor_ts) <= int(max_group_gap_ms):
+            if abs(int(x.get("ts") or 0) - anchor_ts) <= int(max_group_gap_ms) and bool(x.get("is_close_hint")):
                 batch.append(x)
 
-    for x in batch:
-        out["pnl"] += float(x.get("cp") or 0.0)
-        out["fees"] += float(x.get("fee") or 0.0)
-        out["fills"] += 1
+    if not batch:
+        return out
 
-    out["net"] = out["pnl"] - out["fees"]
-    out["pnl"] = float(round(out["pnl"], 10))
-    out["fees"] = float(round(out["fees"], 10))
-    out["net"] = float(round(out["net"], 10))
+    gross = 0.0
+    fees = 0.0
+    qty = 0.0
+    px_qty = 0.0
+    close_time_ms = 0
+    for x in batch:
+        gross += float(x.get("cp") or 0.0)
+        fees += float(x.get("fee") or 0.0)
+        sz_f = abs(float(x.get("sz") or 0.0))
+        px_f = float(x.get("px") or 0.0)
+        if sz_f > 0.0:
+            qty += sz_f
+            px_qty += px_f * sz_f
+        close_time_ms = max(close_time_ms, int(x.get("ts") or 0))
+
+    exit_price = (px_qty / qty) if qty > 0.0 else 0.0
+    out.update({
+        "gross_pnl": float(round(gross, 10)),
+        "fees": float(round(fees, 10)),
+        "net_pnl": float(round(gross - fees, 10)),
+        "fills": int(len(batch)),
+        "exit_price": float(round(exit_price, 10)),
+        "closed_qty": float(round(qty, 10)),
+        "close_time_ms": int(close_time_ms),
+        "close_order_id": anchor_oid,
+        "source": "exchange_close_batch",
+    })
     return out
+
+
+def get_last_closed_pnl(
+    user_id: int,
+    symbol: str,
+    lookback_ms: int = 2 * 60 * 60 * 1000,
+    max_group_gap_ms: int = 4000,
+) -> Dict[str, float]:
+    """
+    Compat: wrapper fino sobre `get_last_closed_trade_snapshot` para quien solo
+    necesita gross/fees/net/fills.
+    """
+    snap = get_last_closed_trade_snapshot(
+        user_id,
+        symbol,
+        opened_after_ms=None,
+        lookback_ms=lookback_ms,
+        max_group_gap_ms=max_group_gap_ms,
+    )
+    return {
+        "pnl": float(snap.get("gross_pnl", 0.0) or 0.0),
+        "fees": float(snap.get("fees", 0.0) or 0.0),
+        "net": float(snap.get("net_pnl", 0.0) or 0.0),
+        "fills": int(snap.get("fills", 0) or 0),
+    }
 
 def get_position_entry_price(user_id: int, coin: str) -> float:
     """
