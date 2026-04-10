@@ -245,9 +245,9 @@ MAX_TRADES_PER_DAY = None  # ilimitado
 SYMBOL_NOFILL_COOLDOWN_SECONDS = 90
 
 # ✅ Sizing (NO toca strategy)
-MARGIN_USE_PCT = 1.0   # legacy (no usado para sizing fijo)
-LEVERAGE = 5.0         # X3
-FIXED_MARGIN_USDC = float(os.getenv("FIXED_MARGIN_USDC", os.getenv("FIXED_NOTIONAL_USDC", "3.0")))
+MARGIN_USE_PCT = 1.0   # legacy
+LEVERAGE = 5.0         # apalancamiento operativo
+FIXED_MARGIN_USDC = float(os.getenv("FIXED_MARGIN_USDC", os.getenv("FIXED_NOTIONAL_USDC", "3.0")))  # legado: ya no gobierna el sizing de entrada
 
 # ✅ BLINDAJE BANK GRADE (ANTI-ÓRDENES RIDÍCULAS)
 # Evita operaciones con tamaños de centavos / qty ~ 0 por capital bajo o redondeos.
@@ -2870,17 +2870,23 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             f"force_min_profit={float(mgmt['force_min_profit_price']):.6f}, force_min_strength={float(mgmt['force_min_strength']):.4f}",
             "INFO",
         )
-        margin_usdc = float(FIXED_MARGIN_USDC)
+        # ✅ Sizing real por balance disponible.
+        # El repo anterior decía 100% en config, pero aquí seguía operando con margen fijo.
+        # Eso rompía la expectativa del usuario y además podía volver inviables los cierres parciales.
+        if float(capital) < float(MIN_CAPITAL_USDC):
+            log(f"Capital demasiado bajo para operar ({capital} USDC) < {MIN_CAPITAL_USDC}", "WARN")
+            return None
+
+        margin_usdc = float(capital)
+        # Blindaje extra: nunca usar más del balance disponible y nunca aceptar margen inválido.
+        margin_usdc = max(0.0, min(float(margin_usdc), float(capital)))
         target_notional_usdc = float(margin_usdc) * float(LEVERAGE)
-        # ✅ Modo defensa: margen fijo por operación; el notional efectivo sí usa el leverage.
+
         if margin_usdc <= 0:
-            log(f"Margen fijo inválido ({margin_usdc} USDC) — skip", "WARN")
+            log(f"Margen calculado inválido ({margin_usdc} USDC) — skip", "WARN")
             return None
         if target_notional_usdc < float(MIN_NOTIONAL_USDC):
             log(f"Notional objetivo inválido ({target_notional_usdc} USDC) < {MIN_NOTIONAL_USDC} — skip", "WARN")
-            return None
-        if float(capital) < float(MIN_CAPITAL_USDC):
-            log(f"Capital demasiado bajo para operar ({capital} USDC) < {MIN_CAPITAL_USDC}", "WARN")
             return None
 
         entry_price_preview = float(get_price(symbol_for_exec) or 0.0)
@@ -2898,7 +2904,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             log(f"qty_coin demasiado pequeño ({qty_coin}) < {MIN_QTY_COIN} — skip", "WARN")
             return None
 
-        log(f"Ejecutando orden {symbol} {side} qty_coin={qty_coin} (fixed_margin~{margin_usdc} USDC -> target_notional~{target_notional_usdc} USDC, lev={LEVERAGE}x)")
+        log(f"Ejecutando orden {symbol} {side} qty_coin={qty_coin} (margin_100pct~{margin_usdc} USDC -> target_notional~{target_notional_usdc} USDC, lev={LEVERAGE}x)")
         entry_started_at_ms = int(time.time() * 1000)
         open_resp = place_market_order(user_id, symbol_for_exec, side, qty_coin)
 
