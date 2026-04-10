@@ -501,45 +501,52 @@ def _dynamic_trade_management_params(strength: float, score: float, atr_pct: Opt
     score = float(score or 0.0)
     strength = float(strength or 0.0)
 
-    # Paso 4: rehacer la asimetría de salida.
-    # Objetivo: dejar correr más el remanente ganador y recortar menos pronto,
-    # sin convertir el trade en "todo o nada".
+    # La versión anterior monetizaba demasiado pronto: el trailing se activaba muy cerca
+    # del entry y permitía winners pequeños frente a SL completos. Aquí forzamos una
+    # asimetría más profesional:
+    # - aseguramos break-even antes de pedir extensión grande,
+    # - tomamos una parte moderada cuando ya hay beneficio real,
+    # - dejamos el runner para movimientos más limpios,
+    # - y exigimos más deterioro para matar el trade por fuerza.
     if score >= 90.0:
         bucket = "strong"
-        act = 0.0100
-        retrace = 0.0054
-        force = 0.0071
-        partial_frac = 0.28
+        break_even_activation = 0.0068
+        partial_tp = 0.0108
+        partial_frac = 0.22
+        act = 0.0168
+        retrace = 0.0032
+        force = 0.0118
     elif score >= 83.0:
         bucket = "base"
-        act = 0.0090
-        retrace = 0.0048
-        force = 0.0064
-        partial_frac = 0.32
+        break_even_activation = 0.0061
+        partial_tp = 0.0098
+        partial_frac = 0.28
+        act = 0.0146
+        retrace = 0.0035
+        force = 0.0102
     else:
         bucket = "weak"
-        act = 0.0081
-        retrace = 0.0042
-        force = 0.0058
-        partial_frac = 0.35
+        break_even_activation = 0.0055
+        partial_tp = 0.0088
+        partial_frac = 0.34
+        act = 0.0128
+        retrace = 0.0038
+        force = 0.0090
 
-    # Ajuste por volatilidad: subir ligeramente el nivel donde se activa el runner
-    # y dar algo más de respiración al trailing en regímenes rápidos.
-    vol_add = _clamp((atr_pct - 0.0050) * 0.16, -0.0005, 0.0008)
-    act = _clamp(act + vol_add, 0.0078, 0.0112)
-    retrace = _clamp(retrace + (vol_add * 0.85), 0.0038, 0.0059)
-    force = _clamp(force + (vol_add * 0.45), 0.0052, 0.0082)
+    # En volatilidad alta damos un poco más de espacio, pero sin volver a la asimetría
+    # negativa donde el trade gana menos de lo que arriesga la mayor parte del tiempo.
+    vol_add = _clamp((atr_pct - 0.0055) * 0.15, -0.0006, 0.0010)
+    break_even_activation = _clamp(break_even_activation + (vol_add * 0.35), 0.0050, 0.0084)
+    partial_tp = _clamp(partial_tp + (vol_add * 0.75), break_even_activation + 0.0021, 0.0119)
+    act = _clamp(act + vol_add, partial_tp + 0.0020, 0.0188)
+    retrace = _clamp(retrace + (vol_add * 0.55), 0.0028, 0.0044)
+    force = _clamp(force + (vol_add * 0.65), partial_tp, act - 0.0012)
 
-    # El partial TP queda más cerca de la activación del trailing y cierra menos tamaño.
-    partial_tp = _clamp(max(act * 0.93, act - 0.00055), 0.0068, act - 0.0002)
+    # El offset del break-even debe cubrir fees/slippage sin ahogar la posición.
+    break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00125)
 
-    # El BE se arma más tarde: primero queremos confirmar extensión real del trade,
-    # no cortar runners casi inmediatamente después de arrancar.
-    break_even_activation = _clamp(max(act * 1.14, partial_tp + 0.0008), partial_tp + 0.0006, act + 0.0026)
-    break_even_offset = _clamp(max(atr_pct * 0.10, act * 0.12), 0.0007, 0.0018)
-
-    # Menos agresivo el cierre por pérdida de fuerza para no matar ganadores sanos.
-    force_strength = _clamp(max(0.16, strength * 0.64), 0.16, 0.88)
+    # Exigimos una degradación más seria antes de cerrar por fuerza.
+    force_strength = _clamp(max(0.11, strength * 0.54), 0.11, 0.82)
     return {
         "bucket": bucket,
         "tp_activation_price": round(act, 6),
