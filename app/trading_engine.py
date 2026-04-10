@@ -1231,13 +1231,15 @@ def _extract_strategy_management_params(src: Optional[dict[str, Any]]) -> Option
     if tp_activate <= 0.0 or trail_retrace <= 0.0 or force_min_profit <= 0.0 or force_min_strength <= 0.0:
         return None
 
-    # Política operativa actual: no se permiten cierres parciales de TP.
-    # Cuando el manager decida cerrar por profit/trailing, debe cerrar 100%
-    # de la posición. Neutralizamos aquí cualquier parámetro legacy.
-    partial_tp_activation = 999999.0
-    partial_tp_close_fraction = 0.0
+    # Rehabilitamos el partial TP strategy-driven.
+    # Antes se neutralizaba aquí y eso empujaba la distribución hacia:
+    # SL completos + winners demasiado pequeños o todo/nada.
+    if partial_tp_activation <= 0.0:
+        partial_tp_activation = max(0.0, tp_activate * 0.74)
+    # Clamp defensivo: nunca cerrar demasiado ni dejarlo absurdo.
+    partial_tp_close_fraction = _clamp(float(partial_tp_close_fraction or 0.0), 0.18, 0.45)
     if break_even_activation <= 0.0:
-        break_even_activation = max(0.0, tp_activate * 0.96)
+        break_even_activation = max(0.0, partial_tp_activation * 0.70)
     if break_even_offset <= 0.0:
         break_even_offset = 0.0008
 
@@ -1337,7 +1339,17 @@ def _should_close_on_strength_loss(
 
     if (not sig.get("signal")):
         reason = str(sig.get("reason") or "WEAKNESS")
-        if reason.startswith("NO_TREND_1H") or reason.startswith("NO_STRUCTURE_1H") or reason.startswith("TIMING_5M"):
+        transient_prefixes = (
+            "CANDLES_FETCH_FAIL",
+            "API_FAIL",
+            "STALE_CANDLES",
+            "NO_CANDLES",
+            "BAD_SYMBOL",
+            "STRATEGY_EXCEPTION",
+        )
+        # Si la estructura ya no existe y no es un fallo transitorio de datos,
+        # al llegar al umbral de beneficio preferimos cerrar y pagar la señal.
+        if not reason.startswith(transient_prefixes):
             return True, f"FORCE_LOSS_{reason}", live_strength, now_ts
         return False, "", live_strength, now_ts
 
@@ -2016,9 +2028,8 @@ def _manage_trade_until_close(
     trailing_active = bool(active_runtime.get("trailing_active", False))
     partial_tp_taken = bool(active_runtime.get("partial_tp_taken", False))
     break_even_armed = bool(active_runtime.get("break_even_armed", False))
-    # Full TP only: cualquier runtime viejo con parcial queda neutralizado aquí.
-    partial_tp_activation_price = 999999.0
-    partial_tp_close_fraction = 0.0
+    partial_tp_activation_price = float((active_runtime.get("partial_tp_activation_price", mgmt.get("partial_tp_activation_price", 0.0)) or 0.0))
+    partial_tp_close_fraction = _clamp(float((active_runtime.get("partial_tp_close_fraction", mgmt.get("partial_tp_close_fraction", 0.0)) or 0.0)), 0.18, 0.45)
     break_even_activation_price = float((active_runtime.get("break_even_activation_price", mgmt.get("break_even_activation_price", 0.0)) or 0.0))
     break_even_offset_price = float((active_runtime.get("break_even_offset_price", mgmt.get("break_even_offset_price", 0.0)) or 0.0))
     best_pnl_pct = float(active_runtime.get("best_pnl_pct", 0.0) or 0.0)
