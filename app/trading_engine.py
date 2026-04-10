@@ -30,7 +30,7 @@ from collections import deque
 from app.market_scanner import get_ranked_symbols, mark_symbol_recent
 from app.strategy import get_entry_signal, get_trade_management_params
 from app.risk import validate_trade_conditions
-from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_recent_closed_pnl, get_last_closed_pnl, get_account_snapshot
+from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot
 
 from app.database import (
     register_trade,
@@ -1378,9 +1378,70 @@ def _active_trade_opened_since_ms(active_trade: Optional[dict[str, Any]]) -> Opt
 
     started_iso = _iso_utc_to_epoch_ms(active_trade.get("started_at"))
     if started_iso and started_iso > 0:
-        # Compatibilidad con snapshots viejos: agregamos buffer pequeño para capturar fees de entrada.
-        return max(0, started_iso - 60_000)
+        return started_iso
     return None
+
+
+def _extract_exchange_order_id(obj: Any) -> str:
+    if isinstance(obj, dict):
+        for key in ("oid", "orderId", "order_id", "order", "cloid"):
+            val = obj.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+        for key in ("response", "data", "result", "statuses", "status", "filled", "resting", "order", "orders"):
+            if key in obj:
+                found = _extract_exchange_order_id(obj.get(key))
+                if found:
+                    return found
+        for v in obj.values():
+            found = _extract_exchange_order_id(v)
+            if found:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for it in obj:
+            found = _extract_exchange_order_id(it)
+            if found:
+                return found
+    return ""
+
+
+def _is_exchange_close_snapshot_consistent(
+    *,
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+    gross_pnl: float,
+    closed_qty: float,
+) -> bool:
+    try:
+        direction_s = str(direction or "").lower().strip()
+        entry = float(entry_price or 0.0)
+        exit_ = float(exit_price or 0.0)
+        gross = float(gross_pnl or 0.0)
+        qty = float(closed_qty or 0.0)
+    except Exception:
+        return False
+
+    if entry <= 0.0 or exit_ <= 0.0 or qty <= 0.0:
+        return False
+
+    eps = 1e-8
+    move = exit_ - entry
+    if abs(move) <= eps:
+        return True
+
+    if direction_s == "long":
+        expected_positive = move > 0.0
+    elif direction_s == "short":
+        expected_positive = move < 0.0
+    else:
+        return True
+
+    if expected_positive and gross < -eps:
+        return False
+    if (not expected_positive) and gross > eps:
+        return False
+    return True
 
 
 def _format_trade_open_user_message(*, symbol: str, direction: str, entry_price: float, qty_coin: float, notional_usdc: float, opened_at_ms: Optional[int] = None) -> str:
@@ -1425,68 +1486,76 @@ def _format_trade_close_user_message(*, symbol: str, direction: str, entry_price
     return '\\n'.join(lines)
 
 
-def _read_trade_realized_pnl(user_id: int, symbol: str, active_trade: Optional[dict[str, Any]]) -> Optional[dict[str, float]]:
+def _read_trade_realized_pnl(
+    user_id: int,
+    symbol: str,
+    active_trade: Optional[dict[str, Any]],
+    *,
+    direction: str = "",
+    entry_price: float = 0.0,
+    expected_order_id: str = "",
+) -> Optional[dict[str, float]]:
     since_ms = _active_trade_opened_since_ms(active_trade)
 
     def _try_read_once() -> Optional[dict[str, float]]:
-        if since_ms is not None:
-            try:
-                diag_pnl = get_recent_closed_pnl(user_id, symbol, since_ms=since_ms)
-                fills = int(diag_pnl.get("fills", 0) or 0)
-                if fills > 0:
-                    pnl = float(diag_pnl.get("pnl", 0.0) or 0.0)
-                    fees = float(diag_pnl.get("fees", 0.0) or 0.0)
-                    net = float(diag_pnl.get("net", 0.0) or 0.0)
-                    payload = {
-                        "pnl": round(pnl, 6),
-                        "fees": round(fees, 6),
-                        "net": round(net, 6),
-                        "fills": fills,
-                        "since_ms": int(since_ms),
-                        "source": "recent_window",
-                    }
-                    log(
-                        f"PnL_REAL_TOTAL {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills} since_ms={since_ms}",
-                        "INFO",
-                    )
-                    return payload
-            except Exception as e:
-                log(f"No se pudo leer PnL REAL total para {symbol}: {e}", "WARN")
-
         try:
-            diag_pnl = get_last_closed_pnl(user_id, symbol, lookback_ms=2 * 60 * 60 * 1000)
-            fills = int(diag_pnl.get("fills", 0) or 0)
+            snap = get_last_closed_trade_snapshot(
+                user_id,
+                symbol,
+                opened_after_ms=since_ms,
+                lookback_ms=2 * 60 * 60 * 1000,
+                expected_order_id=(str(expected_order_id or "").strip() or None),
+            )
+            fills = int(snap.get("fills", 0) or 0)
             if fills > 0:
-                pnl = float(diag_pnl.get("pnl", 0.0) or 0.0)
-                fees = float(diag_pnl.get("fees", 0.0) or 0.0)
-                net = float(diag_pnl.get("net", 0.0) or 0.0)
+                gross = float(snap.get("gross_pnl", 0.0) or 0.0)
+                fees = float(snap.get("fees", 0.0) or 0.0)
+                net = float(snap.get("net_pnl", 0.0) or 0.0)
+                exit_price_real = float(snap.get("exit_price", 0.0) or 0.0)
+                closed_qty_real = float(snap.get("closed_qty", 0.0) or 0.0)
+
+                if not _is_exchange_close_snapshot_consistent(
+                    direction=direction,
+                    entry_price=float(entry_price or 0.0),
+                    exit_price=exit_price_real,
+                    gross_pnl=gross,
+                    closed_qty=closed_qty_real,
+                ):
+                    log(
+                        f"Cierre exchange inconsistente para {symbol}: dir={direction} entry={float(entry_price or 0.0):.10f} exit={exit_price_real:.10f} gross={gross:.10f} oid={str(snap.get('close_order_id') or '-')}",
+                        "WARN",
+                    )
+                    return None
+
                 payload = {
-                    "pnl": round(pnl, 6),
+                    "pnl": round(gross, 6),
                     "fees": round(fees, 6),
                     "net": round(net, 6),
                     "fills": fills,
-                    "since_ms": 0,
-                    "source": "last_close_batch",
+                    "since_ms": int(since_ms or 0),
+                    "source": str(snap.get("source") or "exchange_close_batch"),
+                    "exit_price": float(round(exit_price_real, 10)),
+                    "closed_qty": float(round(closed_qty_real, 10)),
+                    "close_time_ms": int(snap.get("close_time_ms", 0) or 0),
+                    "close_order_id": str(snap.get("close_order_id") or ""),
                 }
                 log(
-                    f"PnL_REAL_BATCH {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills}",
+                    f"PnL_REAL_EXCHANGE {symbol}={payload['net']} gross={payload['pnl']} fees={payload['fees']} fills={fills} oid={payload['close_order_id'] or '-'}",
                     "INFO",
                 )
                 return payload
         except Exception as e:
-            log(f"No se pudo leer PnL REAL batch para {symbol}: {e}", "WARN")
-
+            log(f"No se pudo leer cierre REAL exchange para {symbol}: {e}", "WARN")
         return None
 
-    # Los fills del exchange pueden tardar unos segundos tras el cierre.
-    # Reintentamos antes de caer en PnL estimado para evitar desajustes con Hyperliquid.
-    attempts = 8
+    # Esperamos el settlement real del exchange antes de persistir el trade.
+    attempts = 20
     for idx in range(attempts):
         payload = _try_read_once()
         if payload is not None:
             return payload
         if idx < attempts - 1:
-            time.sleep(0.75)
+            time.sleep(1.0)
 
     return None
 
@@ -1566,6 +1635,7 @@ def _finalize_trade_close(
     exit_reason: str,
     exit_pnl_pct: float,
     source: str,
+    close_order_id_hint: str = "",
 ) -> float:
     guard_snapshot = _try_begin_trade_finalize(user_id, source)
     if guard_snapshot is None:
@@ -1573,23 +1643,46 @@ def _finalize_trade_close(
         return 0.0
 
     active_trade = _get_active_trade(user_id) or {}
-    pnl_diag = _read_trade_realized_pnl(user_id, symbol, active_trade)
+    pnl_diag = _read_trade_realized_pnl(
+        user_id,
+        symbol,
+        active_trade,
+        direction=str(direction or ""),
+        entry_price=float(entry_price or 0.0),
+        expected_order_id=str(close_order_id_hint or ""),
+    )
     if pnl_diag is None:
-        profit = round(float(exit_pnl_pct) * float(qty_usdc_for_profit), 6)
-        gross_pnl = float(profit)
-        fees = 0.0
-        realized_fills = 0
-        pnl_source = "fallback_pct"
         log(
-            f"Trade cerrado ({source}) {symbol} PnL_FALLBACK={profit} (pnl_pct={float(exit_pnl_pct)*100:.2f}% reason={exit_reason})",
-            "WARN",
+            f"Trade cerrado ({source}) {symbol} pendiente de reconciliación exacta con exchange; no se persiste cierre sin source real.",
+            "CRITICAL",
         )
+        try:
+            _update_active_trade_fields(
+                user_id,
+                close_in_progress=False,
+                close_finalized=False,
+                close_started_at=None,
+                close_source=str(source or ""),
+                reconciliation_pending=True,
+                reconciliation_pending_at=time.time(),
+                last_reconciliation_error="exchange_close_snapshot_unavailable",
+            )
+        except Exception as e:
+            log(f"reconciliation pending flag error {symbol} src={source} err={e}", "WARN")
+        return 0.0
     else:
         profit = float(pnl_diag.get("net", 0.0) or 0.0)
         gross_pnl = float(pnl_diag.get("pnl", 0.0) or 0.0)
         fees = float(pnl_diag.get("fees", 0.0) or 0.0)
         realized_fills = int(pnl_diag.get("fills", 0) or 0)
-        pnl_source = str(pnl_diag.get("source") or "recent_window")
+        pnl_source = str(pnl_diag.get("source") or "exchange_close_batch")
+        exchange_exit_price = float(pnl_diag.get("exit_price", 0.0) or 0.0)
+        exchange_closed_qty = float(pnl_diag.get("closed_qty", 0.0) or 0.0)
+        if exchange_exit_price > 0.0:
+            exit_price = exchange_exit_price
+        if exchange_closed_qty > 0.0:
+            qty_coin = exchange_closed_qty
+            qty_usdc_for_profit = abs(float(exchange_closed_qty) * float(exit_price))
         log(
             f"Trade cerrado ({source}) {symbol} PnL_REAL={profit} gross={gross_pnl} fees={fees} fills={realized_fills} src={pnl_source} reason={exit_reason}",
             "INFO",
@@ -1702,6 +1795,9 @@ def _finalize_trade_close(
             close_finished_at=time.time(),
             close_reason=str(exit_reason),
             close_profit=float(profit),
+            reconciliation_pending=False,
+            reconciliation_pending_at=None,
+            last_reconciliation_error=None,
         )
     except Exception as e:
         log(f"active_trade finalize mark error {symbol} src={source} err={e}", "WARN")
