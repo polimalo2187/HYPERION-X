@@ -1460,6 +1460,67 @@ def _is_exchange_close_snapshot_consistent(
     return True
 
 
+def _has_min_trade_close_context(trade: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(trade, dict):
+        return False
+    symbol = str(trade.get("symbol") or "").strip()
+    direction = str(trade.get("direction") or "").strip().lower()
+    try:
+        entry_price = float(trade.get("entry_price") or 0.0)
+    except Exception:
+        entry_price = 0.0
+    return bool(symbol and direction in {"long", "short"} and entry_price > 0.0)
+
+
+def _normalize_exit_reason_for_user(exit_reason: str, net_profit: float) -> str:
+    reason = str(exit_reason or "").strip()
+    if not reason:
+        return reason
+    if reason.startswith("FORCE_LOSS_") and float(net_profit) >= 0.0:
+        return "FORCE_CLOSE_" + reason[len("FORCE_LOSS_"):]
+    if reason == "FORCE_LOSS_DIRECTION_FLIP" and float(net_profit) >= 0.0:
+        return "FORCE_CLOSE_DIRECTION_FLIP"
+    return reason
+
+
+def _store_pending_exchange_close_snapshot(
+    *,
+    user_id: int,
+    symbol: str,
+    direction: str,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    qty_coin: float,
+    qty_usdc_for_profit: float,
+    exit_reason: str,
+    source: str,
+    detail: str,
+) -> None:
+    try:
+        close_snapshot = {
+            "symbol": str(symbol or "") or "OPERACION",
+            "side": str(side or "").upper(),
+            "direction": str(direction or ""),
+            "entry_price": float(entry_price or 0.0),
+            "exit_price": float(exit_price or 0.0),
+            "qty": float(qty_coin or 0.0),
+            "notional_usdc": float(qty_usdc_for_profit or 0.0),
+            "profit": None,
+            "gross_pnl": None,
+            "fees": None,
+            "pnl_source": "exchange_reconcile_pending",
+            "realized_fills": 0,
+            "close_source": str(source or ""),
+            "exit_reason": str(exit_reason or "EXCHANGE_SYNC_CLOSE_PENDING"),
+            "pending_exact_exchange_reconcile": True,
+            "message": detail,
+        }
+        save_last_close(user_id, close_snapshot)
+    except Exception as e:
+        log(f"save pending exchange close error user={user_id} symbol={symbol} err={e}", "WARN")
+
+
 def _format_trade_open_user_message(*, symbol: str, direction: str, entry_price: float, qty_coin: float, notional_usdc: float, opened_at_ms: Optional[int] = None) -> str:
     asset = str(symbol or '').replace('-PERP', '') or 'ACTIVO'
     lines = [
@@ -1537,10 +1598,24 @@ def _read_trade_realized_pnl(
                     gross_pnl=gross,
                     closed_qty=closed_qty_real,
                 ):
-                    log(
-                        f"Cierre exchange inconsistente para {symbol}: dir={direction} entry={float(entry_price or 0.0):.10f} exit={exit_price_real:.10f} gross={gross:.10f} oid={str(snap.get('close_order_id') or '-')}",
-                        "WARN",
-                    )
+                    bad_oid = str(snap.get("close_order_id") or "").strip()
+                    current_active = _get_active_trade(user_id) or {}
+                    last_bad_oid = str(current_active.get("last_bad_close_order_id") or "").strip()
+                    last_bad_logged_at = float(current_active.get("last_bad_close_logged_at") or 0.0)
+                    now_bad_ts = time.time()
+                    if (bad_oid != last_bad_oid) or ((now_bad_ts - last_bad_logged_at) >= 15.0):
+                        log(
+                            f"Cierre exchange inconsistente para {symbol}: dir={direction} entry={float(entry_price or 0.0):.10f} exit={exit_price_real:.10f} gross={gross:.10f} oid={str(snap.get('close_order_id') or '-')}",
+                            "WARN",
+                        )
+                        try:
+                            _update_active_trade_fields(
+                                user_id,
+                                last_bad_close_order_id=bad_oid,
+                                last_bad_close_logged_at=now_bad_ts,
+                            )
+                        except Exception:
+                            pass
                     return None
 
                 payload = {
@@ -1672,6 +1747,59 @@ def _finalize_trade_close(
             f"Trade cerrado ({source}) {symbol} pendiente de reconciliación exacta con exchange; no se persiste cierre sin source real.",
             "CRITICAL",
         )
+        exchange_still_open = True
+        try:
+            exchange_still_open = bool(has_open_position(user_id))
+        except Exception as e:
+            log(f"has_open_position reconcile fallback error user={user_id} symbol={symbol} err={e}", "WARN")
+
+        detail = (
+            f"El exchange ya no muestra posición abierta en {symbol or 'OPERACION'}, "
+            f"pero el cierre exacto no pudo reconciliarse todavía. "
+            f"Se limpia el estado activo para evitar una posición fantasma. Fuente: {source or '-'}"
+        )
+
+        if not exchange_still_open:
+            _store_pending_exchange_close_snapshot(
+                user_id=user_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                entry_price=float(entry_price or 0.0),
+                exit_price=float(exit_price or 0.0),
+                qty_coin=float(qty_coin or 0.0),
+                qty_usdc_for_profit=float(qty_usdc_for_profit or 0.0),
+                exit_reason=str(exit_reason or "EXCHANGE_SYNC_CLOSE_PENDING"),
+                source=str(source or ""),
+                detail=detail,
+            )
+            try:
+                database_module.touch_user_operational_state(
+                    user_id,
+                    'cycle_completed',
+                    detail,
+                    mode='entries_enabled',
+                    live_trade=False,
+                    active_symbol=None,
+                    source='engine_close_pending',
+                    metadata={
+                        'last_result': 'trade_close_pending_exact_reconcile',
+                        'last_decision': 'trade_close_pending_exact_reconcile',
+                        'last_symbol': symbol,
+                        'last_cycle_at': datetime.utcnow(),
+                        'close_reason': str(exit_reason),
+                        'close_source': str(source),
+                    },
+                )
+            except Exception as e:
+                log(f"touch_user_operational_state pending close error {symbol} src={source} err={e}", "WARN")
+            _register_post_close_cooldown(user_id)
+            try:
+                _clear_active_trade(user_id)
+            except Exception as e:
+                log(f"clear active trade pending close error {symbol} src={source} err={e}", "WARN")
+            return 0.0
+
         try:
             _update_active_trade_fields(
                 user_id,
@@ -1886,6 +2014,28 @@ def _reconcile_orphan_closed_trade(user_id: int) -> bool:
     if still_open:
         return False
 
+    if not _has_min_trade_close_context(active):
+        log(f"RECONCILE: active_trade corrupto o incompleto user={user_id}; se limpia estado fantasma sin persistir cierre exacto", "CRITICAL")
+        try:
+            _store_pending_exchange_close_snapshot(
+                user_id=user_id,
+                symbol=str(active.get('symbol') or ''),
+                direction=str(active.get('direction') or ''),
+                side=str(active.get('side') or ''),
+                entry_price=float(active.get('entry_price') or 0.0),
+                exit_price=0.0,
+                qty_coin=float(active.get('qty_coin_for_log') or 0.0),
+                qty_usdc_for_profit=float(active.get('qty_usdc_for_profit') or 0.0),
+                exit_reason='EXCHANGE_SYNC_CLOSE_PENDING_CONTEXT_MISSING',
+                source='RECONCILE',
+                detail='El exchange ya no muestra posición abierta, pero el contexto local del trade estaba incompleto. Se limpia el estado para evitar posición fantasma.',
+            )
+        except Exception:
+            pass
+        _register_post_close_cooldown(user_id)
+        _clear_active_trade(user_id)
+        return True
+
     symbol = str(active.get("symbol") or "")
     entry_price = float(active.get("entry_price") or 0.0)
     qty_usdc_for_profit = float(active.get("qty_usdc_for_profit") or 0.0)
@@ -1904,7 +2054,7 @@ def _reconcile_orphan_closed_trade(user_id: int) -> bool:
             exit_pnl_pct = (entry_price - exit_price) / entry_price
 
     log(f"RECONCILE: posición cerrada en exchange sin cierre interno previo user={user_id} symbol={symbol}", "CRITICAL")
-    _finalize_trade_close(
+    profit = _finalize_trade_close(
         user_id=user_id,
         symbol=symbol,
         direction=direction,
@@ -1918,7 +2068,7 @@ def _reconcile_orphan_closed_trade(user_id: int) -> bool:
         exit_pnl_pct=float(exit_pnl_pct),
         source="RECONCILE",
     )
-    return True
+    return profit != 0.0 or (_get_active_trade(user_id) is None)
 
 
 def _attempt_partial_take_profit(*, user_id: int, symbol: str, symbol_for_exec: str, direction: str, opposite: str, close_fraction: float) -> bool:
