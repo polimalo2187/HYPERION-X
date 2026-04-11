@@ -45,7 +45,7 @@ import app.database as database_module
 from app.config import OWNER_FEE_PERCENT, REFERRAL_FEE_PERCENT, SCANNER_SHORTLIST_DEPTH_FOR_L2
 
 
-def _engine_engine_clamp(value: float, lo: float, hi: float) -> float:
+def _engine_clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(value, hi))
 
 
