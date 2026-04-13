@@ -16,6 +16,9 @@ from app.database import (
     get_admin_visual_stats,
     get_manual_plan_days_preview,
     get_security_overview,
+    get_strategy_router_events,
+    get_strategy_runtime_overview,
+    get_strategy_runtime_summary,
     get_user_trade_stats,
     grant_manual_plan_days,
     log_admin_action,
@@ -100,6 +103,7 @@ def get_admin_overview() -> dict:
     )
     operator_snapshots = _safe('operator_snapshots', lambda: get_admin_operator_snapshots(limit=20) or [], [])
     system_runtime = _safe('system_runtime', lambda: get_system_runtime_snapshot() or {}, {})
+    strategy_runtime = _safe('strategy_runtime', lambda: get_strategy_runtime_overview(None, limit_recent_events=15) or {}, {})
     return {
         'visual': visual,
         'trade_stats_30d': trade_stats,
@@ -108,6 +112,7 @@ def get_admin_overview() -> dict:
         'monitor': monitor,
         'operator_snapshots': operator_snapshots,
         'system_runtime': system_runtime,
+        'strategy_runtime': strategy_runtime,
         'partial': bool(section_errors),
         'section_errors': section_errors,
     }
@@ -126,7 +131,10 @@ def admin_get_user_detail(user_id: int) -> dict:
     detail = get_admin_user_snapshot(int(user_id))
     if not detail:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Usuario no encontrado')
-    return _with_user_performance(detail)
+    enriched = _with_user_performance(detail)
+    enriched['strategy_runtime_preview'] = get_strategy_runtime_summary(int(user_id), limit=20)
+    enriched['strategy_runtime_overview'] = get_strategy_runtime_overview(int(user_id), limit_recent_events=10)
+    return enriched
 
 
 def admin_activate_premium(user_id: int, actor_user_id: int | None = None, actor_username: str | None = None, reason: str | None = None) -> dict:
@@ -293,3 +301,73 @@ def admin_bulk_migrate_legacy_keys(limit: int = 25, actor_user_id: int | None = 
     outcome['message'] = f"Migración completada. {outcome.get('migrated_count', 0)} keys actualizadas."
     _log_action('bulk_migrate_legacy_keys', actor_user_id, actor_username, None, reason=reason, message=outcome['message'], metadata={'requested_limit': int(limit), 'migrated_count': outcome.get('migrated_count', 0), 'remaining_legacy_plaintext_keys': outcome.get('remaining_legacy_plaintext_keys', 0)})
     return outcome
+
+
+def get_admin_strategy_runtime_overview(user_id: int | None = None, limit_recent_events: int = 25) -> dict:
+    return get_strategy_runtime_overview(user_id, limit_recent_events=int(limit_recent_events))
+
+
+def get_admin_strategy_runtime_summary(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    symbol: str | None = None,
+    execution_mode: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> dict:
+    items = get_strategy_runtime_summary(
+        user_id,
+        limit=int(limit),
+        symbol=symbol,
+        execution_mode=execution_mode,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+    )
+    return {
+        'count': len(items),
+        'items': items,
+        'filters': {
+            'user_id': int(user_id) if user_id is not None else None,
+            'symbol': (symbol or '').strip().upper() or None,
+            'execution_mode': (execution_mode or '').strip().lower() or None,
+            'strategy_id': (strategy_id or '').strip().lower() or None,
+            'regime_id': (regime_id or '').strip().lower() or None,
+            'limit': int(limit),
+        },
+    }
+
+
+def get_admin_strategy_router_events(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    event_type: str | None = None,
+    execution_mode: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> dict:
+    items = get_strategy_router_events(
+        user_id=user_id,
+        limit=int(limit),
+        event_type=event_type,
+        execution_mode=execution_mode,
+        symbol=symbol,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+    )
+    return {
+        'count': len(items),
+        'items': items,
+        'filters': {
+            'user_id': int(user_id) if user_id is not None else None,
+            'event_type': (event_type or '').strip().lower() or None,
+            'execution_mode': (execution_mode or '').strip().lower() or None,
+            'symbol': (symbol or '').strip().upper() or None,
+            'strategy_id': (strategy_id or '').strip().lower() or None,
+            'regime_id': (regime_id or '').strip().lower() or None,
+            'limit': int(limit),
+        },
+    }
+
