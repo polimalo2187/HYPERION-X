@@ -28,7 +28,12 @@ from typing import Any, Optional
 from collections import deque
 
 from app.market_scanner import get_ranked_symbols, mark_symbol_recent
-from app.strategy import get_entry_signal, get_trade_management_params
+from app.strategy import (
+    get_entry_signal,
+    get_entry_signal_for_strategy,
+    get_trade_management_params,
+    get_trade_management_params_for_strategy,
+)
 from app.risk import validate_trade_conditions
 from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot
 
@@ -1567,10 +1572,17 @@ def _coalesce_management_params(
     if mgmt is not None:
         return mgmt
 
+    strategy_id = _safe_str(
+        (signal or {}).get("strategy_id")
+        or (active_trade or {}).get("strategy_id")
+        or (active_trade or {}).get("strategy_model")
+        or DEFAULT_STRATEGY_ID,
+        DEFAULT_STRATEGY_ID,
+    )
     try:
-        derived = get_trade_management_params(float(entry_strength or 0.0), float(best_score or 0.0))
+        derived = get_trade_management_params_for_strategy(strategy_id, float(entry_strength or 0.0), float(best_score or 0.0))
     except Exception as e:
-        log(f"coalesce_management_params derive error strength={entry_strength} score={best_score} err={e}", "WARN")
+        log(f"coalesce_management_params derive error strategy_id={strategy_id} strength={entry_strength} score={best_score} err={e}", "WARN")
         derived = None
 
     mgmt = _extract_strategy_management_params(derived)
@@ -1590,6 +1602,7 @@ def _should_close_on_strength_loss(
     force_min_profit_price: float,
     force_min_strength: float,
     last_check_ts: float,
+    strategy_id: str = DEFAULT_STRATEGY_ID,
 ) -> tuple[bool, str, float, float]:
     """Re-evalúa la estrategia abierta con umbrales definidos por estrategia."""
     _ = entry_strength
@@ -1600,7 +1613,7 @@ def _should_close_on_strength_loss(
     if float(pnl_pct) < float(force_min_profit_price):
         return False, "", 0.0, now_ts
 
-    sig = get_entry_signal(symbol)
+    sig = get_entry_signal_for_strategy(symbol, strategy_id)
     if not isinstance(sig, dict):
         return False, "", 0.0, now_ts
 
@@ -2558,6 +2571,7 @@ def _manage_trade_until_close(
                 force_min_profit_price=float(mgmt["force_min_profit_price"]),
                 force_min_strength=float(mgmt["force_min_strength"]),
                 last_check_ts=float(strength_check_ts),
+                strategy_id=_safe_str(active_runtime.get("strategy_id"), DEFAULT_STRATEGY_ID),
             )
             _update_active_trade_fields(
                 user_id,
@@ -2795,7 +2809,8 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
     )
 
     if (not frozen_plan) and (not same_position):
-        adopt_signal = get_entry_signal(symbol)
+        adopt_strategy_id = _safe_str((active_trade or {}).get("strategy_id") or (active_trade or {}).get("strategy_model"), DEFAULT_STRATEGY_ID)
+        adopt_signal = get_entry_signal_for_strategy(symbol, adopt_strategy_id)
     elif (not frozen_plan) and same_position and isinstance(active_trade, dict):
         log(
             f"ADOPT conserva snapshot persistido sin recalcular señal user={user_id} symbol={symbol}",
