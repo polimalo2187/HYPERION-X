@@ -43,7 +43,8 @@ class StrategyRouter:
         self._symbol_state: Dict[str, Dict[str, Any]] = {}
         self._regime_strategy_map: Dict[str, str] = {
             REGIME_TREND: DEFAULT_STRATEGY_ID,
-            # REGIME_VOLATILE y REGIME_RANGE quedarán vacíos hasta Fase 5/6.
+            REGIME_VOLATILE: "liquidity_sweep_reversal",
+            # REGIME_RANGE quedará vacío hasta Fase 6.
         }
 
     @property
