@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import os
+import time
+import threading
+from typing import Any, Dict, Optional
+
+from app.market_context import build_market_context
+from app.regime.detector import (
+    DETECTOR_VERSION,
+    REGIME_RANGE,
+    REGIME_TREND,
+    REGIME_UNKNOWN,
+    REGIME_VOLATILE,
+    detect_regime,
+)
+from app.strategies.registry import DEFAULT_STRATEGY_ID, get_strategy_registry
+
+
+_ROUTER_INTERVAL = os.getenv("STRATEGY_ROUTER_INTERVAL", "5m").strip() or "5m"
+_ROUTER_MODE = os.getenv("STRATEGY_ROUTER_MODE", "observe_only").strip().lower() or "observe_only"
+_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN = os.getenv("STRATEGY_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_STATE_TTL_SECONDS = max(int(os.getenv("STRATEGY_ROUTER_STATE_TTL_SECONDS", "21600") or 21600), 300)
+
+
+_SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
+if _ROUTER_MODE not in _SUPPORTED_ROUTER_MODES:
+    _ROUTER_MODE = "observe_only"
+
+
+class StrategyRouter:
+    """Router central de estrategias basado en régimen.
+
+    Fase 4: integra detector + registro de estrategias sin romper el contrato legacy.
+    - `observe_only`: detecta régimen y adjunta metadata, pero sigue evaluando la
+      estrategia por defecto si no existe todavía una estrategia especializada.
+    - `enforced`: solo permite la estrategia mapeada al régimen activo.
+    """
+
+    def __init__(self) -> None:
+        self._registry = get_strategy_registry()
+        self._state_lock = threading.Lock()
+        self._symbol_state: Dict[str, Dict[str, Any]] = {}
+        self._regime_strategy_map: Dict[str, str] = {
+            REGIME_TREND: DEFAULT_STRATEGY_ID,
+            # REGIME_VOLATILE y REGIME_RANGE quedarán vacíos hasta Fase 5/6.
+        }
+
+    @property
+    def mode(self) -> str:
+        return _ROUTER_MODE
+
+    def _purge_expired_state(self, now_ts: float) -> None:
+        expired = [
+            symbol
+            for symbol, payload in self._symbol_state.items()
+            if now_ts - float((payload or {}).get("updated_at_ts", 0.0) or 0.0) > float(_ROUTER_STATE_TTL_SECONDS)
+        ]
+        for symbol in expired:
+            self._symbol_state.pop(symbol, None)
+
+    def _get_previous_regime_state(self, symbol: str) -> Optional[Dict[str, Any]]:
+        now_ts = time.time()
+        with self._state_lock:
+            self._purge_expired_state(now_ts)
+            payload = self._symbol_state.get(symbol)
+            if not isinstance(payload, dict):
+                return None
+            state = payload.get("state")
+            return dict(state) if isinstance(state, dict) else None
+
+    def _remember_regime_state(self, symbol: str, state: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(state, dict):
+            return
+        now_ts = time.time()
+        with self._state_lock:
+            self._purge_expired_state(now_ts)
+            self._symbol_state[symbol] = {
+                "state": dict(state),
+                "updated_at_ts": now_ts,
+            }
+
+    def _build_context(self, symbol: str) -> Dict[str, Any]:
+        # Import local para mantener una sola fuente de verdad de parámetros.
+        from app.strategies.breakout_reset import (
+            ADX_PERIOD,
+            ATR_PERIOD,
+            EMA_FAST,
+            EMA_MID,
+            EMA_SLOW,
+            LOOKBACK_5M,
+            TF_5M,
+        )
+
+        interval = TF_5M or _ROUTER_INTERVAL
+        return build_market_context(
+            symbol=symbol,
+            interval=interval,
+            limit=LOOKBACK_5M,
+            ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
+            adx_period=ADX_PERIOD,
+            atr_period=ATR_PERIOD,
+        )
+
+    def _resolve_regime_for_routing(self, regime_result: Dict[str, Any]) -> tuple[str, str]:
+        active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        if active_regime != REGIME_UNKNOWN:
+            return active_regime, "active"
+        if _ROUTER_USE_CANDIDATE_WHEN_UNKNOWN and candidate_regime != REGIME_UNKNOWN:
+            return candidate_regime, "candidate_fallback"
+        return REGIME_UNKNOWN, "unknown"
+
+    def _regime_summary(self, regime_result: Dict[str, Any]) -> Dict[str, Any]:
+        features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+        state = regime_result.get("state") if isinstance(regime_result.get("state"), dict) else {}
+        return {
+            "candidate_regime": str(regime_result.get("candidate_regime") or REGIME_UNKNOWN),
+            "active_regime": str(regime_result.get("active_regime") or REGIME_UNKNOWN),
+            "candidate_confidence": float(regime_result.get("candidate_confidence") or 0.0),
+            "changed": bool(regime_result.get("changed")),
+            "reasons": list(regime_result.get("candidate_reasons") or []),
+            "scores": dict(regime_result.get("candidate_scores") or {}),
+            "bias": str(regime_result.get("regime_bias") or "neutral"),
+            "state": dict(state),
+            "feature_summary": {
+                "adx": float(features.get("adx") or 0.0),
+                "choppiness": float(features.get("choppiness") or 0.0),
+                "efficiency_ratio": float(features.get("efficiency_ratio") or 0.0),
+                "atr_pct": float(features.get("atr_pct") or 0.0),
+                "wick_instability": float(features.get("wick_instability") or 0.0),
+                "breakout_failure_ratio": float(features.get("breakout_failure_ratio") or 0.0),
+                "btc_shock_ratio": float(features.get("btc_shock_ratio") or 0.0),
+            },
+        }
+
+    def _blocked_signal(self, symbol: str, *, resolved_regime: str, regime_source: str, regime_result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        return {
+            "signal": False,
+            "reason": reason,
+            "coin": symbol,
+            "strategy_id": DEFAULT_STRATEGY_ID,
+            "strategy_model": DEFAULT_STRATEGY_ID,
+            "strategy_version": "router",
+            "regime_id": resolved_regime,
+            "regime_version": DETECTOR_VERSION,
+            "detector_version": DETECTOR_VERSION,
+            "router_mode": self.mode,
+            "router_decision": "regime_blocked",
+            "router_reason": reason,
+            "router_regime_source": regime_source,
+            "regime_context": self._regime_summary(regime_result),
+        }
+
+    def route_symbol(self, symbol: str, market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        symbol = str(symbol or "").upper().strip()
+        if not symbol:
+            return {"signal": False, "reason": "BAD_SYMBOL", "router_mode": self.mode}
+
+        ctx = market_context if isinstance(market_context, dict) else self._build_context(symbol)
+        previous_state = self._get_previous_regime_state(symbol)
+        regime_result = detect_regime(symbol, market_context=ctx, previous_state=previous_state)
+        self._remember_regime_state(symbol, regime_result.get("state"))
+
+        resolved_regime, regime_source = self._resolve_regime_for_routing(regime_result)
+        mapped_strategy_id = self._regime_strategy_map.get(resolved_regime)
+        observe_only = self.mode != "enforced"
+
+        if not mapped_strategy_id:
+            if not observe_only:
+                return self._blocked_signal(
+                    symbol,
+                    resolved_regime=resolved_regime,
+                    regime_source=regime_source,
+                    regime_result=regime_result,
+                    reason="ROUTER_REGIME_UNSUPPORTED",
+                )
+            mapped_strategy_id = DEFAULT_STRATEGY_ID
+            router_decision = "observe_only_default_strategy"
+        else:
+            router_decision = "mapped_strategy_selected"
+
+        strategy = self._registry.get(mapped_strategy_id)
+        out = strategy.evaluate(symbol, market_context=ctx)
+        if not isinstance(out, dict):
+            return self._blocked_signal(
+                symbol,
+                resolved_regime=resolved_regime,
+                regime_source=regime_source,
+                regime_result=regime_result,
+                reason="ROUTER_INVALID_STRATEGY_OUTPUT",
+            )
+
+        out.setdefault("strategy_id", getattr(strategy, "strategy_id", mapped_strategy_id))
+        out.setdefault("strategy_version", getattr(strategy, "strategy_version", "v0"))
+        out.setdefault("strategy_model", getattr(strategy, "strategy_model", mapped_strategy_id))
+        out["router_mode"] = self.mode
+        out["router_decision"] = router_decision
+        out["router_regime_source"] = regime_source
+        out["router_strategy_id"] = mapped_strategy_id
+        out["regime_id"] = resolved_regime
+        out["regime_version"] = DETECTOR_VERSION
+        out["detector_version"] = DETECTOR_VERSION
+        out["regime_context"] = self._regime_summary(regime_result)
+        out.setdefault("market_context_status", str(ctx.get("status") or "UNKNOWN"))
+        return out
+
+
+_ROUTER = StrategyRouter()
+
+
+def get_strategy_router() -> StrategyRouter:
+    return _ROUTER
+
+
+__all__ = [
+    "StrategyRouter",
+    "get_strategy_router",
+]
