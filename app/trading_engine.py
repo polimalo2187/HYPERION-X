@@ -209,6 +209,11 @@ def _build_entry_context(
             "detector_version": _safe_str(sig.get("detector_version"), DEFAULT_DETECTOR_VERSION),
             "router_mode": _safe_str(sig.get("router_mode"), "legacy"),
             "router_decision": _safe_str(sig.get("router_decision"), "legacy"),
+            "shadow_range": dict(sig.get("shadow_range") or {}) if isinstance(sig.get("shadow_range"), dict) else {},
+            "shadow_signal": bool(sig.get("shadow_signal")),
+            "shadow_strategy_id": _safe_str(sig.get("shadow_strategy_id"), ""),
+            "shadow_direction": _safe_str(sig.get("shadow_direction"), "").lower(),
+            "shadow_score": _safe_float(sig.get("shadow_score"), 0.0),
         },
         "risk": {
             "ok": bool(risk_payload.get("ok")),
@@ -3018,9 +3023,15 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
             continue
 
         if not signal.get("signal"):
-            reason = str(signal.get("reason") or "NO_SIGNAL")
-            if len(blocked_samples) < 6:
-                blocked_samples.append(f"{symbol}:{reason}")
+            shadow = signal.get("shadow_range") if isinstance(signal.get("shadow_range"), dict) else {}
+            if bool(shadow.get("signal")) and len(blocked_samples) < 6:
+                blocked_samples.append(
+                    f"{symbol}:SHADOW_RANGE:{str(shadow.get('direction') or '').lower()}:{float(shadow.get('score') or 0.0):.2f}"
+                )
+            else:
+                reason = str(signal.get("reason") or "NO_SIGNAL")
+                if len(blocked_samples) < 6:
+                    blocked_samples.append(f"{symbol}:{reason}")
             continue
 
         strength = float(signal.get("strength", 0.0) or 0.0)
@@ -3058,10 +3069,18 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
 
     best_signal = best_choice["signal"]
     scanner_meta = best_choice["scanner"]
+    shadow = best_signal.get('shadow_range') if isinstance(best_signal.get('shadow_range'), dict) else {}
+    shadow_suffix = ''
+    if shadow:
+        shadow_suffix = (
+            f" shadow_range={int(bool(shadow.get('signal')))}"
+            f" shadow_dir={str(shadow.get('direction') or '').lower()}"
+            f" shadow_score={float(shadow.get('score') or 0.0):.2f}"
+        )
     log(
         f"Shortlist evaluada: candidatos={len(shortlist)} elegido={best_choice['symbol']} shortlist_rank={best_choice['shortlist_rank']}/{best_choice['shortlist_size']} "
         f"strategy_score={float(best_signal.get('score', 0.0) or 0.0):.2f} strength={float(best_signal.get('strength', 0.0) or 0.0):.4f} "
-        f"scanner_score={float(scanner_meta.get('score', 0.0) or 0.0):.4f}",
+        f"scanner_score={float(scanner_meta.get('score', 0.0) or 0.0):.4f}{shadow_suffix}",
         "INFO",
     )
     return best_choice
@@ -3276,10 +3295,18 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         side = "buy" if direction == "long" else "sell"
         opposite = "sell" if side == "buy" else "buy"
 
+        shadow = signal.get('shadow_range') if isinstance(signal.get('shadow_range'), dict) else {}
+        shadow_suffix = ''
+        if shadow:
+            shadow_suffix = (
+                f" shadow_range={int(bool(shadow.get('signal')))}"
+                f" shadow_dir={str(shadow.get('direction') or '').lower()}"
+                f" shadow_score={float(shadow.get('score') or 0.0):.2f}"
+            )
         log(
             f"SEÑAL CONFIRMADA {symbol} {direction.upper()} strength={signal.get('strength')} score={signal.get('score')} "
             f"scanner_score={scanner_meta.get('score')} model={signal.get('strategy_model', 'strategy')} "
-            f"strategy_id={signal.get('strategy_id')} regime={signal.get('regime_id')} router={signal.get('router_decision')}",
+            f"strategy_id={signal.get('strategy_id')} regime={signal.get('regime_id')} router={signal.get('router_decision')}{shadow_suffix}",
             "INFO",
         )
         _publish_operational_snapshot(
@@ -3300,9 +3327,13 @@ def execute_trade_cycle(user_id: int) -> dict | None:
                 'strategy_id': signal.get('strategy_id'),
                 'regime_id': signal.get('regime_id'),
                 'router_decision': signal.get('router_decision'),
+                'shadow_signal': signal.get('shadow_signal'),
+                'shadow_strategy_id': signal.get('shadow_strategy_id'),
+                'shadow_direction': signal.get('shadow_direction'),
+                'shadow_score': signal.get('shadow_score'),
             },
         )
-        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')})
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision'), 'shadow_signal': signal.get('shadow_signal'), 'shadow_strategy_id': signal.get('shadow_strategy_id'), 'shadow_direction': signal.get('shadow_direction'), 'shadow_score': signal.get('shadow_score')})
 
         risk = validate_trade_conditions(capital, strength)
         if not risk.get("ok"):
@@ -3557,9 +3588,9 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             live_trade=True,
             active_symbol=symbol,
             exchange_snapshot=exchange_snapshot,
-            metadata={'last_result': 'trade_opened', 'last_decision': 'trade_opened', 'last_symbol': symbol, 'last_cycle_at': datetime.utcnow(), 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')},
+            metadata={'last_result': 'trade_opened', 'last_decision': 'trade_opened', 'last_symbol': symbol, 'last_cycle_at': datetime.utcnow(), 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision'), 'shadow_signal': signal.get('shadow_signal'), 'shadow_strategy_id': signal.get('shadow_strategy_id'), 'shadow_direction': signal.get('shadow_direction'), 'shadow_score': signal.get('shadow_score')},
         )
-        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')})
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision'), 'shadow_signal': signal.get('shadow_signal'), 'shadow_strategy_id': signal.get('shadow_strategy_id'), 'shadow_direction': signal.get('shadow_direction'), 'shadow_score': signal.get('shadow_score')})
 
         open_payload = {
             "symbol": symbol,
