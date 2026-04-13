@@ -4,6 +4,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 from app.strategies.base import BaseStrategy
 from app.hyperliquid_client import make_request, norm_coin
+from app.market_context import build_market_context
 
 TF_5M = "5m"
 LOOKBACK_5M = 320
@@ -629,13 +630,15 @@ def get_trade_management_params(strength: float, score: float, atr_pct: Optional
     return _dynamic_trade_management_params(strength, score, atr_pct)
 
 
-def get_entry_signal(symbol: str) -> dict:
+def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
     try:
-        coin = norm_coin(symbol)
+        coin = str(market_context.get("coin") or "").strip()
         if not coin:
             return {"signal": False, "reason": "BAD_SYMBOL"}
 
-        c5, st5 = _fetch_candles(coin, TF_5M, LOOKBACK_5M)
+        tf5 = (market_context.get("timeframes") or {}).get(TF_5M) or {}
+        st5 = str(tf5.get("status") or "UNKNOWN")
+        c5 = tf5.get("candles") or []
         if st5 in ("API_FAIL", "BAD_SYMBOL", "BAD_INTERVAL"):
             return {"signal": False, "reason": "CANDLES_FETCH_FAIL", "detail": {"5m": st5}, "coin": coin}
         if not c5:
@@ -645,24 +648,30 @@ def get_entry_signal(symbol: str) -> dict:
         if not quality_ok:
             return {"signal": False, "reason": quality_reason, "coin": coin, "diag": quality_diag}
 
-        stale5, age5, t5 = _is_stale(c5, TF_5M)
+        stale5 = bool(tf5.get("stale", True))
+        age5 = float(tf5.get("age_s", 0.0) or 0.0)
+        t5 = int(tf5.get("last_t", 0) or 0)
         if stale5:
             return {"signal": False, "reason": "STALE_CANDLES", "coin": coin, "age_s": {"5m": round(age5, 1)}, "last_t": {"5m": t5}}
 
-        o5, h5, l5, cl5, v5 = _extract(c5)
+        o5 = tf5.get("o") or []
+        h5 = tf5.get("h") or []
+        l5 = tf5.get("l") or []
+        cl5 = tf5.get("c") or []
+        v5 = tf5.get("v") or []
         if not cl5:
             return {"signal": False, "reason": "BAD_CANDLES_PARSE", "coin": coin}
 
-        ema20 = _ema(cl5, EMA_FAST)
-        ema50 = _ema(cl5, EMA_MID)
-        ema200 = _ema(cl5, EMA_SLOW)
+        ema20 = tf5.get(f"ema{EMA_FAST}") or []
+        ema50 = tf5.get(f"ema{EMA_MID}") or []
+        ema200 = tf5.get(f"ema{EMA_SLOW}") or []
         if not ema20 or not ema50 or not ema200:
             return {"signal": False, "reason": "NO_TREND_DATA", "coin": coin}
 
-        close5 = float(cl5[-1])
-        adx5 = float(_last(_adx(h5, l5, cl5, ADX_PERIOD)) or 0.0)
-        atr5 = float(_atr(h5, l5, cl5, ATR_PERIOD) or 0.0)
-        atr_pct = atr5 / close5 if close5 > 0 else 0.0
+        close5 = float(tf5.get("close") or cl5[-1])
+        adx5 = float(tf5.get("adx") or 0.0)
+        atr5 = float(tf5.get("atr") or 0.0)
+        atr_pct = float(tf5.get("atr_pct") or 0.0)
         if atr_pct < ATR_PCT_MIN:
             return {"signal": False, "reason": "ATR_TOO_LOW", "coin": coin, "diag": {"atr_pct": round(atr_pct, 6)}}
         if atr_pct > ATR_PCT_MAX:
@@ -778,9 +787,10 @@ def get_entry_signal(symbol: str) -> dict:
             "close_5": round(close5, 6),
             "last_candle_t_5m": int(t5),
             "ema20_5m": round(float(ema20[-1]), 6),
-            "adx1": round(adx5, 2),   # compatibilidad con logs/engine actuales
-            "adx15": round(adx5, 2),  # compatibilidad con logs/engine actuales
+            "adx1": round(adx5, 2),
+            "adx15": round(adx5, 2),
             "strategy_model": "breakout_retest_5m_v5_exit_asymmetry",
+            "market_context_status": str(market_context.get("status") or st5),
         }
         if LOG_SIGNAL_DIAGNOSTICS:
             _log(
@@ -794,6 +804,18 @@ def get_entry_signal(symbol: str) -> dict:
         return out
     except Exception as e:
         return {"signal": False, "reason": "STRATEGY_EXCEPTION", "error": str(e)[:180]}
+
+
+def get_entry_signal(symbol: str, market_context: Optional[Dict[str, Any]] = None) -> dict:
+    market_context = market_context or build_market_context(
+        symbol=symbol,
+        interval=TF_5M,
+        limit=LOOKBACK_5M,
+        ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
+        adx_period=ADX_PERIOD,
+        atr_period=ATR_PERIOD,
+    )
+    return _evaluate_market_context(market_context)
 
 
 
@@ -813,8 +835,8 @@ class BreakoutResetStrategy(BaseStrategy):
     strategy_version = STRATEGY_VERSION
     strategy_model = STRATEGY_MODEL
 
-    def evaluate(self, symbol: str) -> dict:
-        out = get_entry_signal(symbol)
+    def evaluate(self, symbol: str, market_context: Optional[Dict[str, Any]] = None) -> dict:
+        out = get_entry_signal(symbol, market_context=market_context)
         if isinstance(out, dict) and out.get("signal"):
             out.setdefault("strategy_id", self.strategy_id)
             out.setdefault("strategy_version", self.strategy_version)
