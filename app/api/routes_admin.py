@@ -33,6 +33,57 @@ def admin_overview(_: dict = Depends(require_admin_session)) -> dict:
     return _require_admin_attr('get_admin_overview')()
 
 
+@router.get('/strategy/overview')
+def admin_strategy_overview(
+    user_id: int | None = Query(default=None),
+    limit_recent_events: int = Query(default=25, ge=1, le=200),
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('get_admin_strategy_runtime_overview')(user_id=user_id, limit_recent_events=limit_recent_events)
+
+
+@router.get('/strategy/runtime-summary')
+def admin_strategy_runtime_summary(
+    user_id: int | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    execution_mode: str | None = Query(default=None),
+    strategy_id: str | None = Query(default=None),
+    regime_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('get_admin_strategy_runtime_summary')(
+        user_id=user_id,
+        symbol=symbol,
+        execution_mode=execution_mode,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+        limit=limit,
+    )
+
+
+@router.get('/strategy/router-events')
+def admin_strategy_router_events(
+    user_id: int | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    execution_mode: str | None = Query(default=None),
+    strategy_id: str | None = Query(default=None),
+    regime_id: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('get_admin_strategy_router_events')(
+        user_id=user_id,
+        event_type=event_type,
+        symbol=symbol,
+        execution_mode=execution_mode,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+        limit=limit,
+    )
+
+
 @router.get('/users/search')
 def admin_search(
     q: str = Query(min_length=1),
