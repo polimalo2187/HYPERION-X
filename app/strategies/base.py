@@ -12,7 +12,7 @@ class BaseStrategy(ABC):
     strategy_model: str = "base"
 
     @abstractmethod
-    def evaluate(self, symbol: str) -> Dict[str, Any]:
+    def evaluate(self, symbol: str, market_context: Dict[str, Any] | None = None) -> Dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
