@@ -17,10 +17,12 @@ class StrategyRegistry:
     def __init__(self) -> None:
         from app.strategies.breakout_reset import DEFAULT_STRATEGY as BREAKOUT_DEFAULT_STRATEGY
         from app.strategies.liquidity_sweep_reversal import DEFAULT_STRATEGY as LIQUIDITY_DEFAULT_STRATEGY
+        from app.strategies.range_mean_reversion import DEFAULT_STRATEGY as RANGE_DEFAULT_STRATEGY
 
         self._strategies: Dict[str, BaseStrategy] = {
             DEFAULT_STRATEGY_ID: BREAKOUT_DEFAULT_STRATEGY,
             LIQUIDITY_DEFAULT_STRATEGY.strategy_id: LIQUIDITY_DEFAULT_STRATEGY,
+            RANGE_DEFAULT_STRATEGY.strategy_id: RANGE_DEFAULT_STRATEGY,
         }
 
     def register(self, strategy: BaseStrategy) -> None:
