@@ -38,6 +38,8 @@ runtime_status_col = db["runtime_status"]
 runtime_components_shadow_col = db["runtime_components_shadow"]
 user_runtime_col = db["user_runtime"]
 user_activity_col = db["user_activity"]
+strategy_router_events_col = db["strategy_router_events"]
+strategy_runtime_summary_col = db["strategy_runtime_summary"]
 payment_orders_col = db["payment_orders"]
 payment_verification_logs_col = db["payment_verification_logs"]
 subscription_events_col = db["subscription_events"]
@@ -197,6 +199,11 @@ try:
 
     payment_verification_logs_col.create_index('order_id')
     payment_verification_logs_col.create_index('user_id')
+    strategy_router_events_col.create_index([('user_id', 1), ('created_at', -1)])
+    strategy_router_events_col.create_index([('event_type', 1), ('created_at', -1)])
+    strategy_router_events_col.create_index([('user_id', 1), ('symbol', 1), ('created_at', -1)])
+    strategy_runtime_summary_col.create_index([('user_id', 1), ('execution_mode', 1), ('last_seen_at', -1)])
+    strategy_runtime_summary_col.create_index([('user_id', 1), ('symbol', 1), ('strategy_id', 1), ('regime_id', 1), ('execution_mode', 1)], unique=True)
     subscription_events_col.create_index('user_id')
     subscription_events_col.create_index('order_id')
     referral_reward_events_col.create_index('referrer_id')
@@ -1230,11 +1237,152 @@ def _safe_float(x, default: float = 0.0) -> float:
     except Exception:
         return float(default)
 
-def _clamp_non_negative(x: float) -> float:
+def _safe_counter_key(value: str | None) -> str:
+    raw = str(value or '').strip().lower()
+    if not raw:
+        return 'unknown'
+    cleaned = re.sub(r'[^a-z0-9_]+', '_', raw)
+    cleaned = re.sub(r'_+', '_', cleaned).strip('_')
+    return cleaned or 'unknown'
+
+
+def _build_strategy_runtime_counter_delta(payload: dict) -> dict:
+    event_key = _safe_counter_key(payload.get('event_type'))
+    execution_mode = _safe_counter_key(payload.get('execution_mode'))
+    out = {
+        'events_total': 1,
+        f'event_type_counts.{event_key}': 1,
+    }
+    if execution_mode == 'live':
+        out['live_events_total'] = 1
+    elif execution_mode == 'shadow':
+        out['shadow_events_total'] = 1
+    else:
+        out['router_events_total'] = 1
+
+    if bool(payload.get('signal')):
+        out['signals_total'] = 1
+        if execution_mode == 'shadow':
+            out['shadow_signals_total'] = 1
+        elif execution_mode == 'live':
+            out['live_signals_total'] = 1
+
+    if bool(payload.get('selected')):
+        out['selected_total'] = 1
+    if bool(payload.get('trade_opened')):
+        out['trades_opened_total'] = 1
+    if bool(payload.get('regime_changed')):
+        out['regime_changes_total'] = 1
+    if bool(payload.get('shadow_evaluated')):
+        out['shadow_evaluated_total'] = 1
+    if bool(payload.get('shadow_signal')):
+        out['shadow_signal_total'] = 1
+    return out
+
+
+def record_strategy_router_event(user_id: int, payload: dict | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
     try:
-        return x if x >= 0 else 0.0
+        uid = int(user_id)
     except Exception:
-        return 0.0
+        return False
+
+    now = _now_utc()
+    event_type = _safe_counter_key(payload.get('event_type'))
+    symbol = str(payload.get('symbol') or '').strip().upper() or None
+    strategy_id = str(payload.get('strategy_id') or '').strip().lower() or 'unknown'
+    regime_id = str(payload.get('regime_id') or '').strip().lower() or 'unknown'
+    execution_mode = str(payload.get('execution_mode') or '').strip().lower() or 'router'
+    direction = str(payload.get('direction') or '').strip().lower() or None
+
+    signal_summary = payload.get('signal_summary') if isinstance(payload.get('signal_summary'), dict) else {}
+    shadow_summary = payload.get('shadow_summary') if isinstance(payload.get('shadow_summary'), dict) else {}
+    scanner_summary = payload.get('scanner_summary') if isinstance(payload.get('scanner_summary'), dict) else {}
+    regime_summary = payload.get('regime_summary') if isinstance(payload.get('regime_summary'), dict) else {}
+    extra = payload.get('extra') if isinstance(payload.get('extra'), dict) else {}
+
+    doc = {
+        'user_id': uid,
+        'event_type': event_type,
+        'symbol': symbol,
+        'strategy_id': strategy_id,
+        'regime_id': regime_id,
+        'execution_mode': execution_mode,
+        'direction': direction,
+        'signal': bool(payload.get('signal')),
+        'selected': bool(payload.get('selected')),
+        'trade_opened': bool(payload.get('trade_opened')),
+        'regime_changed': bool(payload.get('regime_changed')),
+        'shadow_evaluated': bool(payload.get('shadow_evaluated')),
+        'shadow_signal': bool(payload.get('shadow_signal')),
+        'created_at': now,
+        'signal_summary': signal_summary,
+        'shadow_summary': shadow_summary,
+        'scanner_summary': scanner_summary,
+        'regime_summary': regime_summary,
+        'extra': extra,
+    }
+
+    try:
+        strategy_router_events_col.insert_one(doc)
+
+        summary_filter = {
+            'user_id': uid,
+            'symbol': symbol,
+            'strategy_id': strategy_id,
+            'regime_id': regime_id,
+            'execution_mode': execution_mode,
+        }
+        summary_set = {
+            'last_seen_at': now,
+            'last_event_type': event_type,
+            'last_direction': direction,
+            'last_signal': bool(doc.get('signal')),
+            'last_selected': bool(doc.get('selected')),
+            'last_trade_opened': bool(doc.get('trade_opened')),
+            'last_regime_changed': bool(doc.get('regime_changed')),
+            'last_shadow_evaluated': bool(doc.get('shadow_evaluated')),
+            'last_shadow_signal': bool(doc.get('shadow_signal')),
+            'last_signal_summary': signal_summary,
+            'last_shadow_summary': shadow_summary,
+            'last_scanner_summary': scanner_summary,
+            'last_regime_summary': regime_summary,
+            'last_extra': extra,
+        }
+        strategy_runtime_summary_col.update_one(
+            summary_filter,
+            {
+                '$set': summary_set,
+                '$inc': _build_strategy_runtime_counter_delta(doc),
+                '$setOnInsert': {'created_at': now},
+            },
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        try:
+            db_log(f"⚠ record_strategy_router_event error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def get_strategy_runtime_summary(user_id: int, limit: int = 100) -> list[dict]:
+    try:
+        uid = int(user_id)
+    except Exception:
+        return []
+    lim = max(1, min(int(limit or 100), 500))
+    try:
+        cursor = strategy_runtime_summary_col.find({'user_id': uid}, {'_id': 0}).sort('last_seen_at', -1).limit(lim)
+        return list(cursor)
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_strategy_runtime_summary error user_id={uid}: {e}")
+        except Exception:
+            pass
+        return []
 
 # ============================================================
 # USUARIOS
