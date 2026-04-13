@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from app.strategies.breakout_reset import DEFAULT_STRATEGY, STRATEGY_ID, STRATEGY_MODEL, STRATEGY_VERSION
+from app.strategies.registry import get_strategy_registry
 from app.strategies.router import get_strategy_router
 
 
@@ -19,8 +20,36 @@ def _router():
     return get_strategy_router()
 
 
+def _registry():
+    return get_strategy_registry()
+
+
+def _resolve_strategy(strategy_id: Optional[str] = None):
+    sid = str(strategy_id or "").strip()
+    if not sid:
+        return _default_strategy()
+    try:
+        return _registry().get(sid)
+    except Exception:
+        return _default_strategy()
+
+
+def get_trade_management_params_for_strategy(strategy_id: Optional[str], strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
+    return _resolve_strategy(strategy_id).get_trade_management_params(strength, score, atr_pct)
+
+
+def get_entry_signal_for_strategy(symbol: str, strategy_id: Optional[str], market_context: Optional[Dict[str, Any]] = None) -> dict:
+    out = _resolve_strategy(strategy_id).evaluate(symbol, market_context=market_context)
+    if isinstance(out, dict) and out.get("signal"):
+        strategy = _resolve_strategy(strategy_id)
+        out.setdefault("strategy_id", getattr(strategy, "strategy_id", STRATEGY_ID))
+        out.setdefault("strategy_version", getattr(strategy, "strategy_version", STRATEGY_VERSION))
+        out.setdefault("strategy_model", getattr(strategy, "strategy_model", STRATEGY_MODEL))
+    return out
+
+
 def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
-    return _default_strategy().get_trade_management_params(strength, score, atr_pct)
+    return get_trade_management_params_for_strategy(None, strength, score, atr_pct)
 
 
 def get_entry_signal(symbol: str) -> dict:
@@ -34,7 +63,9 @@ def get_entry_signal(symbol: str) -> dict:
 
 __all__ = [
     "get_entry_signal",
+    "get_entry_signal_for_strategy",
     "get_trade_management_params",
+    "get_trade_management_params_for_strategy",
     "STRATEGY_ID",
     "STRATEGY_MODEL",
     "STRATEGY_VERSION",
