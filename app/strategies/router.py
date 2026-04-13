@@ -21,6 +21,8 @@ _ROUTER_INTERVAL = os.getenv("STRATEGY_ROUTER_INTERVAL", "5m").strip() or "5m"
 _ROUTER_MODE = os.getenv("STRATEGY_ROUTER_MODE", "observe_only").strip().lower() or "observe_only"
 _ROUTER_USE_CANDIDATE_WHEN_UNKNOWN = os.getenv("STRATEGY_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_STATE_TTL_SECONDS = max(int(os.getenv("STRATEGY_ROUTER_STATE_TTL_SECONDS", "21600") or 21600), 300)
+_ROUTER_RANGE_SHADOW_ENABLED = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_RANGE_SHADOW_ALWAYS = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ALWAYS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 _SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
@@ -44,8 +46,9 @@ class StrategyRouter:
         self._regime_strategy_map: Dict[str, str] = {
             REGIME_TREND: DEFAULT_STRATEGY_ID,
             REGIME_VOLATILE: "liquidity_sweep_reversal",
-            # REGIME_RANGE quedará vacío hasta Fase 6.
+            # RANGE permanece en shadow mode durante Fase 6.
         }
+        self._range_shadow_strategy_id = "range_mean_reversion"
 
     @property
     def mode(self) -> str:
@@ -135,6 +138,72 @@ class StrategyRouter:
             },
         }
 
+
+    def _shadow_should_run(self, regime_result: Dict[str, Any], resolved_regime: str) -> bool:
+        if not _ROUTER_RANGE_SHADOW_ENABLED:
+            return False
+        if _ROUTER_RANGE_SHADOW_ALWAYS:
+            return True
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
+        if resolved_regime == REGIME_RANGE or candidate_regime == REGIME_RANGE or active_regime == REGIME_RANGE:
+            return True
+        scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
+        try:
+            return float(scores.get(REGIME_RANGE) or 0.0) >= 3.0
+        except Exception:
+            return False
+
+    def _shadow_summary(
+        self,
+        *,
+        symbol: str,
+        ctx: Dict[str, Any],
+        regime_result: Dict[str, Any],
+        resolved_regime: str,
+        regime_source: str,
+    ) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "enabled": bool(_ROUTER_RANGE_SHADOW_ENABLED),
+            "strategy_id": self._range_shadow_strategy_id,
+            "strategy_mode": "shadow_only",
+            "evaluated": False,
+            "signal": False,
+            "reason": "SHADOW_DISABLED" if not _ROUTER_RANGE_SHADOW_ENABLED else "REGIME_GATE_NOT_MET",
+            "regime_gate": resolved_regime,
+            "regime_source": regime_source,
+        }
+        if not self._shadow_should_run(regime_result, resolved_regime):
+            return summary
+        summary["evaluated"] = True
+        try:
+            strategy = self._registry.get(self._range_shadow_strategy_id)
+            out = strategy.evaluate(symbol, market_context=ctx)
+        except Exception as e:
+            summary["reason"] = f"SHADOW_EXCEPTION:{type(e).__name__}"
+            return summary
+
+        if not isinstance(out, dict):
+            summary["reason"] = "SHADOW_INVALID_OUTPUT"
+            return summary
+
+        summary.update({
+            "signal": bool(out.get("signal")),
+            "reason": str(out.get("reason") or ("SHADOW_SIGNAL" if out.get("signal") else "SHADOW_NO_SIGNAL")),
+            "direction": str(out.get("direction") or "").lower(),
+            "strength": float(out.get("strength") or 0.0),
+            "score": float(out.get("score") or 0.0),
+            "strategy_version": str(out.get("strategy_version") or getattr(strategy, "strategy_version", "v0")),
+            "strategy_model": str(out.get("strategy_model") or getattr(strategy, "strategy_model", self._range_shadow_strategy_id)),
+        })
+        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+        diag = meta.get("diagnostics") if isinstance(meta.get("diagnostics"), dict) else {}
+        if meta:
+            summary["meta"] = dict(meta)
+        if diag:
+            summary["diagnostics"] = dict(diag)
+        return summary
+
     def _blocked_signal(self, symbol: str, *, resolved_regime: str, regime_source: str, regime_result: Dict[str, Any], reason: str) -> Dict[str, Any]:
         return {
             "signal": False,
@@ -203,6 +272,18 @@ class StrategyRouter:
         out["regime_version"] = DETECTOR_VERSION
         out["detector_version"] = DETECTOR_VERSION
         out["regime_context"] = self._regime_summary(regime_result)
+        shadow_range = self._shadow_summary(
+            symbol=symbol,
+            ctx=ctx,
+            regime_result=regime_result,
+            resolved_regime=resolved_regime,
+            regime_source=regime_source,
+        )
+        out["shadow_range"] = shadow_range
+        out["shadow_strategy_id"] = str(shadow_range.get("strategy_id") or self._range_shadow_strategy_id)
+        out["shadow_signal"] = bool(shadow_range.get("signal"))
+        out["shadow_score"] = float(shadow_range.get("score") or 0.0)
+        out["shadow_direction"] = str(shadow_range.get("direction") or "").lower()
         out.setdefault("market_context_status", str(ctx.get("status") or "UNKNOWN"))
         return out
 
