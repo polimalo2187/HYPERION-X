@@ -45,8 +45,270 @@ import app.database as database_module
 from app.config import OWNER_FEE_PERCENT, REFERRAL_FEE_PERCENT, SCANNER_SHORTLIST_DEPTH_FOR_L2
 
 
+TRADE_PLAN_SCHEMA_VERSION = os.getenv("TRADE_PLAN_SCHEMA_VERSION", "phase0_v1").strip() or "phase0_v1"
+DEFAULT_STRATEGY_ID = os.getenv("DEFAULT_STRATEGY_ID", "legacy_breakout_reset").strip() or "legacy_breakout_reset"
+DEFAULT_REGIME_ID = os.getenv("DEFAULT_REGIME_ID", "legacy_single_strategy").strip() or "legacy_single_strategy"
+DEFAULT_DETECTOR_VERSION = os.getenv("DEFAULT_DETECTOR_VERSION", "not_applicable").strip() or "not_applicable"
+
+
 def _engine_clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(value, hi))
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _safe_str(value: Any, default: str = "") -> str:
+    try:
+        s = str(value).strip()
+        return s if s else str(default)
+    except Exception:
+        return str(default)
+
+
+def _build_trade_plan(
+    *,
+    signal: Optional[dict[str, Any]] = None,
+    active_trade: Optional[dict[str, Any]] = None,
+    mgmt: Optional[dict[str, Any]] = None,
+    sl_price_pct: float = 0.0,
+    entry_strength: float = 0.0,
+    best_score: float = 0.0,
+    approved_margin_usdc: float = 0.0,
+    leverage: float = 0.0,
+    target_notional_usdc: float = 0.0,
+    requested_qty_coin: float = 0.0,
+    actual_qty_coin: float = 0.0,
+    actual_notional_usdc: float = 0.0,
+    entry_price_preview: float = 0.0,
+    entry_price: float = 0.0,
+    source: str = "runtime",
+) -> dict[str, Any]:
+    src_signal = signal if isinstance(signal, dict) else {}
+    src_active = active_trade if isinstance(active_trade, dict) else {}
+    src_mgmt = mgmt if isinstance(mgmt, dict) else {}
+    strategy_model = _safe_str(
+        src_signal.get("strategy_model")
+        or src_active.get("strategy_model")
+        or src_active.get("strategy_id")
+        or DEFAULT_STRATEGY_ID,
+        DEFAULT_STRATEGY_ID,
+    )
+    strategy_id = _safe_str(
+        src_signal.get("strategy_id")
+        or src_active.get("strategy_id")
+        or strategy_model
+        or DEFAULT_STRATEGY_ID,
+        DEFAULT_STRATEGY_ID,
+    )
+    strategy_version = _safe_str(
+        src_signal.get("strategy_version")
+        or src_active.get("strategy_version")
+        or TRADE_PLAN_SCHEMA_VERSION,
+        TRADE_PLAN_SCHEMA_VERSION,
+    )
+    regime_id = _safe_str(
+        src_signal.get("regime_id")
+        or src_active.get("regime_id")
+        or DEFAULT_REGIME_ID,
+        DEFAULT_REGIME_ID,
+    )
+    regime_version = _safe_str(
+        src_signal.get("regime_version")
+        or src_active.get("regime_version")
+        or TRADE_PLAN_SCHEMA_VERSION,
+        TRADE_PLAN_SCHEMA_VERSION,
+    )
+    detector_version = _safe_str(
+        src_signal.get("detector_version")
+        or src_active.get("detector_version")
+        or DEFAULT_DETECTOR_VERSION,
+        DEFAULT_DETECTOR_VERSION,
+    )
+
+    resolved_entry_price = _safe_float(entry_price, 0.0)
+    resolved_actual_qty = abs(_safe_float(actual_qty_coin, 0.0))
+    resolved_actual_notional = _safe_float(actual_notional_usdc, 0.0)
+    if resolved_actual_notional <= 0.0 and resolved_entry_price > 0.0 and resolved_actual_qty > 0.0:
+        resolved_actual_notional = resolved_entry_price * resolved_actual_qty
+
+    return {
+        "schema_version": TRADE_PLAN_SCHEMA_VERSION,
+        "frozen_at": datetime.utcnow().isoformat(),
+        "source": _safe_str(source, "runtime"),
+        "strategy_id": strategy_id,
+        "strategy_model": strategy_model,
+        "strategy_version": strategy_version,
+        "regime_id": regime_id,
+        "regime_version": regime_version,
+        "detector_version": detector_version,
+        "entry_strength": _safe_float(entry_strength, _safe_float(src_active.get("entry_strength"), 0.0)),
+        "best_score": _safe_float(best_score, _safe_float(src_active.get("best_score"), 0.0)),
+        "atr_pct": _safe_float(src_signal.get("atr_pct"), _safe_float(src_active.get("atr_pct"), 0.0)),
+        "sl_price_pct": _safe_float(sl_price_pct, _safe_float(src_active.get("sl_price_pct"), 0.0)),
+        "tp_activation_price": _safe_float(src_mgmt.get("tp_activate_price", src_mgmt.get("tp_activation_price", 0.0)), 0.0),
+        "trail_retrace_price": _safe_float(src_mgmt.get("trail_retrace_price"), 0.0),
+        "force_min_profit_price": _safe_float(src_mgmt.get("force_min_profit_price"), 0.0),
+        "force_min_strength": _safe_float(src_mgmt.get("force_min_strength"), 0.0),
+        "partial_tp_activation_price": _safe_float(src_mgmt.get("partial_tp_activation_price"), 0.0),
+        "partial_tp_close_fraction": _safe_float(src_mgmt.get("partial_tp_close_fraction"), 0.0),
+        "break_even_activation_price": _safe_float(src_mgmt.get("break_even_activation_price"), 0.0),
+        "break_even_offset_price": _safe_float(src_mgmt.get("break_even_offset_price"), 0.0),
+        "bucket": _safe_str(src_mgmt.get("bucket"), "strategy"),
+        "approved_margin_usdc": _safe_float(approved_margin_usdc, _safe_float(src_active.get("approved_margin_usdc"), 0.0)),
+        "leverage": _safe_float(leverage, _safe_float(src_active.get("leverage"), 0.0)),
+        "target_notional_usdc": _safe_float(target_notional_usdc, _safe_float(src_active.get("target_notional_usdc"), 0.0)),
+        "requested_qty_coin": _safe_float(requested_qty_coin, _safe_float(src_active.get("requested_qty_coin"), 0.0)),
+        "actual_qty_coin": resolved_actual_qty,
+        "actual_notional_usdc": resolved_actual_notional,
+        "entry_price_preview": _safe_float(entry_price_preview, _safe_float(src_active.get("entry_price_preview"), 0.0)),
+        "entry_price": resolved_entry_price,
+    }
+
+
+def _build_entry_context(
+    *,
+    symbol: str,
+    symbol_for_exec: str,
+    scanner_meta: Optional[dict[str, Any]] = None,
+    signal: Optional[dict[str, Any]] = None,
+    risk: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    scanner = scanner_meta if isinstance(scanner_meta, dict) else {}
+    sig = signal if isinstance(signal, dict) else {}
+    risk_payload = risk if isinstance(risk, dict) else {}
+    return {
+        "captured_at": datetime.utcnow().isoformat(),
+        "symbol": _safe_str(symbol).upper(),
+        "symbol_for_exec": _safe_str(symbol_for_exec).upper(),
+        "scanner": dict(scanner),
+        "signal_summary": {
+            "direction": _safe_str(sig.get("direction")).lower(),
+            "strength": _safe_float(sig.get("strength"), 0.0),
+            "score": _safe_float(sig.get("score"), 0.0),
+            "strategy_model": _safe_str(sig.get("strategy_model"), DEFAULT_STRATEGY_ID),
+        },
+        "risk": {
+            "ok": bool(risk_payload.get("ok")),
+            "reason": _safe_str(risk_payload.get("reason"), ""),
+            "position_size": _safe_float(risk_payload.get("position_size"), 0.0),
+        },
+    }
+
+
+def _build_active_trade_snapshot(
+    *,
+    user_id: int,
+    symbol: str,
+    symbol_for_exec: str,
+    direction: str,
+    side: str,
+    opposite: str,
+    entry_price: float,
+    qty_coin_for_log: float,
+    qty_usdc_for_profit: float,
+    best_score: float,
+    entry_strength: float,
+    mode: str,
+    sl_price_pct: float = 0.0,
+    mgmt: Optional[dict[str, Any]] = None,
+    opened_at_ms: Optional[int] = None,
+    trade_plan: Optional[dict[str, Any]] = None,
+    entry_context: Optional[dict[str, Any]] = None,
+    existing_state: Optional[dict[str, Any]] = None,
+    manager_bootstrap_pending: bool = False,
+) -> dict[str, Any]:
+    snapshot = dict(existing_state or {})
+    frozen_plan = dict(trade_plan or {})
+    snapshot.update({
+        "symbol": symbol,
+        "symbol_for_exec": symbol_for_exec,
+        "direction": direction,
+        "side": side,
+        "opposite": opposite,
+        "entry_price": float(entry_price),
+        "qty_coin_for_log": float(qty_coin_for_log),
+        "qty_usdc_for_profit": float(qty_usdc_for_profit),
+        "best_score": float(best_score),
+        "entry_strength": float(entry_strength),
+        "mode": mode,
+        "sl_price_pct": float(sl_price_pct),
+        "started_at": snapshot.get("started_at") or datetime.utcnow().isoformat(),
+        "opened_at_ms": int(opened_at_ms) if opened_at_ms else int(time.time() * 1000),
+        "tp_activation_price": float((mgmt or {}).get("tp_activate_price", (mgmt or {}).get("tp_activation_price", frozen_plan.get("tp_activation_price", 0.0))) or 0.0),
+        "trail_retrace_price": float((mgmt or {}).get("trail_retrace_price", frozen_plan.get("trail_retrace_price", 0.0)) or 0.0),
+        "force_min_profit_price": float((mgmt or {}).get("force_min_profit_price", frozen_plan.get("force_min_profit_price", 0.0)) or 0.0),
+        "force_min_strength": float((mgmt or {}).get("force_min_strength", frozen_plan.get("force_min_strength", 0.0)) or 0.0),
+        "partial_tp_activation_price": float((mgmt or {}).get("partial_tp_activation_price", frozen_plan.get("partial_tp_activation_price", 0.0)) or 0.0),
+        "partial_tp_close_fraction": float((mgmt or {}).get("partial_tp_close_fraction", frozen_plan.get("partial_tp_close_fraction", 0.0)) or 0.0),
+        "break_even_activation_price": float((mgmt or {}).get("break_even_activation_price", frozen_plan.get("break_even_activation_price", 0.0)) or 0.0),
+        "break_even_offset_price": float((mgmt or {}).get("break_even_offset_price", frozen_plan.get("break_even_offset_price", 0.0)) or 0.0),
+        "bucket": _safe_str((mgmt or {}).get("bucket", frozen_plan.get("bucket", ""))),
+        "trade_plan": frozen_plan,
+        "entry_context": dict(entry_context or snapshot.get("entry_context") or {}),
+        "strategy_id": _safe_str(frozen_plan.get("strategy_id") or snapshot.get("strategy_id") or DEFAULT_STRATEGY_ID, DEFAULT_STRATEGY_ID),
+        "strategy_model": _safe_str(frozen_plan.get("strategy_model") or snapshot.get("strategy_model") or DEFAULT_STRATEGY_ID, DEFAULT_STRATEGY_ID),
+        "strategy_version": _safe_str(frozen_plan.get("strategy_version") or snapshot.get("strategy_version") or TRADE_PLAN_SCHEMA_VERSION, TRADE_PLAN_SCHEMA_VERSION),
+        "regime_id": _safe_str(frozen_plan.get("regime_id") or snapshot.get("regime_id") or DEFAULT_REGIME_ID, DEFAULT_REGIME_ID),
+        "regime_version": _safe_str(frozen_plan.get("regime_version") or snapshot.get("regime_version") or TRADE_PLAN_SCHEMA_VERSION, TRADE_PLAN_SCHEMA_VERSION),
+        "detector_version": _safe_str(frozen_plan.get("detector_version") or snapshot.get("detector_version") or DEFAULT_DETECTOR_VERSION, DEFAULT_DETECTOR_VERSION),
+        "approved_margin_usdc": _safe_float(frozen_plan.get("approved_margin_usdc"), _safe_float(snapshot.get("approved_margin_usdc"), 0.0)),
+        "target_notional_usdc": _safe_float(frozen_plan.get("target_notional_usdc"), _safe_float(snapshot.get("target_notional_usdc"), 0.0)),
+        "requested_qty_coin": _safe_float(frozen_plan.get("requested_qty_coin"), _safe_float(snapshot.get("requested_qty_coin"), 0.0)),
+        "entry_price_preview": _safe_float(frozen_plan.get("entry_price_preview"), _safe_float(snapshot.get("entry_price_preview"), 0.0)),
+        "leverage": _safe_float(frozen_plan.get("leverage"), _safe_float(snapshot.get("leverage"), 0.0)),
+        "manager_bootstrap_pending": bool(manager_bootstrap_pending),
+    })
+    snapshot.setdefault("partial_tp_taken", False)
+    snapshot.setdefault("break_even_armed", False)
+    snapshot.setdefault("trailing_active", False)
+    snapshot.setdefault("best_pnl_pct", 0.0)
+    snapshot.setdefault("trailing_stop_pnl", None)
+    snapshot.setdefault("peak_price", float(entry_price))
+    snapshot.setdefault("last_price", float(entry_price))
+    snapshot.setdefault("last_pnl_pct", 0.0)
+    snapshot.setdefault("strength_check_ts", 0.0)
+    snapshot.setdefault("manager_heartbeat_ts", time.time())
+    snapshot.setdefault("close_in_progress", False)
+    snapshot.setdefault("close_finalized", False)
+    return snapshot
+
+
+def _build_trade_audit_metadata(active_trade: Optional[dict[str, Any]]) -> dict[str, Any] | None:
+    if not isinstance(active_trade, dict):
+        return None
+    payload: dict[str, Any] = {}
+    for key in (
+        "strategy_id",
+        "strategy_model",
+        "strategy_version",
+        "regime_id",
+        "regime_version",
+        "detector_version",
+        "approved_margin_usdc",
+        "target_notional_usdc",
+        "requested_qty_coin",
+        "entry_price_preview",
+        "leverage",
+    ):
+        if key in active_trade and active_trade.get(key) is not None:
+            payload[key] = active_trade.get(key)
+    if isinstance(active_trade.get("trade_plan"), dict):
+        payload["trade_plan"] = dict(active_trade.get("trade_plan") or {})
+    if isinstance(active_trade.get("entry_context"), dict):
+        payload["entry_context"] = dict(active_trade.get("entry_context") or {})
+    return payload or None
 
 
 def _publish_operational_snapshot(
@@ -784,6 +1046,8 @@ def _start_manager_thread(
     sl_price_pct: float = 0.0,
     mgmt: Optional[dict[str, Any]] = None,
     opened_at_ms: Optional[int] = None,
+    trade_plan: Optional[dict[str, Any]] = None,
+    entry_context: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Arranca un manager en background si no existe uno vivo para el usuario.
     Retorna True si se creó, False si ya había uno corriendo.
@@ -791,7 +1055,6 @@ def _start_manager_thread(
     with _user_manager_guard:
         existing = _user_manager_threads.get(user_id)
         if existing and existing.is_alive():
-            # Ya hay manager corriendo
             return False
 
         def _runner():
@@ -800,7 +1063,7 @@ def _start_manager_thread(
                     "symbol": symbol,
                     "mode": mode,
                     "started_at": datetime.utcnow().isoformat(),
-            "opened_at_ms": int(opened_at_ms) if opened_at_ms else int(time.time() * 1000),
+                    "opened_at_ms": int(opened_at_ms) if opened_at_ms else int(time.time() * 1000),
                 }
                 _manage_trade_until_close(
                     user_id=user_id,
@@ -825,43 +1088,30 @@ def _start_manager_thread(
                     _user_manager_threads.pop(user_id, None)
                     _user_manager_meta.pop(user_id, None)
 
-        _set_active_trade(user_id, {
-            "symbol": symbol,
-            "symbol_for_exec": symbol_for_exec,
-            "direction": direction,
-            "side": side,
-            "opposite": opposite,
-            "entry_price": float(entry_price),
-            "qty_coin_for_log": float(qty_coin_for_log),
-            "qty_usdc_for_profit": float(qty_usdc_for_profit),
-            "best_score": float(best_score),
-            "entry_strength": float(entry_strength),
-            "mode": mode,
-            "sl_price_pct": float(sl_price_pct),
-            "started_at": datetime.utcnow().isoformat(),
-            "opened_at_ms": int(opened_at_ms) if opened_at_ms else int(time.time() * 1000),
-            "tp_activation_price": float((mgmt or {}).get("tp_activate_price", (mgmt or {}).get("tp_activation_price", 0.0)) or 0.0),
-            "trail_retrace_price": float((mgmt or {}).get("trail_retrace_price", 0.0) or 0.0),
-            "force_min_profit_price": float((mgmt or {}).get("force_min_profit_price", 0.0) or 0.0),
-            "force_min_strength": float((mgmt or {}).get("force_min_strength", 0.0) or 0.0),
-            "partial_tp_activation_price": float((mgmt or {}).get("partial_tp_activation_price", 0.0) or 0.0),
-            "partial_tp_close_fraction": float((mgmt or {}).get("partial_tp_close_fraction", 0.0) or 0.0),
-            "break_even_activation_price": float((mgmt or {}).get("break_even_activation_price", 0.0) or 0.0),
-            "break_even_offset_price": float((mgmt or {}).get("break_even_offset_price", 0.0) or 0.0),
-            "bucket": str((mgmt or {}).get("bucket", "")),
-            "partial_tp_taken": False,
-            "break_even_armed": False,
-            "trailing_active": False,
-            "best_pnl_pct": 0.0,
-            "trailing_stop_pnl": None,
-            "peak_price": float(entry_price),
-            "last_price": float(entry_price),
-            "last_pnl_pct": 0.0,
-            "strength_check_ts": 0.0,
-            "manager_heartbeat_ts": time.time(),
-            "close_in_progress": False,
-            "close_finalized": False,
-        })
+        existing_runtime = _get_active_trade(user_id) or {}
+        snapshot = _build_active_trade_snapshot(
+            user_id=user_id,
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            direction=direction,
+            side=side,
+            opposite=opposite,
+            entry_price=float(entry_price),
+            qty_coin_for_log=float(qty_coin_for_log),
+            qty_usdc_for_profit=float(qty_usdc_for_profit),
+            best_score=float(best_score),
+            entry_strength=float(entry_strength),
+            mode=mode,
+            sl_price_pct=float(sl_price_pct),
+            mgmt=mgmt,
+            opened_at_ms=opened_at_ms,
+            trade_plan=trade_plan,
+            entry_context=entry_context,
+            existing_state=existing_runtime,
+            manager_bootstrap_pending=False,
+        )
+        snapshot["manager_heartbeat_ts"] = time.time()
+        _set_active_trade(user_id, snapshot)
 
         th = threading.Thread(target=_runner, name=f"mgr-{user_id}", daemon=True)
         _user_manager_threads[user_id] = th
@@ -1219,45 +1469,50 @@ def _extract_strategy_management_params(src: Optional[dict[str, Any]]) -> Option
     if not isinstance(src, dict):
         return None
 
-    try:
-        tp_activate = float(src.get("tp_activation_price", src.get("tp_activate_price", 0.0)) or 0.0)
-        trail_retrace = float(src.get("trail_retrace_price", 0.0) or 0.0)
-        force_min_profit = float(src.get("force_min_profit_price", 0.0) or 0.0)
-        force_min_strength = float(src.get("force_min_strength", 0.0) or 0.0)
-        partial_tp_activation = float(src.get("partial_tp_activation_price", 0.0) or 0.0)
-        partial_tp_close_fraction = float(src.get("partial_tp_close_fraction", 0.0) or 0.0)
-        break_even_activation = float(src.get("break_even_activation_price", 0.0) or 0.0)
-        break_even_offset = float(src.get("break_even_offset_price", 0.0) or 0.0)
-        bucket = str(src.get("mgmt_bucket") or src.get("bucket") or "strategy")
-    except Exception:
-        return None
+    candidates: list[dict[str, Any]] = []
+    nested_plan = src.get("trade_plan")
+    if isinstance(nested_plan, dict):
+        candidates.append(nested_plan)
+    candidates.append(src)
 
-    if tp_activate <= 0.0 or trail_retrace <= 0.0 or force_min_profit <= 0.0 or force_min_strength <= 0.0:
-        return None
+    for candidate in candidates:
+        try:
+            tp_activate = float(candidate.get("tp_activation_price", candidate.get("tp_activate_price", 0.0)) or 0.0)
+            trail_retrace = float(candidate.get("trail_retrace_price", 0.0) or 0.0)
+            force_min_profit = float(candidate.get("force_min_profit_price", 0.0) or 0.0)
+            force_min_strength = float(candidate.get("force_min_strength", 0.0) or 0.0)
+            partial_tp_activation = float(candidate.get("partial_tp_activation_price", 0.0) or 0.0)
+            partial_tp_close_fraction = float(candidate.get("partial_tp_close_fraction", 0.0) or 0.0)
+            break_even_activation = float(candidate.get("break_even_activation_price", 0.0) or 0.0)
+            break_even_offset = float(candidate.get("break_even_offset_price", 0.0) or 0.0)
+            bucket = str(candidate.get("mgmt_bucket") or candidate.get("bucket") or "strategy")
+        except Exception:
+            continue
 
-    # Rehabilitamos el partial TP strategy-driven.
-    # Antes se neutralizaba aquí y eso empujaba la distribución hacia:
-    # SL completos + winners demasiado pequeños o todo/nada.
-    if partial_tp_activation <= 0.0:
-        partial_tp_activation = max(0.0, tp_activate * 0.74)
-    # Clamp defensivo: nunca cerrar demasiado ni dejarlo absurdo.
-    partial_tp_close_fraction = _engine_clamp(float(partial_tp_close_fraction or 0.0), 0.18, 0.45)
-    if break_even_activation <= 0.0:
-        break_even_activation = max(0.0, partial_tp_activation * 0.70)
-    if break_even_offset <= 0.0:
-        break_even_offset = 0.0008
+        if tp_activate <= 0.0 or trail_retrace <= 0.0 or force_min_profit <= 0.0 or force_min_strength <= 0.0:
+            continue
 
-    return {
-        "bucket": bucket,
-        "tp_activate_price": tp_activate,
-        "trail_retrace_price": trail_retrace,
-        "force_min_profit_price": force_min_profit,
-        "force_min_strength": force_min_strength,
-        "partial_tp_activation_price": partial_tp_activation,
-        "partial_tp_close_fraction": partial_tp_close_fraction,
-        "break_even_activation_price": break_even_activation,
-        "break_even_offset_price": break_even_offset,
-    }
+        if partial_tp_activation <= 0.0:
+            partial_tp_activation = max(0.0, tp_activate * 0.74)
+        partial_tp_close_fraction = _engine_clamp(float(partial_tp_close_fraction or 0.0), 0.18, 0.45)
+        if break_even_activation <= 0.0:
+            break_even_activation = max(0.0, partial_tp_activation * 0.70)
+        if break_even_offset <= 0.0:
+            break_even_offset = 0.0008
+
+        return {
+            "bucket": bucket,
+            "tp_activate_price": tp_activate,
+            "trail_retrace_price": trail_retrace,
+            "force_min_profit_price": force_min_profit,
+            "force_min_strength": force_min_strength,
+            "partial_tp_activation_price": partial_tp_activation,
+            "partial_tp_close_fraction": partial_tp_close_fraction,
+            "break_even_activation_price": break_even_activation,
+            "break_even_offset_price": break_even_offset,
+        }
+
+    return None
 
 
 def _disabled_management_params() -> dict[str, float]:
@@ -1279,6 +1534,12 @@ def _disabled_management_params() -> dict[str, float]:
 def _has_frozen_trade_plan(active_trade: Optional[dict[str, Any]]) -> bool:
     if not isinstance(active_trade, dict):
         return False
+    nested_plan = active_trade.get("trade_plan")
+    if isinstance(nested_plan, dict):
+        try:
+            return float(nested_plan.get("tp_activation_price", nested_plan.get("tp_activate_price", 0.0)) or 0.0) > 0.0
+        except Exception:
+            pass
     try:
         return float(active_trade.get("tp_activation_price", active_trade.get("tp_activate_price", 0.0)) or 0.0) > 0.0
     except Exception:
@@ -1669,6 +1930,7 @@ def _register_trade_safe(
     realized_fills: int = 0,
     close_source: str = "",
     notional_usdc: float = 0.0,
+    metadata: Optional[dict[str, Any]] = None,
 ) -> None:
     errs = []
     try:
@@ -1689,6 +1951,7 @@ def _register_trade_safe(
             close_source=str(close_source or ""),
             direction=str(direction or ""),
             notional_usdc=float(notional_usdc or 0.0),
+            metadata=(dict(metadata) if isinstance(metadata, dict) else None),
         )
         return
     except Exception as e:
@@ -1833,6 +2096,7 @@ def _finalize_trade_close(
         )
 
     try:
+        trade_audit_metadata = _build_trade_audit_metadata(_get_active_trade(user_id) or {})
         _register_trade_safe(
             user_id=user_id,
             symbol=symbol,
@@ -1850,6 +2114,7 @@ def _finalize_trade_close(
             realized_fills=int(realized_fills),
             close_source=str(source),
             notional_usdc=float(qty_usdc_for_profit),
+            metadata=trade_audit_metadata,
         )
     except Exception as e:
         log(f"register_trade error {symbol} src={source} err={e}", "ERROR")
@@ -2512,7 +2777,7 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
     manager_running = _manager_is_running(user_id)
     same_position = _same_live_position(active_trade, symbol=symbol, direction=direction, entry_price=float(entry_price))
 
-    adopt_signal = get_entry_signal(symbol)
+    adopt_signal = None
     adopt_entry_strength = float((active_trade or {}).get("entry_strength", 0.0) or 0.0)
     adopt_best_score = float((active_trade or {}).get("best_score", 0.0) or 0.0)
     adopt_sl_price_pct = float((active_trade or {}).get("sl_price_pct", ADOPT_EMERGENCY_SL_PCT) or ADOPT_EMERGENCY_SL_PCT)
@@ -2522,6 +2787,14 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
         entry_strength=adopt_entry_strength,
         best_score=adopt_best_score,
     )
+
+    if (not frozen_plan) and (not same_position):
+        adopt_signal = get_entry_signal(symbol)
+    elif (not frozen_plan) and same_position and isinstance(active_trade, dict):
+        log(
+            f"ADOPT conserva snapshot persistido sin recalcular señal user={user_id} symbol={symbol}",
+            "WARN",
+        )
 
     if (not frozen_plan) and isinstance(adopt_signal, dict) and adopt_signal.get("signal") and str(adopt_signal.get("direction") or "").lower() == direction:
         adopt_entry_strength = float(adopt_signal.get("strength", adopt_entry_strength) or adopt_entry_strength or 0.0)
@@ -2534,47 +2807,61 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
             best_score=adopt_best_score,
         )
 
-    existing_started_at = (active_trade or {}).get("started_at")
     existing_opened_at_ms = _active_trade_opened_since_ms(active_trade)
-    snapshot = {
-        "symbol": symbol,
-        "symbol_for_exec": symbol_for_exec,
-        "direction": direction,
-        "side": side,
-        "opposite": opposite,
-        "entry_price": float(entry_price),
-        "qty_coin_for_log": float(qty_coin_real),
-        "qty_usdc_for_profit": float(qty_usdc_real),
-        "best_score": float(adopt_best_score),
-        "entry_strength": float(adopt_entry_strength),
-        "mode": "ADOPT",
-        "sl_price_pct": float(adopt_sl_price_pct),
-        "started_at": existing_started_at or datetime.utcnow().isoformat(),
-        "opened_at_ms": int(existing_opened_at_ms) if existing_opened_at_ms else int(time.time() * 1000),
-        "tp_activation_price": float(adopt_mgmt.get("tp_activate_price", 0.0) or 0.0),
-        "trail_retrace_price": float(adopt_mgmt.get("trail_retrace_price", 0.0) or 0.0),
-        "force_min_profit_price": float(adopt_mgmt.get("force_min_profit_price", 0.0) or 0.0),
-        "force_min_strength": float(adopt_mgmt.get("force_min_strength", 0.0) or 0.0),
-        "partial_tp_activation_price": float(adopt_mgmt.get("partial_tp_activation_price", 0.0) or 0.0),
-        "partial_tp_close_fraction": float(adopt_mgmt.get("partial_tp_close_fraction", 0.0) or 0.0),
-        "break_even_activation_price": float(adopt_mgmt.get("break_even_activation_price", 0.0) or 0.0),
-        "break_even_offset_price": float(adopt_mgmt.get("break_even_offset_price", 0.0) or 0.0),
-        "bucket": str(adopt_mgmt.get("bucket", "")),
-        "trailing_active": bool((active_trade or {}).get("trailing_active", False)),
-        "best_pnl_pct": float((active_trade or {}).get("best_pnl_pct", 0.0) or 0.0),
-        "trailing_stop_pnl": (active_trade or {}).get("trailing_stop_pnl", None),
-        "peak_price": float((active_trade or {}).get("peak_price", entry_price) or entry_price),
-        "last_price": float((active_trade or {}).get("last_price", entry_price) or entry_price),
-        "last_pnl_pct": float((active_trade or {}).get("last_pnl_pct", 0.0) or 0.0),
-        "strength_check_ts": float((active_trade or {}).get("strength_check_ts", 0.0) or 0.0),
-        "manager_heartbeat_ts": float((active_trade or {}).get("manager_heartbeat_ts", 0.0) or 0.0),
-        "adopt_last_seen_ts": time.time(),
-        "adopt_plan_logged_at": float((active_trade or {}).get("adopt_plan_logged_at", 0.0) or 0.0),
-        "adopt_sl_checked_at": float((active_trade or {}).get("adopt_sl_checked_at", 0.0) or 0.0),
-        "sl_in_exchange": bool((active_trade or {}).get("sl_in_exchange", False)),
-        "close_in_progress": False,
-        "close_finalized": False,
-    }
+    entry_context = dict((active_trade or {}).get("entry_context") or {})
+    if not entry_context:
+        entry_context = _build_entry_context(
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            scanner_meta=None,
+            signal=adopt_signal,
+            risk=None,
+        )
+        entry_context["captured_from"] = "adopt"
+
+    trade_plan = _build_trade_plan(
+        signal=adopt_signal,
+        active_trade=active_trade,
+        mgmt=adopt_mgmt,
+        sl_price_pct=float(adopt_sl_price_pct),
+        entry_strength=float(adopt_entry_strength),
+        best_score=float(adopt_best_score),
+        approved_margin_usdc=_safe_float((active_trade or {}).get("approved_margin_usdc"), 0.0),
+        leverage=_safe_float((active_trade or {}).get("leverage"), float(LEVERAGE)),
+        target_notional_usdc=_safe_float((active_trade or {}).get("target_notional_usdc"), float(qty_usdc_real)),
+        requested_qty_coin=_safe_float((active_trade or {}).get("requested_qty_coin"), float(qty_coin_real)),
+        actual_qty_coin=float(qty_coin_real),
+        actual_notional_usdc=float(qty_usdc_real),
+        entry_price_preview=_safe_float((active_trade or {}).get("entry_price_preview"), float(entry_price)),
+        entry_price=float(entry_price),
+        source=("adopt_frozen" if frozen_plan else "adopt"),
+    )
+
+    snapshot = _build_active_trade_snapshot(
+        user_id=user_id,
+        symbol=symbol,
+        symbol_for_exec=symbol_for_exec,
+        direction=direction,
+        side=side,
+        opposite=opposite,
+        entry_price=float(entry_price),
+        qty_coin_for_log=float(qty_coin_real),
+        qty_usdc_for_profit=float(qty_usdc_real),
+        best_score=float(adopt_best_score),
+        entry_strength=float(adopt_entry_strength),
+        mode="ADOPT",
+        sl_price_pct=float(adopt_sl_price_pct),
+        mgmt=adopt_mgmt,
+        opened_at_ms=int(existing_opened_at_ms) if existing_opened_at_ms else int(time.time() * 1000),
+        trade_plan=trade_plan,
+        entry_context=entry_context,
+        existing_state=active_trade,
+        manager_bootstrap_pending=False,
+    )
+    snapshot["adopt_last_seen_ts"] = time.time()
+    snapshot["adopt_plan_logged_at"] = float((active_trade or {}).get("adopt_plan_logged_at", 0.0) or 0.0)
+    snapshot["adopt_sl_checked_at"] = float((active_trade or {}).get("adopt_sl_checked_at", 0.0) or 0.0)
+    snapshot["sl_in_exchange"] = bool((active_trade or {}).get("sl_in_exchange", False))
     _set_active_trade(user_id, snapshot)
 
     now_ts = time.time()
@@ -2652,6 +2939,8 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
         sl_price_pct=float(adopt_sl_price_pct),
         mgmt=adopt_mgmt,
         opened_at_ms=int((_active_trade_opened_since_ms(snapshot) or int(time.time() * 1000))),
+        trade_plan=trade_plan,
+        entry_context=entry_context,
     )
 
     if started:
@@ -3024,20 +3313,17 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             f"force_min_profit={float(mgmt['force_min_profit_price']):.6f}, force_min_strength={float(mgmt['force_min_strength']):.4f}",
             "INFO",
         )
-        # ✅ Sizing real por balance disponible.
-        # El repo anterior decía 100% en config, pero aquí seguía operando con margen fijo.
-        # Eso rompía la expectativa del usuario y además podía volver inviables los cierres parciales.
+        # ✅ Sizing real gobernado por risk.py.
+        # La validación de riesgo ya decidió el tamaño permitido; el engine no debe ignorarlo.
         if float(capital) < float(MIN_CAPITAL_USDC):
             log(f"Capital demasiado bajo para operar ({capital} USDC) < {MIN_CAPITAL_USDC}", "WARN")
             return None
 
-        margin_usdc = float(capital)
-        # Blindaje extra: nunca usar más del balance disponible y nunca aceptar margen inválido.
-        margin_usdc = max(0.0, min(float(margin_usdc), float(capital)))
-        target_notional_usdc = float(margin_usdc) * float(LEVERAGE)
+        approved_margin_usdc = max(0.0, min(_safe_float(risk.get("position_size"), 0.0), float(capital)))
+        target_notional_usdc = float(approved_margin_usdc) * float(LEVERAGE)
 
-        if margin_usdc <= 0:
-            log(f"Margen calculado inválido ({margin_usdc} USDC) — skip", "WARN")
+        if approved_margin_usdc <= 0:
+            log(f"Margen aprobado inválido ({approved_margin_usdc} USDC) — skip", "WARN")
             return None
         if target_notional_usdc < float(MIN_NOTIONAL_USDC):
             log(f"Notional objetivo inválido ({target_notional_usdc} USDC) < {MIN_NOTIONAL_USDC} — skip", "WARN")
@@ -3048,19 +3334,29 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             log("No se pudo obtener precio para calcular qty_coin", "ERROR")
             return None
 
-        qty_coin = round(target_notional_usdc / entry_price_preview, 8)
-        if qty_coin <= 0:
+        requested_qty_coin = round(target_notional_usdc / entry_price_preview, 8)
+        if requested_qty_coin <= 0:
             log("qty_coin inválido tras conversión", "ERROR")
             return None
 
-        # ✅ Guard: qty mínimo en coin (evita 0.0 / tamaños ridículos)
-        if qty_coin < float(MIN_QTY_COIN):
-            log(f"qty_coin demasiado pequeño ({qty_coin}) < {MIN_QTY_COIN} — skip", "WARN")
+        if requested_qty_coin < float(MIN_QTY_COIN):
+            log(f"qty_coin demasiado pequeño ({requested_qty_coin}) < {MIN_QTY_COIN} — skip", "WARN")
             return None
 
-        log(f"Ejecutando orden {symbol} {side} qty_coin={qty_coin} (margin_100pct~{margin_usdc} USDC -> target_notional~{target_notional_usdc} USDC, lev={LEVERAGE}x)")
+        entry_context = _build_entry_context(
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            scanner_meta=scanner_meta,
+            signal=signal,
+            risk=risk,
+        )
+
+        log(
+            f"Ejecutando orden {symbol} {side} qty_coin={requested_qty_coin} "
+            f"(approved_margin~{approved_margin_usdc} USDC -> target_notional~{target_notional_usdc} USDC, lev={LEVERAGE}x)"
+        )
         entry_started_at_ms = int(time.time() * 1000)
-        open_resp = place_market_order(user_id, symbol_for_exec, side, qty_coin)
+        open_resp = place_market_order(user_id, symbol_for_exec, side, requested_qty_coin)
 
         if not open_resp:
             log("Orden OPEN sin respuesta/empty del exchange — abortando trade", "ERROR")
@@ -3125,6 +3421,45 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             _cooldown_symbol(user_id, symbol, SYMBOL_NOFILL_COOLDOWN_SECONDS)
             return None
 
+        trade_plan = _build_trade_plan(
+            signal=signal,
+            mgmt=mgmt,
+            sl_price_pct=float(sl_price_pct),
+            entry_strength=float(strength),
+            best_score=float(signal.get("score", 0.0) or 0.0),
+            approved_margin_usdc=float(approved_margin_usdc),
+            leverage=float(LEVERAGE),
+            target_notional_usdc=float(target_notional_usdc),
+            requested_qty_coin=float(requested_qty_coin),
+            actual_qty_coin=float(size_real),
+            actual_notional_usdc=float(notional_real),
+            entry_price_preview=float(entry_price_preview),
+            entry_price=float(entry_price),
+            source="open",
+        )
+        pre_manager_snapshot = _build_active_trade_snapshot(
+            user_id=user_id,
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            direction=direction,
+            side=side,
+            opposite=opposite,
+            entry_price=float(entry_price),
+            qty_coin_for_log=float(size_real),
+            qty_usdc_for_profit=float(notional_real),
+            best_score=float(signal.get("score", 0.0) or 0.0),
+            entry_strength=float(strength),
+            mode="NEW_PENDING_MANAGER",
+            sl_price_pct=float(sl_price_pct),
+            mgmt=mgmt,
+            opened_at_ms=int(entry_started_at_ms),
+            trade_plan=trade_plan,
+            entry_context=entry_context,
+            existing_state=None,
+            manager_bootstrap_pending=True,
+        )
+        _set_active_trade(user_id, pre_manager_snapshot)
+
         _log_trade_plan(
             context="OPEN",
             user_id=user_id,
@@ -3143,7 +3478,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
 
         # ✅ STOP LOSS REAL EN EXCHANGE (BANK GRADE):
         # Se calcula dinámicamente por trade y se coloca en el exchange al abrir.
-        _ensure_exchange_stop_loss(
+        sl_in_exchange_ok = _ensure_exchange_stop_loss(
             user_id=user_id,
             symbol=symbol,
             symbol_for_exec=symbol_for_exec,
@@ -3152,6 +3487,13 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             qty_coin=float(size_real),
             sl_price_pct=float(sl_price_pct),
             context="OPEN",
+        )
+        _update_active_trade_fields(
+            user_id,
+            sl_in_exchange=bool(sl_in_exchange_ok),
+            manager_bootstrap_pending=True,
+            trade_plan=trade_plan,
+            entry_context=entry_context,
         )
 
         # ✅ IMPORTANTÍSIMO:
@@ -3173,6 +3515,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             sl_price_pct=float(sl_price_pct),
             mgmt=mgmt,
             opened_at_ms=int(entry_started_at_ms),
+            trade_plan=trade_plan,
+            entry_context=entry_context,
         )
 
         if started:
