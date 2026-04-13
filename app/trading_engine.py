@@ -197,7 +197,13 @@ def _build_entry_context(
             "direction": _safe_str(sig.get("direction")).lower(),
             "strength": _safe_float(sig.get("strength"), 0.0),
             "score": _safe_float(sig.get("score"), 0.0),
+            "strategy_id": _safe_str(sig.get("strategy_id"), DEFAULT_STRATEGY_ID),
+            "strategy_version": _safe_str(sig.get("strategy_version"), TRADE_PLAN_SCHEMA_VERSION),
             "strategy_model": _safe_str(sig.get("strategy_model"), DEFAULT_STRATEGY_ID),
+            "regime_id": _safe_str(sig.get("regime_id"), DEFAULT_REGIME_ID),
+            "detector_version": _safe_str(sig.get("detector_version"), DEFAULT_DETECTOR_VERSION),
+            "router_mode": _safe_str(sig.get("router_mode"), "legacy"),
+            "router_decision": _safe_str(sig.get("router_decision"), "legacy"),
         },
         "risk": {
             "ok": bool(risk_payload.get("ok")),
@@ -3257,7 +3263,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
 
         log(
             f"SEÑAL CONFIRMADA {symbol} {direction.upper()} strength={signal.get('strength')} score={signal.get('score')} "
-            f"scanner_score={scanner_meta.get('score')} model={signal.get('strategy_model', 'strategy')}",
+            f"scanner_score={scanner_meta.get('score')} model={signal.get('strategy_model', 'strategy')} "
+            f"strategy_id={signal.get('strategy_id')} regime={signal.get('regime_id')} router={signal.get('router_decision')}",
             "INFO",
         )
         _publish_operational_snapshot(
@@ -3275,9 +3282,12 @@ def execute_trade_cycle(user_id: int) -> dict | None:
                 'last_cycle_at': datetime.utcnow(),
                 'scanner_score': scanner_meta.get('score'),
                 'strategy_model': signal.get('strategy_model'),
+                'strategy_id': signal.get('strategy_id'),
+                'regime_id': signal.get('regime_id'),
+                'router_decision': signal.get('router_decision'),
             },
         )
-        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')})
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')})
 
         risk = validate_trade_conditions(capital, strength)
         if not risk.get("ok"):
@@ -3532,9 +3542,9 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             live_trade=True,
             active_symbol=symbol,
             exchange_snapshot=exchange_snapshot,
-            metadata={'last_result': 'trade_opened', 'last_decision': 'trade_opened', 'last_symbol': symbol, 'last_cycle_at': datetime.utcnow(), 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')},
+            metadata={'last_result': 'trade_opened', 'last_decision': 'trade_opened', 'last_symbol': symbol, 'last_cycle_at': datetime.utcnow(), 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')},
         )
-        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model')})
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='trade_opened', exchange_snapshot=exchange_snapshot, extra={'phase': 'trade_opened', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision')})
 
         open_payload = {
             "symbol": symbol,
