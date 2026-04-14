@@ -16,7 +16,7 @@ REGIME_TREND = "TREND_CONTINUATION"
 REGIME_VOLATILE = "VOLATILE_SWEEP"
 REGIME_RANGE = "RANGE"
 REGIME_UNKNOWN = "UNKNOWN"
-DETECTOR_VERSION = "v1"
+DETECTOR_VERSION = "v2_calibrated_router"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -68,29 +68,29 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
     recent_move_3 = abs(float(features.get("recent_move_3") or 0.0))
     btc_recent_move_3 = abs(float(features.get("btc_recent_move_3") or 0.0))
 
-    trend_adx_min = _env_float("REGIME_TREND_ADX_MIN", 16.5)
-    trend_chop_max = _env_float("REGIME_TREND_CHOP_MAX", 55.0)
-    trend_eff_min = _env_float("REGIME_TREND_EFFICIENCY_MIN", 0.28)
-    trend_ema_align_min = _env_float("REGIME_TREND_EMA_ALIGN_MIN", 0.60)
-    trend_breakout_fail_max = _env_float("REGIME_TREND_BREAKOUT_FAIL_MAX", 0.22)
+    trend_adx_min = _env_float("REGIME_TREND_ADX_MIN", 15.0)
+    trend_chop_max = _env_float("REGIME_TREND_CHOP_MAX", 57.0)
+    trend_eff_min = _env_float("REGIME_TREND_EFFICIENCY_MIN", 0.23)
+    trend_ema_align_min = _env_float("REGIME_TREND_EMA_ALIGN_MIN", 0.54)
+    trend_breakout_fail_max = _env_float("REGIME_TREND_BREAKOUT_FAIL_MAX", 0.26)
 
     volatile_btc_shock_min = _env_float("REGIME_VOLATILE_BTC_SHOCK_MIN", 1.55)
     volatile_wick_min = _env_float("REGIME_VOLATILE_WICK_MIN", 0.56)
     volatile_breakout_fail_min = _env_float("REGIME_VOLATILE_BREAKOUT_FAIL_MIN", 0.26)
     volatile_atr_pct_min = _env_float("REGIME_VOLATILE_ATR_PCT_MIN", 0.0085)
 
-    range_adx_max = _env_float("REGIME_RANGE_ADX_MAX", 19.0)
-    range_chop_min = _env_float("REGIME_RANGE_CHOP_MIN", 54.0)
-    range_eff_max = _env_float("REGIME_RANGE_EFFICIENCY_MAX", 0.34)
-    range_vwap_dist_max = _env_float("REGIME_RANGE_VWAP_DIST_ATR_MAX", 1.10)
-    range_ema_align_max = _env_float("REGIME_RANGE_EMA_ALIGN_MAX", 0.62)
+    range_adx_max = _env_float("REGIME_RANGE_ADX_MAX", 22.0)
+    range_chop_min = _env_float("REGIME_RANGE_CHOP_MIN", 51.0)
+    range_eff_max = _env_float("REGIME_RANGE_EFFICIENCY_MAX", 0.38)
+    range_vwap_dist_max = _env_float("REGIME_RANGE_VWAP_DIST_ATR_MAX", 1.25)
+    range_ema_align_max = _env_float("REGIME_RANGE_EMA_ALIGN_MAX", 0.68)
 
     volatile_score = 0
     volatile_score += _score_bool(btc_shock_ratio >= volatile_btc_shock_min)
     volatile_score += _score_bool(wick_instability >= volatile_wick_min)
     volatile_score += _score_bool(breakout_failure_ratio >= volatile_breakout_fail_min)
     volatile_score += _score_bool(atr_pct >= volatile_atr_pct_min)
-    volatile_score += _score_bool(body_quality <= 0.42 and efficiency <= 0.45)
+    volatile_score += _score_bool(body_quality <= 0.45 and efficiency <= 0.48)
     volatile_score += _score_bool(recent_move_3 >= max(atr_pct * 0.55, 0.0035) or btc_recent_move_3 >= 0.0035)
 
     trend_score = 0
@@ -99,7 +99,7 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
     trend_score += _score_bool(efficiency >= trend_eff_min)
     trend_score += _score_bool(ema_stack_alignment >= trend_ema_align_min)
     trend_score += _score_bool(breakout_failure_ratio <= trend_breakout_fail_max)
-    trend_score += _score_bool(body_quality >= 0.38)
+    trend_score += _score_bool(body_quality >= 0.35)
 
     range_score = 0
     range_score += _score_bool(adx <= range_adx_max)
@@ -107,7 +107,7 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
     range_score += _score_bool(efficiency <= range_eff_max)
     range_score += _score_bool(distance_to_vwap_atr <= range_vwap_dist_max)
     range_score += _score_bool(ema_stack_alignment <= range_ema_align_max)
-    range_score += _score_bool(breakout_failure_ratio >= 0.08 or wick_instability >= 0.46)
+    range_score += _score_bool(breakout_failure_ratio >= 0.07 or wick_instability >= 0.42)
 
     scores = {
         REGIME_TREND: trend_score,
@@ -125,7 +125,7 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
             trend_score >= 3
             and adx >= trend_adx_min * 0.95
             and efficiency >= trend_eff_min * 0.90
-            and ema_stack_alignment >= max(0.56, trend_ema_align_min * 0.92)
+            and ema_stack_alignment >= max(0.50, trend_ema_align_min * 0.90)
         )
     )
     volatile_ready = (
@@ -142,16 +142,16 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
         range_score >= 4
         or (
             range_score >= 3
-            and adx <= range_adx_max * 1.08
-            and chop >= range_chop_min * 0.94
-            and efficiency <= max(range_eff_max * 1.08, 0.38)
-            and distance_to_vwap_atr <= range_vwap_dist_max * 1.10
+            and adx <= range_adx_max * 1.10
+            and chop >= range_chop_min * 0.92
+            and efficiency <= max(range_eff_max * 1.10, 0.42)
+            and distance_to_vwap_atr <= range_vwap_dist_max * 1.15
         )
     )
 
-    volatile_decisive = btc_shock_ratio >= volatile_btc_shock_min * 1.10 or wick_instability >= max(volatile_wick_min + 0.06, 0.64)
-    trend_decisive = ema_stack_alignment >= max(trend_ema_align_min + 0.08, 0.70) or breakout_failure_ratio <= min(trend_breakout_fail_max * 0.75, 0.12)
-    range_decisive = distance_to_vwap_atr <= min(range_vwap_dist_max * 0.75, 0.82) or chop >= max(range_chop_min + 4.0, 58.0)
+    volatile_decisive = btc_shock_ratio >= volatile_btc_shock_min * 1.08 or wick_instability >= max(volatile_wick_min + 0.05, 0.62)
+    trend_decisive = ema_stack_alignment >= max(trend_ema_align_min + 0.06, 0.64) or breakout_failure_ratio <= min(trend_breakout_fail_max * 0.80, 0.14)
+    range_decisive = distance_to_vwap_atr <= min(range_vwap_dist_max * 0.82, 0.95) or chop >= max(range_chop_min + 3.0, 56.0)
 
     if volatile_ready and volatile_score >= max(trend_score, range_score) and (volatile_score - second_score >= 1 or volatile_decisive):
         candidate = REGIME_VOLATILE
@@ -183,25 +183,27 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
             f"efficiency_ratio={efficiency:.2f}",
             f"distance_to_vwap_atr={distance_to_vwap_atr:.2f}",
         ])
-    elif best_score >= 4 and (best_score - second_score) >= 2:
+    elif best_score >= 3 and (best_score - second_score) >= 1:
         candidate = best_regime
-        confidence = min(0.72, 0.34 + 0.06 * best_score)
+        confidence = min(0.78, 0.31 + 0.07 * best_score + 0.02 * max(0, best_score - second_score))
         reasons.extend([
             f"soft_classification={best_regime.lower()}",
             f"scores trend={trend_score} volatile={volatile_score} range={range_score}",
             f"adx={adx:.2f}",
             f"choppiness={chop:.2f}",
             f"efficiency_ratio={efficiency:.2f}",
+            f"distance_to_vwap_atr={distance_to_vwap_atr:.2f}",
         ])
     else:
         candidate = REGIME_UNKNOWN
-        confidence = 0.18
+        confidence = 0.20
         reasons.extend([
             f"mixed_scores trend={trend_score} volatile={volatile_score} range={range_score}",
             f"adx={adx:.2f}",
             f"choppiness={chop:.2f}",
             f"efficiency_ratio={efficiency:.2f}",
             f"ema_stack_alignment={ema_stack_alignment:.2f}",
+            f"distance_to_vwap_atr={distance_to_vwap_atr:.2f}",
         ])
 
     return {
