@@ -26,6 +26,7 @@ _ROUTER_STATE_TTL_SECONDS = max(int(os.getenv("STRATEGY_ROUTER_STATE_TTL_SECONDS
 _ROUTER_RANGE_SHADOW_ENABLED = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_RANGE_SHADOW_ALWAYS = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ALWAYS", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ROUTER_BTC_CONTEXT_TTL_SECONDS = max(float(os.getenv("STRATEGY_ROUTER_BTC_CONTEXT_TTL_SECONDS", "4.0") or 4.0), 0.0)
+_ROUTER_ALLOW_DEGRADED_NO_BTC = os.getenv("STRATEGY_ROUTER_ALLOW_DEGRADED_NO_BTC", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 _ROUTER_CANDIDATE_CONFIDENCE_MIN = max(float(os.getenv("STRATEGY_ROUTER_CANDIDATE_CONFIDENCE_MIN", "0.52") or 0.52), 0.0)
 _ROUTER_CANDIDATE_SCORE_MIN = max(int(os.getenv("STRATEGY_ROUTER_CANDIDATE_SCORE_MIN", "3") or 3), 1)
@@ -434,6 +435,7 @@ class StrategyRouter:
             "router_candidate_confidence": float(regime_result.get("candidate_confidence") or 0.0),
             "router_candidate_scores": dict(regime_result.get("candidate_scores") or {}),
             "router_regime_source": regime_source,
+            "btc_context_missing": bool(regime_result.get("btc_context_missing")),
             "regime_context": summary,
         }
 
@@ -448,6 +450,7 @@ class StrategyRouter:
 
         symbol_data_issue = self._context_failure_reason(ctx, _ROUTER_INTERVAL, prefix="symbol")
         btc_data_issue = self._context_failure_reason(btc_ctx, _ROUTER_INTERVAL, prefix="btc")
+        degraded_no_btc = False
         if symbol_data_issue:
             return self._attach_shadow_metadata(
                 out=self._build_data_unavailable_signal(symbol, ctx=ctx, btc_ctx=btc_ctx, reason="ROUTER_DATA_UNAVAILABLE"),
@@ -457,7 +460,17 @@ class StrategyRouter:
                 resolved_regime=REGIME_UNKNOWN,
                 regime_source="data_unavailable",
             )
-        if btc_data_issue:
+        if btc_data_issue and _ROUTER_ALLOW_DEGRADED_NO_BTC:
+            degraded_no_btc = True
+            btc_ctx = {
+                "symbol": "BTC",
+                "coin": "BTC",
+                "status": "BTC_CONTEXT_MISSING_DEGRADED",
+                "detail": btc_data_issue,
+                "context_ok": False,
+                "timeframes": {},
+            }
+        elif btc_data_issue:
             return self._attach_shadow_metadata(
                 out=self._build_data_unavailable_signal(symbol, ctx=ctx, btc_ctx=btc_ctx, reason="ROUTER_BTC_DATA_UNAVAILABLE"),
                 symbol=symbol,
@@ -468,6 +481,15 @@ class StrategyRouter:
             )
 
         regime_result = detect_regime(symbol, market_context=ctx, btc_context=btc_ctx, previous_state=previous_state)
+        if degraded_no_btc:
+            regime_result["btc_context_missing"] = True
+            features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+            features["btc_context_missing"] = True
+            features["btc_context_status"] = str((btc_ctx.get("status") if isinstance(btc_ctx, dict) else "UNKNOWN") or "UNKNOWN")
+            features["btc_context_ok"] = False
+            reasons = list(regime_result.get("candidate_reasons") or [])
+            reasons.append(str(btc_data_issue))
+            regime_result["candidate_reasons"] = reasons
         self._remember_regime_state(symbol, regime_result.get("state"))
 
         resolved_regime, regime_source = self._resolve_regime_for_routing(regime_result)
@@ -536,6 +558,9 @@ class StrategyRouter:
         out["regime_version"] = DETECTOR_VERSION
         out["detector_version"] = DETECTOR_VERSION
         out["regime_context"] = self._regime_summary(regime_result)
+        out["btc_context_missing"] = bool(regime_result.get("btc_context_missing"))
+        if out["btc_context_missing"]:
+            out["router_decision"] = f"{router_decision}_degraded_no_btc"
         return self._attach_shadow_metadata(
             out=out,
             symbol=symbol,
