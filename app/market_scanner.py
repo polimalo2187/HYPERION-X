@@ -33,6 +33,13 @@ SCANNER_HTTP_TIMEOUT_SECONDS = max(float(os.getenv("SCANNER_HTTP_TIMEOUT_SECONDS
 SCANNER_HTTP_RETRIES = max(int(os.getenv("SCANNER_HTTP_RETRIES", "2") or 2), 1)
 SCANNER_HTTP_BACKOFF = max(float(os.getenv("SCANNER_HTTP_BACKOFF", "0.35") or 0.35), 0.0)
 
+_BLOCKED_MEME_ENV = os.getenv("BLOCKED_MEME_KEYWORDS", "").strip()
+_DEFAULT_MEME_KEYWORDS = {
+    "DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF", "POPCAT", "PENGU", "TURBO",
+    "MOG", "BOME", "MYRO", "BRETT", "NEIRO", "MEME", "BABYDOGE", "KISHU", "WOJAK",
+}
+BLOCKED_MEME_KEYWORDS = {x.strip().upper() for x in _BLOCKED_MEME_ENV.split(",") if x.strip()} or _DEFAULT_MEME_KEYWORDS
+
 
 # ============================================================
 # ROTACIÓN / ANTI-REPETICIÓN
@@ -60,6 +67,18 @@ def _as_perp_symbol(coin: str) -> str:
     if c.endswith("-PERP"):
         return c
     return f"{c}-PERP"
+
+
+def _base_coin(symbol: str) -> str:
+    sym = str(symbol or "").strip().upper()
+    if sym.endswith("-PERP"):
+        sym = sym[:-5]
+    return sym
+
+
+def _is_blocked_meme_symbol(symbol: str) -> bool:
+    base = _base_coin(symbol)
+    return bool(base) and any(token in base for token in BLOCKED_MEME_KEYWORDS)
 
 
 # ============================================================
@@ -145,6 +164,8 @@ def _get_live_results(exclude_symbols: Set[str]) -> List[dict]:
 
     for symbol, info in markets.items():
         if symbol in exclude_symbols:
+            continue
+        if _is_blocked_meme_symbol(symbol):
             continue
         parsed = _score_symbol(symbol, info)
         if parsed:
