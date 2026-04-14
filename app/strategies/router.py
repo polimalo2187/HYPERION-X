@@ -126,7 +126,7 @@ class StrategyRouter:
             cached = self._btc_context_cache if isinstance(self._btc_context_cache, dict) else None
             if cached and (now_ts - float(self._btc_context_cache_ts or 0.0)) <= float(_ROUTER_BTC_CONTEXT_TTL_SECONDS):
                 return cached
-        btc_ctx = self._build_context("BTC-USDC")
+        btc_ctx = self._build_context("BTC")
         with self._state_lock:
             self._btc_context_cache = btc_ctx
             self._btc_context_cache_ts = now_ts
