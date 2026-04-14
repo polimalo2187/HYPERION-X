@@ -52,8 +52,8 @@ def get_trade_management_params(strength: float, score: float, atr_pct: Optional
     return get_trade_management_params_for_strategy(None, strength, score, atr_pct)
 
 
-def get_entry_signal(symbol: str) -> dict:
-    out = _router().route_symbol(symbol)
+def get_entry_signal(symbol: str, market_context: Optional[Dict[str, Any]] = None, btc_context: Optional[Dict[str, Any]] = None) -> dict:
+    out = _router().route_symbol(symbol, market_context=market_context, btc_context=btc_context)
     if isinstance(out, dict) and out.get("signal"):
         out.setdefault("strategy_id", STRATEGY_ID)
         out.setdefault("strategy_version", STRATEGY_VERSION)
