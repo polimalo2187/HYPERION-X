@@ -29,6 +29,7 @@ from typing import Any, Optional
 from collections import deque
 
 from app.market_scanner import get_ranked_symbols, mark_symbol_recent
+from app.market_context import build_market_context
 from app.strategy import (
     get_entry_signal,
     get_entry_signal_for_strategy,
@@ -55,6 +56,13 @@ TRADE_PLAN_SCHEMA_VERSION = os.getenv("TRADE_PLAN_SCHEMA_VERSION", "phase0_v1").
 DEFAULT_STRATEGY_ID = os.getenv("DEFAULT_STRATEGY_ID", "legacy_breakout_reset").strip() or "legacy_breakout_reset"
 DEFAULT_REGIME_ID = os.getenv("DEFAULT_REGIME_ID", "legacy_single_strategy").strip() or "legacy_single_strategy"
 DEFAULT_DETECTOR_VERSION = os.getenv("DEFAULT_DETECTOR_VERSION", "not_applicable").strip() or "not_applicable"
+
+
+SHORTLIST_EVAL_BUDGET_SECONDS = max(float(os.getenv("SHORTLIST_EVAL_BUDGET_SECONDS", "32") or 32), 8.0)
+SHORTLIST_EVAL_MIN_CANDIDATES = max(int(os.getenv("SHORTLIST_EVAL_MIN_CANDIDATES", "4") or 4), 1)
+SHORTLIST_HARD_CAP = max(int(os.getenv("SHORTLIST_HARD_CAP", "8") or 8), 1)
+SLOW_SYMBOL_EVAL_SECONDS = max(float(os.getenv("SLOW_SYMBOL_EVAL_SECONDS", "4.5") or 4.5), 0.5)
+SLOW_CYCLE_WARN_SECONDS = max(float(os.getenv("SLOW_CYCLE_WARN_SECONDS", "25") or 25), 5.0)
 
 
 def _engine_clamp(value: float, lo: float, hi: float) -> float:
@@ -3173,7 +3181,7 @@ def _signal_candidate_limit() -> int:
         raw = 8
     if raw <= 0:
         raw = 8
-    return max(1, min(int(raw), MAX_SIGNAL_EVAL_CANDIDATES))
+    return max(1, min(int(raw), MAX_SIGNAL_EVAL_CANDIDATES, int(SHORTLIST_HARD_CAP)))
 
 
 def _candidate_rank_tuple(signal: dict, scanner_row: dict) -> tuple:
@@ -3187,23 +3195,61 @@ def _candidate_rank_tuple(signal: dict, scanner_row: dict) -> tuple:
 
 
 def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: set[str]) -> dict | None:
+    shortlist_started_ts = time.time()
     limit = _signal_candidate_limit()
     shortlist = get_ranked_symbols(exclude_symbols=exclude_symbols, limit=limit)
+    shortlist_fetch_elapsed_s = time.time() - shortlist_started_ts
     if not shortlist:
         log("Scanner no devolvió candidatos", "WARN")
         return None
 
+    from app.strategies.breakout_reset import ADX_PERIOD, ATR_PERIOD, EMA_FAST, EMA_MID, EMA_SLOW, LOOKBACK_5M, TF_5M
+
+    eval_started_ts = time.time()
+    budget_deadline_ts = eval_started_ts + float(SHORTLIST_EVAL_BUDGET_SECONDS)
+    btc_context = build_market_context(
+        symbol="BTC-USDC",
+        interval=TF_5M,
+        limit=LOOKBACK_5M,
+        ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
+        adx_period=ADX_PERIOD,
+        atr_period=ATR_PERIOD,
+    )
+
     best_choice: dict | None = None
     best_shadow_choice: dict | None = None
     blocked_samples: list[str] = []
+    slow_samples: list[str] = []
+    evaluated_count = 0
+    budget_exhausted = False
 
     for idx, candidate in enumerate(shortlist, start=1):
+        if idx > int(limit):
+            break
+        if idx > int(SHORTLIST_EVAL_MIN_CANDIDATES) and time.time() >= budget_deadline_ts:
+            budget_exhausted = True
+            blocked_samples.append("SHORTLIST_TIME_BUDGET_EXHAUSTED")
+            break
+
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
 
+        evaluated_count += 1
         try:
-            signal = get_entry_signal(symbol)
+            symbol_ctx = build_market_context(
+                symbol=symbol,
+                interval=TF_5M,
+                limit=LOOKBACK_5M,
+                ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
+                adx_period=ADX_PERIOD,
+                atr_period=ATR_PERIOD,
+            )
+            symbol_eval_started_ts = time.time()
+            signal = get_entry_signal(symbol, market_context=symbol_ctx, btc_context=btc_context)
+            symbol_eval_elapsed_s = time.time() - symbol_eval_started_ts
+            if symbol_eval_elapsed_s >= float(SLOW_SYMBOL_EVAL_SECONDS) and len(slow_samples) < 6:
+                slow_samples.append(f"{symbol}:{symbol_eval_elapsed_s:.2f}s")
         except Exception as e:
             blocked_samples.append(f"{symbol}:STRATEGY_EXCEPTION:{str(e)[:80]}")
             continue
@@ -3327,6 +3373,8 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                 },
             )
 
+    eval_elapsed_s = time.time() - eval_started_ts
+
     if not best_choice:
         suffix = f" reasons={'; '.join(blocked_samples)}" if blocked_samples else ""
         log(f"Shortlist scanner sin setup accionable (evaluados={len(shortlist)}){suffix}", "INFO")
@@ -3363,12 +3411,25 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                         "phase": "shortlist_no_signal",
                         "evaluated": int(len(shortlist) or 0),
                         "blocked_samples": list(blocked_samples[:6]),
+                        "slow_samples": list(slow_samples[:6]),
+                        "evaluated_count": int(evaluated_count or 0),
+                        "shortlist_fetch_elapsed_s": round(float(shortlist_fetch_elapsed_s), 4),
+                        "eval_elapsed_s": round(float(eval_elapsed_s), 4),
+                        "budget_exhausted": bool(budget_exhausted),
                     },
                 },
             )
         except Exception:
             pass
         return None
+
+    best_choice["perf"] = {
+        "evaluated_count": int(evaluated_count or 0),
+        "shortlist_fetch_elapsed_s": round(float(shortlist_fetch_elapsed_s), 4),
+        "eval_elapsed_s": round(float(eval_elapsed_s), 4),
+        "budget_exhausted": bool(budget_exhausted),
+        "slow_samples": list(slow_samples[:6]),
+    }
 
     best_signal = best_choice["signal"]
     scanner_meta = best_choice["scanner"]
@@ -3396,6 +3457,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         return None
 
     try:
+        cycle_started_ts = time.time()
         log(f"Usuario {user_id} — inicio ciclo")
 
         policy = database_module.get_user_cycle_policy(user_id)
@@ -3578,6 +3640,9 @@ def execute_trade_cycle(user_id: int) -> dict | None:
                 metadata={'last_result': 'no_signal', 'last_decision': 'scanner_no_signal', 'last_cycle_at': datetime.utcnow()},
             )
             _publish_scanner_runtime('online', user_id=user_id, decision='no_signal', exchange_snapshot=exchange_snapshot, extra={'phase': 'scanner_no_signal'})
+            total_cycle_elapsed_s = time.time() - cycle_started_ts
+            if total_cycle_elapsed_s >= float(SLOW_CYCLE_WARN_SECONDS):
+                log(f"Ciclo lento user={user_id} total={total_cycle_elapsed_s:.2f}s fase=scanner_no_signal", "WARN")
             return None
 
         symbol = str(selected["symbol"]).upper()
@@ -3586,6 +3651,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         strength = float(selected["strength"] or 0.0)
         direction = str(selected["direction"] or "").lower()
         scanner_meta = dict(selected.get("scanner") or {})
+        perf_meta = dict(selected.get("perf") or {})
 
         if strength < MIN_TRADE_STRENGTH:
             log(f"Señal débil bloqueada: strength={strength:.4f} < {MIN_TRADE_STRENGTH}", "INFO")
@@ -3599,6 +3665,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         opposite = "sell" if side == "buy" else "buy"
 
         shadow = signal.get('shadow_range') if isinstance(signal.get('shadow_range'), dict) else {}
+        if perf_meta and (float(perf_meta.get("eval_elapsed_s") or 0.0) >= float(SLOW_CYCLE_WARN_SECONDS) or bool(perf_meta.get("budget_exhausted"))):
+            log(f"Shortlist profundo user={user_id} fetch={float(perf_meta.get("shortlist_fetch_elapsed_s") or 0.0):.2f}s eval={float(perf_meta.get("eval_elapsed_s") or 0.0):.2f}s budget_exhausted={bool(perf_meta.get("budget_exhausted"))} slow={perf_meta.get("slow_samples")}", "WARN")
         shadow_suffix = ''
         if shadow:
             shadow_suffix = (
@@ -3634,9 +3702,12 @@ def execute_trade_cycle(user_id: int) -> dict | None:
                 'shadow_strategy_id': signal.get('shadow_strategy_id'),
                 'shadow_direction': signal.get('shadow_direction'),
                 'shadow_score': signal.get('shadow_score'),
+                'shortlist_fetch_elapsed_s': perf_meta.get('shortlist_fetch_elapsed_s'),
+                'signal_eval_elapsed_s': perf_meta.get('eval_elapsed_s'),
+                'budget_exhausted': perf_meta.get('budget_exhausted'),
             },
         )
-        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision'), 'shadow_signal': signal.get('shadow_signal'), 'shadow_strategy_id': signal.get('shadow_strategy_id'), 'shadow_direction': signal.get('shadow_direction'), 'shadow_score': signal.get('shadow_score')})
+        _publish_scanner_runtime('online', user_id=user_id, symbol=symbol, decision='signal_selected', exchange_snapshot=exchange_snapshot, extra={'phase': 'signal_selected', 'scanner_score': scanner_meta.get('score'), 'strategy_model': signal.get('strategy_model'), 'strategy_id': signal.get('strategy_id'), 'regime_id': signal.get('regime_id'), 'router_decision': signal.get('router_decision'), 'shadow_signal': signal.get('shadow_signal'), 'shadow_strategy_id': signal.get('shadow_strategy_id'), 'shadow_direction': signal.get('shadow_direction'), 'shadow_score': signal.get('shadow_score'), 'shortlist_fetch_elapsed_s': perf_meta.get('shortlist_fetch_elapsed_s'), 'signal_eval_elapsed_s': perf_meta.get('eval_elapsed_s'), 'budget_exhausted': perf_meta.get('budget_exhausted'), 'slow_samples': perf_meta.get('slow_samples')})
         _record_strategy_router_event(
             user_id,
             event_type='signal_selected',
