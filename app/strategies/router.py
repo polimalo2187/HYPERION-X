@@ -25,6 +25,7 @@ _ROUTER_BLOCK_UNSUPPORTED_NO_TRADE = os.getenv("STRATEGY_ROUTER_BLOCK_UNSUPPORTE
 _ROUTER_STATE_TTL_SECONDS = max(int(os.getenv("STRATEGY_ROUTER_STATE_TTL_SECONDS", "21600") or 21600), 300)
 _ROUTER_RANGE_SHADOW_ENABLED = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_RANGE_SHADOW_ALWAYS = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ALWAYS", "0").strip().lower() in {"1", "true", "yes", "on"}
+_ROUTER_BTC_CONTEXT_TTL_SECONDS = max(float(os.getenv("STRATEGY_ROUTER_BTC_CONTEXT_TTL_SECONDS", "4.0") or 4.0), 0.0)
 
 
 _SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
@@ -45,6 +46,8 @@ class StrategyRouter:
         self._registry = get_strategy_registry()
         self._state_lock = threading.Lock()
         self._symbol_state: Dict[str, Dict[str, Any]] = {}
+        self._btc_context_cache: Optional[Dict[str, Any]] = None
+        self._btc_context_cache_ts: float = 0.0
         self._regime_strategy_map: Dict[str, str] = {
             REGIME_TREND: DEFAULT_STRATEGY_ID,
             REGIME_VOLATILE: "liquidity_sweep_reversal",
@@ -107,6 +110,19 @@ class StrategyRouter:
             adx_period=ADX_PERIOD,
             atr_period=ATR_PERIOD,
         )
+
+
+    def _get_btc_context(self, interval: str) -> Dict[str, Any]:
+        now_ts = time.time()
+        with self._state_lock:
+            cached = self._btc_context_cache if isinstance(self._btc_context_cache, dict) else None
+            if cached and (now_ts - float(self._btc_context_cache_ts or 0.0)) <= float(_ROUTER_BTC_CONTEXT_TTL_SECONDS):
+                return cached
+        btc_ctx = self._build_context("BTC-USDC")
+        with self._state_lock:
+            self._btc_context_cache = btc_ctx
+            self._btc_context_cache_ts = now_ts
+        return btc_ctx
 
     def _resolve_regime_for_routing(self, regime_result: Dict[str, Any]) -> tuple[str, str]:
         active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
@@ -252,14 +268,15 @@ class StrategyRouter:
             "regime_context": self._regime_summary(regime_result),
         }
 
-    def route_symbol(self, symbol: str, market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def route_symbol(self, symbol: str, market_context: Optional[Dict[str, Any]] = None, btc_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         symbol = str(symbol or "").upper().strip()
         if not symbol:
             return {"signal": False, "reason": "BAD_SYMBOL", "router_mode": self.mode}
 
         ctx = market_context if isinstance(market_context, dict) else self._build_context(symbol)
         previous_state = self._get_previous_regime_state(symbol)
-        regime_result = detect_regime(symbol, market_context=ctx, previous_state=previous_state)
+        btc_ctx = btc_context if isinstance(btc_context, dict) else self._get_btc_context(_ROUTER_INTERVAL)
+        regime_result = detect_regime(symbol, market_context=ctx, btc_context=btc_ctx, previous_state=previous_state)
         self._remember_regime_state(symbol, regime_result.get("state"))
 
         resolved_regime, regime_source = self._resolve_regime_for_routing(regime_result)
