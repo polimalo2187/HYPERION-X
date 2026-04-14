@@ -205,6 +205,56 @@ class StrategyRouter:
             and body_quality >= 0.24
         )
 
+    def _context_failure_reason(self, ctx: Dict[str, Any], interval: str, *, prefix: str) -> Optional[str]:
+        tf = ((ctx or {}).get("timeframes") or {}).get(interval) or {}
+        status = str(tf.get("status") or (ctx or {}).get("status") or "UNKNOWN")
+        detail = str(tf.get("detail") or (ctx or {}).get("detail") or status)
+        if status == "OK" and not bool(tf.get("stale", False)) and bool(tf.get("context_ok", True)):
+            return None
+        return f"{prefix}:{detail}"
+
+    def _build_data_unavailable_signal(self, symbol: str, *, ctx: Dict[str, Any], btc_ctx: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        interval = _ROUTER_INTERVAL
+        symbol_detail = self._context_failure_reason(ctx, interval, prefix="symbol")
+        btc_detail = self._context_failure_reason(btc_ctx, interval, prefix="btc")
+        detail_parts = [reason]
+        if symbol_detail:
+            detail_parts.append(symbol_detail)
+        if btc_detail:
+            detail_parts.append(btc_detail)
+        return {
+            "signal": False,
+            "reason": reason,
+            "coin": symbol,
+            "strategy_id": "none",
+            "strategy_model": "none",
+            "strategy_version": "router",
+            "regime_id": REGIME_UNKNOWN,
+            "regime_version": DETECTOR_VERSION,
+            "detector_version": DETECTOR_VERSION,
+            "router_mode": self.mode,
+            "router_decision": "data_unavailable",
+            "router_reason": reason,
+            "router_reason_detail": "|".join(detail_parts),
+            "router_candidate_regime": REGIME_UNKNOWN,
+            "router_candidate_confidence": 0.0,
+            "router_candidate_scores": {},
+            "router_regime_source": "data_unavailable",
+            "regime_context": {
+                "candidate_regime": REGIME_UNKNOWN,
+                "active_regime": REGIME_UNKNOWN,
+                "candidate_confidence": 0.0,
+                "changed": False,
+                "reasons": detail_parts,
+                "scores": {},
+                "bias": "neutral",
+                "state": {},
+                "feature_summary": {},
+            },
+            "market_context_status": str((ctx or {}).get("status") or "UNKNOWN"),
+            "btc_context_status": str((btc_ctx or {}).get("status") or "UNKNOWN"),
+        }
+
     def _build_router_reason_detail(self, regime_result: Dict[str, Any], *, resolved_regime: str, regime_source: str, reason: str) -> str:
         features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
         scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
@@ -217,13 +267,15 @@ class StrategyRouter:
         ema = float(features.get("ema_stack_alignment") or 0.0)
         vwap = float(features.get("distance_to_vwap_atr") or 0.0)
         btc = float(features.get("btc_shock_ratio") or 0.0)
+        context_status = str(features.get("context_status") or "UNKNOWN")
+        btc_context_status = str(features.get("btc_context_status") or "UNKNOWN")
         trend_score = float(scores.get(REGIME_TREND) or 0.0)
         vol_score = float(scores.get(REGIME_VOLATILE) or 0.0)
         range_score = float(scores.get(REGIME_RANGE) or 0.0)
         return (
             f"{reason}|src={regime_source}|active={active_regime}|candidate={candidate_regime}|conf={confidence:.2f}|"
             f"scores=t{trend_score:.0f}/v{vol_score:.0f}/r{range_score:.0f}|adx={adx:.1f}|chop={chop:.1f}|"
-            f"eff={eff:.2f}|ema={ema:.2f}|vwap={vwap:.2f}|btc={btc:.2f}|resolved={resolved_regime}"
+            f"eff={eff:.2f}|ema={ema:.2f}|vwap={vwap:.2f}|btc={btc:.2f}|ctx={context_status}|btc_ctx={btc_context_status}|resolved={resolved_regime}"
         )
 
     def _resolve_regime_for_routing(self, regime_result: Dict[str, Any]) -> tuple[str, str]:
@@ -393,6 +445,28 @@ class StrategyRouter:
         ctx = market_context if isinstance(market_context, dict) else self._build_context(symbol)
         previous_state = self._get_previous_regime_state(symbol)
         btc_ctx = btc_context if isinstance(btc_context, dict) else self._get_btc_context(_ROUTER_INTERVAL)
+
+        symbol_data_issue = self._context_failure_reason(ctx, _ROUTER_INTERVAL, prefix="symbol")
+        btc_data_issue = self._context_failure_reason(btc_ctx, _ROUTER_INTERVAL, prefix="btc")
+        if symbol_data_issue:
+            return self._attach_shadow_metadata(
+                out=self._build_data_unavailable_signal(symbol, ctx=ctx, btc_ctx=btc_ctx, reason="ROUTER_DATA_UNAVAILABLE"),
+                symbol=symbol,
+                ctx=ctx,
+                regime_result={"candidate_regime": REGIME_UNKNOWN, "active_regime": REGIME_UNKNOWN, "candidate_confidence": 0.0, "candidate_scores": {}, "features": {}, "state": {}, "candidate_reasons": [symbol_data_issue, btc_data_issue] if btc_data_issue else [symbol_data_issue], "regime_bias": "neutral", "changed": False},
+                resolved_regime=REGIME_UNKNOWN,
+                regime_source="data_unavailable",
+            )
+        if btc_data_issue:
+            return self._attach_shadow_metadata(
+                out=self._build_data_unavailable_signal(symbol, ctx=ctx, btc_ctx=btc_ctx, reason="ROUTER_BTC_DATA_UNAVAILABLE"),
+                symbol=symbol,
+                ctx=ctx,
+                regime_result={"candidate_regime": REGIME_UNKNOWN, "active_regime": REGIME_UNKNOWN, "candidate_confidence": 0.0, "candidate_scores": {}, "features": {}, "state": {}, "candidate_reasons": [btc_data_issue], "regime_bias": "neutral", "changed": False},
+                resolved_regime=REGIME_UNKNOWN,
+                regime_source="data_unavailable",
+            )
+
         regime_result = detect_regime(symbol, market_context=ctx, btc_context=btc_ctx, previous_state=previous_state)
         self._remember_regime_state(symbol, regime_result.get("state"))
 
