@@ -174,6 +174,11 @@ def _event_icon(event_type: str | None) -> str:
         'signal_selected': '🎯',
         'signal_blocked_risk': '🛑',
         'shadow_opportunity': '👻',
+        'router_blocked': '🚫',
+        'strategy_rejected': '⚪',
+        'signal_weak': '🪫',
+        'scanner_no_signal': '📭',
+        'cycle_timeout': '⏱️',
     }
     return mapping.get(str(event_type or '').strip().lower(), '•')
 
@@ -218,6 +223,8 @@ def _build_strategy_status_text(overview: dict, recent_live: list[dict], recent_
         f"Eventos: {_fmt_int(counts.get('events_total'))} | Live: {_fmt_int(counts.get('live_events_total'))} | Shadow: {_fmt_int(counts.get('shadow_events_total'))}",
         f"Señales: {_fmt_int(counts.get('signals_total'))} | Seleccionadas: {_fmt_int(counts.get('selected_total'))} | Abiertas: {_fmt_int(counts.get('trades_opened_total'))}",
         f"Blocked risk: {_fmt_int(event_type_breakdown.get('signal_blocked_risk'))} | Shadow opps: {_fmt_int(event_type_breakdown.get('shadow_opportunity'))} | Regime changes: {_fmt_int(counts.get('regime_changes_total'))}",
+        f"Router blocked: {_fmt_int(event_type_breakdown.get('router_blocked'))} | Strategy rejected: {_fmt_int(event_type_breakdown.get('strategy_rejected'))} | Weak: {_fmt_int(event_type_breakdown.get('signal_weak'))}",
+        f"No-signal cycles: {_fmt_int(event_type_breakdown.get('scanner_no_signal'))} | Timeouts: {_fmt_int(event_type_breakdown.get('cycle_timeout'))}",
         '',
         '📡 ESTRATEGIAS',
         _strategy_bucket_line('breakout_reset', strategy_breakdown.get('breakout_reset')),
@@ -257,8 +264,8 @@ async def strategy_status_command(update: Update, context: ContextTypes.DEFAULT_
         overview = get_strategy_runtime_overview(None, limit_recent_events=10) or {}
         recent_live = get_strategy_router_events(None, limit=4, execution_mode='live') or []
         recent_shadow = get_strategy_router_events(None, limit=4, event_type='shadow_opportunity') or []
-        recent_blocked = get_strategy_router_events(None, limit=4, event_type='signal_blocked_risk') or []
-        message = _build_strategy_status_text(overview, recent_live, recent_shadow, recent_blocked)
+        recent_blocked = (get_strategy_router_events(None, limit=2, event_type='signal_blocked_risk') or []) + (get_strategy_router_events(None, limit=2, event_type='router_blocked') or [])
+        message = _build_strategy_status_text(overview, recent_live, recent_shadow, recent_blocked[:4])
     except Exception as exc:
         logging.exception('Fallo /strategy')
         message = f'⚠ No se pudo construir el resumen estratégico: {exc}'
