@@ -4,7 +4,7 @@ import math
 from typing import Any, Dict, List, Optional
 
 TF_5M = "5m"
-BTC_REFERENCE_SYMBOL = "BTC-USDC"
+BTC_REFERENCE_SYMBOL = "BTC"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
