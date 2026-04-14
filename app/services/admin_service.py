@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
+from app import database as db_module
 from app.database import (
     activate_premium_plan,
     admin_set_user_trading_status,
@@ -16,9 +17,6 @@ from app.database import (
     get_admin_visual_stats,
     get_manual_plan_days_preview,
     get_security_overview,
-    get_strategy_router_events,
-    get_strategy_runtime_overview,
-    get_strategy_runtime_summary,
     get_user_trade_stats,
     grant_manual_plan_days,
     log_admin_action,
@@ -31,6 +29,47 @@ from app.database import (
 )
 
 
+
+def _strategy_overview_fallback(user_id: int | None = None, limit_recent_events: int = 25) -> dict:
+    return {
+        'scope_user_id': int(user_id) if user_id is not None else None,
+        'counts': {},
+        'breakdown': {'execution_mode': {}, 'strategy': {}, 'regime': {}, 'event_type': {}},
+        'recent_events': [],
+        'partial': True,
+        'unavailable': True,
+        'error': 'strategy_telemetry_unavailable',
+    }
+
+
+def _strategy_summary_fallback(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    symbol: str | None = None,
+    execution_mode: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> list[dict]:
+    return []
+
+
+def _strategy_events_fallback(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    event_type: str | None = None,
+    execution_mode: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> list[dict]:
+    return []
+
+
+get_strategy_runtime_overview = getattr(db_module, 'get_strategy_runtime_overview', _strategy_overview_fallback)
+get_strategy_runtime_summary = getattr(db_module, 'get_strategy_runtime_summary', _strategy_summary_fallback)
+get_strategy_router_events = getattr(db_module, 'get_strategy_router_events', _strategy_events_fallback)
 
 
 def _log_action(action: str, actor_user_id: int | None, actor_username: str | None, target_user: dict | None = None, *, reason: str | None = None, status: str = 'success', message: str | None = None, metadata: dict | None = None) -> None:
