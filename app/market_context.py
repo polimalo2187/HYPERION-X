@@ -67,6 +67,26 @@ def parse_candle(row: dict) -> Optional[dict]:
 
 
 
+def _is_http_error_response(resp: Any) -> bool:
+    return isinstance(resp, dict) and bool(resp.get("_http_error"))
+
+
+
+def _format_http_error_response(resp: Any) -> str:
+    if not isinstance(resp, dict):
+        return "API_FAIL"
+    status = resp.get("_http_status")
+    body = str(resp.get("_http_body") or "")[:160]
+    if status:
+        if body:
+            return f"HTTP_{status}:{body}"
+        return f"HTTP_{status}"
+    if body:
+        return f"REQUEST_FAILED:{body}"
+    return "API_FAIL"
+
+
+
 def fetch_candles(coin: str, interval: str, limit: int) -> Tuple[List[dict], str]:
     coin = norm_coin(coin)
     if not coin:
@@ -75,26 +95,56 @@ def fetch_candles(coin: str, interval: str, limit: int) -> Tuple[List[dict], str
     if step <= 0:
         return [], "BAD_INTERVAL"
 
-    try:
-        now = int(time.time() * 1000)
-        start = now - step * max(int(limit), 50)
-        payload = {
-            "type": "candleSnapshot",
-            "req": {
-                "coin": coin,
-                "interval": interval,
-                "startTime": start,
-                "endTime": now,
-            },
-        }
-        resp = make_request("/info", payload, retries=MARKET_CONTEXT_REQUEST_RETRIES, backoff=MARKET_CONTEXT_REQUEST_BACKOFF, timeout=MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS)
-    except Exception:
-        return [], "API_FAIL"
+    now = int(time.time() * 1000)
+    start = now - step * max(int(limit), 50)
+    payload = {
+        "type": "candleSnapshot",
+        "req": {
+            "coin": coin,
+            "interval": interval,
+            "startTime": start,
+            "endTime": now,
+        },
+    }
 
-    if resp == {} or resp is None:
-        return [], "API_FAIL"
+    last_error = "API_FAIL"
+    responses = []
+    try:
+        responses.append(make_request(
+            "/info",
+            payload,
+            retries=_MARKET_CONTEXT_REQUEST_RETRIES,
+            backoff=_MARKET_CONTEXT_REQUEST_BACKOFF,
+            timeout=_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS,
+        ))
+    except Exception as e:
+        last_error = f"REQUEST_EXCEPTION:{type(e).__name__}:{str(e)[:120]}"
+
+    # Fallback menos agresivo para no degradar a contexto vacío cuando la API va lenta.
+    first_resp = responses[0] if responses else None
+    if not isinstance(first_resp, list) or not first_resp:
+        try:
+            responses.append(make_request("/info", payload))
+        except Exception as e:
+            if last_error == "API_FAIL":
+                last_error = f"REQUEST_EXCEPTION:{type(e).__name__}:{str(e)[:120]}"
+
+    resp = None
+    for candidate in responses:
+        if isinstance(candidate, list) and candidate:
+            resp = candidate
+            break
+        if _is_http_error_response(candidate):
+            last_error = _format_http_error_response(candidate)
+        elif candidate == {} or candidate is None:
+            last_error = "API_FAIL"
+        elif not isinstance(candidate, list):
+            last_error = f"BAD_RESPONSE_SCHEMA:{type(candidate).__name__}"
+        else:
+            last_error = "EMPTY"
+
     if not isinstance(resp, list) or not resp:
-        return [], "EMPTY"
+        return [], last_error
 
     candles: List[dict] = []
     for raw in resp:
@@ -208,6 +258,13 @@ def is_stale(candles: List[dict], interval: str) -> Tuple[bool, float, int]:
 
 
 
+def _minimum_candle_count(ema_periods: tuple[int, ...], adx_period: int, atr_period: int) -> int:
+    values = [50, int(adx_period) + 2, int(atr_period) + 2]
+    values.extend(int(x) + 5 for x in ema_periods)
+    return max(values)
+
+
+
 def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: tuple[int, ...] = (20, 50, 200), adx_period: int = 14, atr_period: int = 14) -> Dict[str, Any]:
     cache_key = ("tf", str(coin or "").upper(), str(interval or ""), int(limit), tuple(int(x) for x in ema_periods), int(adx_period), int(atr_period))
     cached = _cache_get(cache_key)
@@ -218,6 +275,7 @@ def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: t
         "interval": interval,
         "limit": int(limit),
         "status": status,
+        "detail": status,
         "candles": candles,
         "stale": True,
         "age_s": 9e9,
@@ -231,8 +289,19 @@ def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: t
         "atr": 0.0,
         "atr_pct": 0.0,
         "adx": 0.0,
+        "context_ok": False,
     }
     if status != "OK" or not candles:
+        _cache_set(cache_key, snapshot)
+        return snapshot
+
+    min_required = _minimum_candle_count(ema_periods, adx_period, atr_period)
+    if len(candles) < min_required:
+        snapshot["status"] = "INSUFFICIENT_CANDLES"
+        snapshot["detail"] = f"INSUFFICIENT_CANDLES:{len(candles)}/{min_required}"
+        snapshot["context_ok"] = False
+        snapshot["candles"] = candles
+        _cache_set(cache_key, snapshot)
         return snapshot
 
     stale, age_s, last_t = is_stale(candles, interval)
@@ -245,6 +314,7 @@ def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: t
         "stale": bool(stale),
         "age_s": float(age_s),
         "last_t": int(last_t),
+        "detail": "STALE_CANDLES" if stale else "OK",
         "o": o,
         "h": h,
         "l": l,
@@ -255,6 +325,7 @@ def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: t
         "atr_pct": (atr_value / close) if close > 0 else 0.0,
         "adx": float(last(adx_series) or 0.0),
         "adx_series": adx_series,
+        "context_ok": not bool(stale),
     })
 
     for period in ema_periods:
@@ -276,6 +347,8 @@ def build_market_context(symbol: str, interval: str = TF_5M, limit: int = 320, e
             "symbol": symbol,
             "coin": "",
             "status": "BAD_SYMBOL",
+            "detail": "BAD_SYMBOL",
+            "context_ok": False,
             "timeframes": {},
         }
 
@@ -291,6 +364,8 @@ def build_market_context(symbol: str, interval: str = TF_5M, limit: int = 320, e
         "symbol": symbol,
         "coin": coin,
         "status": tf_ctx.get("status", "UNKNOWN"),
+        "detail": tf_ctx.get("detail", tf_ctx.get("status", "UNKNOWN")),
+        "context_ok": bool(tf_ctx.get("context_ok", False)),
         "timeframes": {interval: tf_ctx},
     }
     _cache_set(cache_key, out)
