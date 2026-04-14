@@ -109,32 +109,59 @@ def fetch_candles(coin: str, interval: str, limit: int) -> Tuple[List[dict], str
 
     last_error = "API_FAIL"
     responses = []
-    try:
-        responses.append(make_request(
-            "/info",
-            payload,
-            retries=_MARKET_CONTEXT_REQUEST_RETRIES,
-            backoff=_MARKET_CONTEXT_REQUEST_BACKOFF,
-            timeout=_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS,
-        ))
-    except Exception as e:
-        last_error = f"REQUEST_EXCEPTION:{type(e).__name__}:{str(e)[:120]}"
 
-    # Fallback menos agresivo para no degradar a contexto vacío cuando la API va lenta.
-    first_resp = responses[0] if responses else None
-    if not isinstance(first_resp, list) or not first_resp:
+    def _attempt_request(*, retries: int, backoff: float, timeout: float):
+        nonlocal last_error
         try:
-            responses.append(make_request("/info", payload))
+            responses.append(make_request(
+                "/info",
+                payload,
+                retries=retries,
+                backoff=backoff,
+                timeout=timeout,
+            ))
         except Exception as e:
-            if last_error == "API_FAIL":
-                last_error = f"REQUEST_EXCEPTION:{type(e).__name__}:{str(e)[:120]}"
+            last_error = f"REQUEST_EXCEPTION:{type(e).__name__}:{str(e)[:120]}"
+
+    # Intento normal, optimizado para velocidad.
+    _attempt_request(
+        retries=_MARKET_CONTEXT_REQUEST_RETRIES,
+        backoff=_MARKET_CONTEXT_REQUEST_BACKOFF,
+        timeout=_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS,
+    )
+
+    first_resp = responses[0] if responses else None
+    first_http_500 = _is_http_error_response(first_resp) and int(first_resp.get("_http_status") or 0) >= 500 if isinstance(first_resp, dict) else False
+
+    # Fallback 1: si el primer intento no devolvió velas válidas, probamos con la ruta estándar del cliente.
+    if not isinstance(first_resp, list) or not first_resp:
+        _attempt_request(
+            retries=max(_MARKET_CONTEXT_REQUEST_RETRIES, 3),
+            backoff=max(_MARKET_CONTEXT_REQUEST_BACKOFF, 0.6),
+            timeout=max(_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS, 6.0),
+        )
+
+    # Fallback 2: para 500 transitorios, hacemos un último intento más paciente.
+    latest_resp = responses[-1] if responses else None
+    latest_http_500 = _is_http_error_response(latest_resp) and int(latest_resp.get("_http_status") or 0) >= 500 if isinstance(latest_resp, dict) else False
+    if first_http_500 or latest_http_500:
+        time.sleep(0.35)
+        _attempt_request(
+            retries=max(_MARKET_CONTEXT_REQUEST_RETRIES + 1, 4),
+            backoff=max(_MARKET_CONTEXT_REQUEST_BACKOFF, 0.8),
+            timeout=max(_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS, 8.0),
+        )
 
     resp = None
+    saw_http_500 = False
     for candidate in responses:
         if isinstance(candidate, list) and candidate:
             resp = candidate
             break
         if _is_http_error_response(candidate):
+            status = int(candidate.get("_http_status") or 0)
+            if status >= 500:
+                saw_http_500 = True
             last_error = _format_http_error_response(candidate)
         elif candidate == {} or candidate is None:
             last_error = "API_FAIL"
@@ -144,6 +171,8 @@ def fetch_candles(coin: str, interval: str, limit: int) -> Tuple[List[dict], str
             last_error = "EMPTY"
 
     if not isinstance(resp, list) or not resp:
+        if saw_http_500 and not str(last_error).startswith("HTTP_500"):
+            last_error = f"TRANSIENT_HTTP_500:{last_error}"
         return [], last_error
 
     candles: List[dict] = []
