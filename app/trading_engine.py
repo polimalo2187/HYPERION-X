@@ -3228,26 +3228,64 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                 best_shadow_choice = shadow_picked
 
         if not signal.get("signal"):
+            reason = str(signal.get("reason") or "NO_SIGNAL")
             if bool(shadow.get("signal")) and len(blocked_samples) < 6:
                 blocked_samples.append(
                     f"{symbol}:SHADOW_RANGE:{str(shadow.get('direction') or '').lower()}:{float(shadow.get('score') or 0.0):.2f}"
                 )
             else:
-                reason = str(signal.get("reason") or "NO_SIGNAL")
                 if len(blocked_samples) < 6:
                     blocked_samples.append(f"{symbol}:{reason}")
+
+            reject_event_type = "router_blocked" if reason.startswith("ROUTER_") else "strategy_rejected"
+            reject_scanner = dict(candidate or {})
+            reject_scanner["shortlist_rank"] = idx
+            reject_scanner["shortlist_size"] = len(shortlist)
+            _record_strategy_router_event(
+                user_id,
+                event_type=reject_event_type,
+                symbol=symbol,
+                signal=signal,
+                scanner_meta=reject_scanner,
+                execution_mode="live",
+                extra={"phase": "shortlist_rejected", "reject_reason": reason},
+            )
             continue
 
         strength = float(signal.get("strength", 0.0) or 0.0)
         if strength < MIN_TRADE_STRENGTH:
             if len(blocked_samples) < 6:
                 blocked_samples.append(f"{symbol}:WEAK:{strength:.4f}")
+            weak_scanner = dict(candidate or {})
+            weak_scanner["shortlist_rank"] = idx
+            weak_scanner["shortlist_size"] = len(shortlist)
+            _record_strategy_router_event(
+                user_id,
+                event_type="signal_weak",
+                symbol=symbol,
+                signal=signal,
+                scanner_meta=weak_scanner,
+                execution_mode="live",
+                extra={"phase": "shortlist_rejected", "reject_reason": "WEAK_SIGNAL", "strength_threshold": float(MIN_TRADE_STRENGTH)},
+            )
             continue
 
         direction = str(signal.get("direction") or "").lower()
         if direction not in ("long", "short"):
             if len(blocked_samples) < 6:
                 blocked_samples.append(f"{symbol}:BAD_DIRECTION:{direction}")
+            bad_dir_scanner = dict(candidate or {})
+            bad_dir_scanner["shortlist_rank"] = idx
+            bad_dir_scanner["shortlist_size"] = len(shortlist)
+            _record_strategy_router_event(
+                user_id,
+                event_type="strategy_rejected",
+                symbol=symbol,
+                signal=signal,
+                scanner_meta=bad_dir_scanner,
+                execution_mode="live",
+                extra={"phase": "shortlist_rejected", "reject_reason": f"BAD_DIRECTION:{direction}"},
+            )
             continue
 
         ranked = _candidate_rank_tuple(signal, candidate)
@@ -3292,6 +3330,44 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
     if not best_choice:
         suffix = f" reasons={'; '.join(blocked_samples)}" if blocked_samples else ""
         log(f"Shortlist scanner sin setup accionable (evaluados={len(shortlist)}){suffix}", "INFO")
+        try:
+            database_module.record_strategy_router_event(
+                int(user_id),
+                {
+                    "event_type": "scanner_no_signal",
+                    "symbol": "",
+                    "strategy_id": "none",
+                    "regime_id": "unknown",
+                    "execution_mode": "router",
+                    "signal": False,
+                    "selected": False,
+                    "trade_opened": False,
+                    "regime_changed": False,
+                    "shadow_evaluated": bool(best_shadow_choice),
+                    "shadow_signal": bool(best_shadow_choice and ((best_shadow_choice.get("shadow") or {}).get("signal"))),
+                    "scanner_summary": {
+                        "shortlist_size": int(len(shortlist) or 0),
+                    },
+                    "signal_summary": {},
+                    "shadow_summary": {
+                        "strategy_id": str(((best_shadow_choice or {}).get("shadow") or {}).get("strategy_id") or "range_mean_reversion"),
+                        "direction": str(((best_shadow_choice or {}).get("shadow") or {}).get("direction") or "").lower(),
+                        "signal": bool(best_shadow_choice and ((best_shadow_choice.get("shadow") or {}).get("signal"))),
+                        "score": float((((best_shadow_choice or {}).get("shadow") or {}).get("score") or 0.0)),
+                        "strength": float((((best_shadow_choice or {}).get("shadow") or {}).get("strength") or 0.0)),
+                        "reason": str(((best_shadow_choice or {}).get("shadow") or {}).get("reason") or ""),
+                        "evaluated": bool(best_shadow_choice),
+                    },
+                    "regime_summary": {},
+                    "extra": {
+                        "phase": "shortlist_no_signal",
+                        "evaluated": int(len(shortlist) or 0),
+                        "blocked_samples": list(blocked_samples[:6]),
+                    },
+                },
+            )
+        except Exception:
+            pass
         return None
 
     best_signal = best_choice["signal"]
