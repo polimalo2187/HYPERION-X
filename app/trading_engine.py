@@ -3665,8 +3665,22 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         opposite = "sell" if side == "buy" else "buy"
 
         shadow = signal.get('shadow_range') if isinstance(signal.get('shadow_range'), dict) else {}
-        if perf_meta and (float(perf_meta.get("eval_elapsed_s") or 0.0) >= float(SLOW_CYCLE_WARN_SECONDS) or bool(perf_meta.get("budget_exhausted"))):
-            log(f"Shortlist profundo user={user_id} fetch={float(perf_meta.get("shortlist_fetch_elapsed_s") or 0.0):.2f}s eval={float(perf_meta.get("eval_elapsed_s") or 0.0):.2f}s budget_exhausted={bool(perf_meta.get("budget_exhausted"))} slow={perf_meta.get("slow_samples")}", "WARN")
+        if perf_meta:
+            perf_fetch_elapsed_s = float(perf_meta.get('shortlist_fetch_elapsed_s') or 0.0)
+            perf_eval_elapsed_s = float(perf_meta.get('eval_elapsed_s') or 0.0)
+            perf_budget_exhausted = bool(perf_meta.get('budget_exhausted'))
+            perf_slow_samples = perf_meta.get('slow_samples')
+            if perf_eval_elapsed_s >= float(SLOW_CYCLE_WARN_SECONDS) or perf_budget_exhausted:
+                log(
+                    "Shortlist profundo user={} fetch={:.2f}s eval={:.2f}s budget_exhausted={} slow={}".format(
+                        user_id,
+                        perf_fetch_elapsed_s,
+                        perf_eval_elapsed_s,
+                        perf_budget_exhausted,
+                        perf_slow_samples,
+                    ),
+                    "WARN",
+                )
         shadow_suffix = ''
         if shadow:
             shadow_suffix = (
