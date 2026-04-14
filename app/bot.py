@@ -205,6 +205,16 @@ def _compact_strategy_event(event: dict | None) -> str:
         risk_reason = risk_reason[:32]
         return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {risk_reason or '-'}"
 
+    if event_type == 'router_blocked':
+        router_reason = str(extra.get('router_reason') or extra.get('reject_reason') or item.get('reason') or signal_summary.get('router_decision') or '-').strip()
+        router_reason = router_reason[:32]
+        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {router_reason or '-'}"
+
+    if event_type == 'strategy_rejected':
+        reject_reason = str(extra.get('reason') or extra.get('reject_reason') or item.get('reason') or signal_summary.get('router_decision') or '-').strip()
+        reject_reason = reject_reason[:32]
+        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {reject_reason or '-'}"
+
     detail = direction or '-'
     return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {detail}"
 
