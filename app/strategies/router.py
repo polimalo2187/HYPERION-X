@@ -31,6 +31,9 @@ _ROUTER_CANDIDATE_CONFIDENCE_MIN = max(float(os.getenv("STRATEGY_ROUTER_CANDIDAT
 _ROUTER_CANDIDATE_SCORE_MIN = max(int(os.getenv("STRATEGY_ROUTER_CANDIDATE_SCORE_MIN", "3") or 3), 1)
 _ROUTER_ALLOW_CONFIDENT_CANDIDATE = os.getenv("STRATEGY_ROUTER_ALLOW_CONFIDENT_CANDIDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_ALLOW_RANGE_CANDIDATE = os.getenv("STRATEGY_ROUTER_ALLOW_RANGE_CANDIDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_ALLOW_TREND_CANDIDATE_BREAKOUT = os.getenv("STRATEGY_ROUTER_ALLOW_TREND_CANDIDATE_BREAKOUT", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_TREND_CANDIDATE_CONFIDENCE_MIN = max(float(os.getenv("STRATEGY_ROUTER_TREND_CANDIDATE_CONFIDENCE_MIN", "0.44") or 0.44), 0.0)
+_ROUTER_TREND_CANDIDATE_SCORE_MIN = max(int(os.getenv("STRATEGY_ROUTER_TREND_CANDIDATE_SCORE_MIN", "2") or 2), 1)
 
 
 _SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
@@ -173,11 +176,63 @@ class StrategyRouter:
             )
         return False
 
+    def _is_breakout_trend_candidate(self, regime_result: Dict[str, Any]) -> bool:
+        if not _ROUTER_ALLOW_TREND_CANDIDATE_BREAKOUT:
+            return False
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        if candidate_regime != REGIME_TREND:
+            return False
+
+        confidence = float(regime_result.get("candidate_confidence") or 0.0)
+        scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
+        trend_score = float(scores.get(REGIME_TREND) or 0.0)
+        if confidence < _ROUTER_TREND_CANDIDATE_CONFIDENCE_MIN or trend_score < _ROUTER_TREND_CANDIDATE_SCORE_MIN:
+            return False
+
+        features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+        adx = float(features.get("adx") or 0.0)
+        chop = float(features.get("choppiness") or 50.0)
+        efficiency = float(features.get("efficiency_ratio") or 0.0)
+        ema_align = float(features.get("ema_stack_alignment") or 0.0)
+        breakout_failure_ratio = float(features.get("breakout_failure_ratio") or 0.0)
+        body_quality = float(features.get("body_quality") or 0.0)
+        # Puerta de entrada más permisiva que el régimen activo, pero sin abrir basura.
+        return (
+            (adx >= 11.5 or ema_align >= 0.44)
+            and chop <= 63.0
+            and efficiency >= 0.12
+            and breakout_failure_ratio <= 0.34
+            and body_quality >= 0.24
+        )
+
+    def _build_router_reason_detail(self, regime_result: Dict[str, Any], *, resolved_regime: str, regime_source: str, reason: str) -> str:
+        features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+        scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
+        confidence = float(regime_result.get("candidate_confidence") or 0.0)
+        adx = float(features.get("adx") or 0.0)
+        chop = float(features.get("choppiness") or 0.0)
+        eff = float(features.get("efficiency_ratio") or 0.0)
+        ema = float(features.get("ema_stack_alignment") or 0.0)
+        vwap = float(features.get("distance_to_vwap_atr") or 0.0)
+        btc = float(features.get("btc_shock_ratio") or 0.0)
+        trend_score = float(scores.get(REGIME_TREND) or 0.0)
+        vol_score = float(scores.get(REGIME_VOLATILE) or 0.0)
+        range_score = float(scores.get(REGIME_RANGE) or 0.0)
+        return (
+            f"{reason}|src={regime_source}|active={active_regime}|candidate={candidate_regime}|conf={confidence:.2f}|"
+            f"scores=t{trend_score:.0f}/v{vol_score:.0f}/r{range_score:.0f}|adx={adx:.1f}|chop={chop:.1f}|"
+            f"eff={eff:.2f}|ema={ema:.2f}|vwap={vwap:.2f}|btc={btc:.2f}|resolved={resolved_regime}"
+        )
+
     def _resolve_regime_for_routing(self, regime_result: Dict[str, Any]) -> tuple[str, str]:
         active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
         candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
         if active_regime != REGIME_UNKNOWN:
             return active_regime, "active"
+        if self._is_breakout_trend_candidate(regime_result):
+            return REGIME_TREND, "trend_candidate_breakout"
         if _ROUTER_ALLOW_CONFIDENT_CANDIDATE and self._is_confident_candidate(regime_result):
             return candidate_regime, "confident_candidate"
         if _ROUTER_USE_CANDIDATE_WHEN_UNKNOWN and candidate_regime != REGIME_UNKNOWN:
@@ -302,6 +357,13 @@ class StrategyRouter:
         return out
 
     def _blocked_signal(self, symbol: str, *, resolved_regime: str, regime_source: str, regime_result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        detail = self._build_router_reason_detail(
+            regime_result,
+            resolved_regime=resolved_regime,
+            regime_source=regime_source,
+            reason=reason,
+        )
+        summary = self._regime_summary(regime_result)
         return {
             "signal": False,
             "reason": reason,
@@ -315,8 +377,12 @@ class StrategyRouter:
             "router_mode": self.mode,
             "router_decision": "regime_blocked",
             "router_reason": reason,
+            "router_reason_detail": detail,
+            "router_candidate_regime": str(regime_result.get("candidate_regime") or REGIME_UNKNOWN),
+            "router_candidate_confidence": float(regime_result.get("candidate_confidence") or 0.0),
+            "router_candidate_scores": dict(regime_result.get("candidate_scores") or {}),
             "router_regime_source": regime_source,
-            "regime_context": self._regime_summary(regime_result),
+            "regime_context": summary,
         }
 
     def route_symbol(self, symbol: str, market_context: Optional[Dict[str, Any]] = None, btc_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
