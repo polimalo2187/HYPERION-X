@@ -32,6 +32,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "TradingXHiperPro_bot")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0") or "0")
 ADMIN_WHATSAPP_LINK = os.getenv("ADMIN_WHATSAPP_LINK", "").strip()
 
+from app import database as db_module
 from app.database import (
     has_accepted_terms,
     create_user,
@@ -57,14 +58,42 @@ from app.database import (
     # Stats por usuario (admin)
     get_user_trade_stats,
     reset_user_trade_stats_epoch,
-    get_strategy_runtime_overview,
-    get_strategy_router_events,
     publish_runtime_component,
     describe_runtime_identity,
 )
 
 from app.hyperliquid_client import get_balance
 from app.trading_loop import trading_loop
+
+
+def _strategy_overview_fallback(user_id: int | None = None, limit_recent_events: int = 25) -> dict:
+    return {
+        'scope_user_id': int(user_id) if user_id is not None else None,
+        'counts': {},
+        'breakdown': {'execution_mode': {}, 'strategy': {}, 'regime': {}, 'event_type': {}},
+        'recent_events': [],
+        'partial': True,
+        'unavailable': True,
+        'error': 'strategy_telemetry_unavailable',
+    }
+
+
+def _strategy_events_fallback(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    event_type: str | None = None,
+    execution_mode: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> list[dict]:
+    return []
+
+
+get_strategy_runtime_overview = getattr(db_module, 'get_strategy_runtime_overview', _strategy_overview_fallback)
+get_strategy_router_events = getattr(db_module, 'get_strategy_router_events', _strategy_events_fallback)
+
 
 
 # ============================================================
