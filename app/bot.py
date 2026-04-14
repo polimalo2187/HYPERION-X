@@ -207,8 +207,18 @@ def _compact_strategy_event(event: dict | None) -> str:
 
     if event_type == 'router_blocked':
         router_reason = str(extra.get('router_reason') or extra.get('reject_reason') or item.get('reason') or signal_summary.get('router_decision') or '-').strip()
-        router_reason = router_reason[:32]
-        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {router_reason or '-'}"
+        candidate_regime = str(extra.get('router_candidate_regime') or signal_summary.get('router_candidate_regime') or '').strip().lower()
+        confidence = extra.get('router_candidate_confidence')
+        detail_parts = [router_reason]
+        if candidate_regime:
+            detail_parts.append(f"cand={candidate_regime}")
+        try:
+            if confidence is not None and confidence != '':
+                detail_parts.append(f"cf={float(confidence):.2f}")
+        except Exception:
+            pass
+        router_txt = ' '.join([part for part in detail_parts if part]).strip()[:56]
+        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {router_txt or '-'}"
 
     if event_type == 'strategy_rejected':
         reject_reason = str(extra.get('reason') or extra.get('reject_reason') or item.get('reason') or signal_summary.get('router_decision') or '-').strip()
