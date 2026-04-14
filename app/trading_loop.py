@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import os
 import random
 import time
 from datetime import datetime
@@ -26,6 +27,7 @@ from app.database import (
     get_user_public_snapshot,
     mark_user_private_key_runtime_issue,
     pop_pending_close_notification,
+    record_strategy_router_event,
 )
 from app.crypto_utils import PrivateKeyDecryptError
 from app.trading_engine import execute_trade_cycle
@@ -36,7 +38,7 @@ from app.config import SCAN_INTERVAL, ADMIN_TELEGRAM_ID
 # ============================================================
 
 MAX_CONCURRENT_USERS = 5          # Control de carga
-TRADE_TIMEOUT_SECONDS = 45        # Timeout duro por usuario
+TRADE_TIMEOUT_SECONDS = max(45, int(os.getenv("TRADE_TIMEOUT_SECONDS", "90")))  # Timeout duro por usuario
 ERROR_BACKOFF_SECONDS = 3
 
 # ✅ FIX: evita que al hacer deploy “arranque tirando órdenes” inmediatamente
@@ -299,6 +301,30 @@ async def execute_user_cycle(app: Application, user_id: int, semaphore: asyncio.
                     source='trading_loop',
                     metadata={'phase': 'timeout', 'timeout_seconds': TRADE_TIMEOUT_SECONDS},
                 )
+                try:
+                    record_strategy_router_event(
+                        int(user_id),
+                        {
+                            'event_type': 'cycle_timeout',
+                            'symbol': '',
+                            'strategy_id': 'none',
+                            'regime_id': 'unknown',
+                            'execution_mode': 'router',
+                            'signal': False,
+                            'selected': False,
+                            'trade_opened': False,
+                            'regime_changed': False,
+                            'shadow_evaluated': False,
+                            'shadow_signal': False,
+                            'signal_summary': {},
+                            'shadow_summary': {},
+                            'scanner_summary': {},
+                            'regime_summary': {},
+                            'extra': {'phase': 'timeout', 'timeout_seconds': int(TRADE_TIMEOUT_SECONDS)},
+                        },
+                    )
+                except Exception:
+                    pass
                 await _publish_runtime_component_safe(app, 'scanner', 'online', metadata={'user_id': int(user_id), 'phase': 'user_timeout', 'warning_kind': 'timeout', 'error': 'execute_user_cycle timeout'}, verify_readback=False, dedupe_suffix='user_timeout')
                 log(f"Timeout ejecución usuario {user_id}", "WARN")
                 await send_admin_push_safe(app, f"⚠️ Timeout en ciclo de trading\nUsuario: {_admin_user_label(user_id)}\nEl ciclo excedió {TRADE_TIMEOUT_SECONDS}s.", dedupe_key=f"timeout:{user_id}", cooldown_seconds=300)
