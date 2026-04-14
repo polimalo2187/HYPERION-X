@@ -1,12 +1,50 @@
 from __future__ import annotations
 
+import os
 import time
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.hyperliquid_client import make_request, norm_coin
 
 
 TF_5M = "5m"
+
+
+_MARKET_CONTEXT_CACHE_TTL_SECONDS = max(float(os.getenv("MARKET_CONTEXT_CACHE_TTL_SECONDS", "8.0") or 8.0), 0.0)
+_MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS = max(float(os.getenv("MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS", "3.5") or 3.5), 1.0)
+_MARKET_CONTEXT_REQUEST_RETRIES = max(int(os.getenv("MARKET_CONTEXT_REQUEST_RETRIES", "2") or 2), 1)
+_MARKET_CONTEXT_REQUEST_BACKOFF = max(float(os.getenv("MARKET_CONTEXT_REQUEST_BACKOFF", "0.35") or 0.35), 0.0)
+_market_context_cache_lock = threading.Lock()
+_market_context_cache: Dict[tuple, tuple[float, Dict[str, Any]]] = {}
+
+
+def _cache_get(key: tuple) -> Optional[Dict[str, Any]]:
+    if _MARKET_CONTEXT_CACHE_TTL_SECONDS <= 0.0:
+        return None
+    now = time.time()
+    with _market_context_cache_lock:
+        payload = _market_context_cache.get(key)
+        if not payload:
+            return None
+        ts, value = payload
+        if (now - float(ts)) > float(_MARKET_CONTEXT_CACHE_TTL_SECONDS):
+            _market_context_cache.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set(key: tuple, value: Dict[str, Any]) -> None:
+    if _MARKET_CONTEXT_CACHE_TTL_SECONDS <= 0.0:
+        return
+    now = time.time()
+    with _market_context_cache_lock:
+        _market_context_cache[key] = (now, value)
+        if len(_market_context_cache) > 256:
+            stale = [k for k, (ts, _) in _market_context_cache.items() if (now - float(ts)) > float(_MARKET_CONTEXT_CACHE_TTL_SECONDS)]
+            for stale_key in stale[:128]:
+                _market_context_cache.pop(stale_key, None)
+
 
 
 def interval_ms(interval: str) -> int:
@@ -49,7 +87,7 @@ def fetch_candles(coin: str, interval: str, limit: int) -> Tuple[List[dict], str
                 "endTime": now,
             },
         }
-        resp = make_request("/info", payload)
+        resp = make_request("/info", payload, retries=MARKET_CONTEXT_REQUEST_RETRIES, backoff=MARKET_CONTEXT_REQUEST_BACKOFF, timeout=MARKET_CONTEXT_REQUEST_TIMEOUT_SECONDS)
     except Exception:
         return [], "API_FAIL"
 
@@ -171,6 +209,10 @@ def is_stale(candles: List[dict], interval: str) -> Tuple[bool, float, int]:
 
 
 def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: tuple[int, ...] = (20, 50, 200), adx_period: int = 14, atr_period: int = 14) -> Dict[str, Any]:
+    cache_key = ("tf", str(coin or "").upper(), str(interval or ""), int(limit), tuple(int(x) for x in ema_periods), int(adx_period), int(atr_period))
+    cached = _cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
     candles, status = fetch_candles(coin, interval, limit)
     snapshot: Dict[str, Any] = {
         "interval": interval,
@@ -218,11 +260,16 @@ def build_timeframe_context(coin: str, interval: str, limit: int, ema_periods: t
     for period in ema_periods:
         snapshot[f"ema{int(period)}"] = ema(c, int(period))
 
+    _cache_set(cache_key, snapshot)
     return snapshot
 
 
 
 def build_market_context(symbol: str, interval: str = TF_5M, limit: int = 320, ema_periods: tuple[int, ...] = (20, 50, 200), adx_period: int = 14, atr_period: int = 14) -> Dict[str, Any]:
+    cache_key = ("market", str(symbol or "").upper(), str(interval or ""), int(limit), tuple(int(x) for x in ema_periods), int(adx_period), int(atr_period))
+    cached = _cache_get(cache_key)
+    if isinstance(cached, dict):
+        return cached
     coin = norm_coin(symbol)
     if not coin:
         return {
@@ -240,12 +287,14 @@ def build_market_context(symbol: str, interval: str = TF_5M, limit: int = 320, e
         adx_period=adx_period,
         atr_period=atr_period,
     )
-    return {
+    out = {
         "symbol": symbol,
         "coin": coin,
         "status": tf_ctx.get("status", "UNKNOWN"),
         "timeframes": {interval: tf_ctx},
     }
+    _cache_set(cache_key, out)
+    return out
 
 
 __all__ = [
