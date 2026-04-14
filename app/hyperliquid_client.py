@@ -1217,6 +1217,10 @@ def _clamp_slippage(x: float) -> float:
 _MIN_TRADE_NOTIONAL = 10.0
 _MIN_TRADE_BUFFER = 0.20
 
+
+def get_exchange_min_order_notional_usdc() -> float:
+    return float(_MIN_TRADE_NOTIONAL + _MIN_TRADE_BUFFER)
+
 # ------------------------------------------------------------
 # Margin mode / leverage (FORZAR ISOLATED)
 # ------------------------------------------------------------
