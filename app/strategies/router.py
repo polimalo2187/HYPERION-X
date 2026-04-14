@@ -27,6 +27,11 @@ _ROUTER_RANGE_SHADOW_ENABLED = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ENABLED",
 _ROUTER_RANGE_SHADOW_ALWAYS = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ALWAYS", "0").strip().lower() in {"1", "true", "yes", "on"}
 _ROUTER_BTC_CONTEXT_TTL_SECONDS = max(float(os.getenv("STRATEGY_ROUTER_BTC_CONTEXT_TTL_SECONDS", "4.0") or 4.0), 0.0)
 
+_ROUTER_CANDIDATE_CONFIDENCE_MIN = max(float(os.getenv("STRATEGY_ROUTER_CANDIDATE_CONFIDENCE_MIN", "0.52") or 0.52), 0.0)
+_ROUTER_CANDIDATE_SCORE_MIN = max(int(os.getenv("STRATEGY_ROUTER_CANDIDATE_SCORE_MIN", "3") or 3), 1)
+_ROUTER_ALLOW_CONFIDENT_CANDIDATE = os.getenv("STRATEGY_ROUTER_ALLOW_CONFIDENT_CANDIDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_ALLOW_RANGE_CANDIDATE = os.getenv("STRATEGY_ROUTER_ALLOW_RANGE_CANDIDATE", "1").strip().lower() not in {"0", "false", "no", "off"}
+
 
 _SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
 if _ROUTER_MODE not in _SUPPORTED_ROUTER_MODES:
@@ -124,11 +129,57 @@ class StrategyRouter:
             self._btc_context_cache_ts = now_ts
         return btc_ctx
 
+    def _is_confident_candidate(self, regime_result: Dict[str, Any]) -> bool:
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        if candidate_regime == REGIME_UNKNOWN:
+            return False
+        if candidate_regime == REGIME_RANGE and not _ROUTER_ALLOW_RANGE_CANDIDATE:
+            return False
+
+        confidence = float(regime_result.get("candidate_confidence") or 0.0)
+        scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
+        best_score = float(scores.get(candidate_regime) or 0.0)
+        if confidence < _ROUTER_CANDIDATE_CONFIDENCE_MIN or best_score < _ROUTER_CANDIDATE_SCORE_MIN:
+            return False
+
+        features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+        adx = float(features.get("adx") or 0.0)
+        chop = float(features.get("choppiness") or 50.0)
+        efficiency = float(features.get("efficiency_ratio") or 0.0)
+        ema_align = float(features.get("ema_stack_alignment") or 0.0)
+        btc_shock = float(features.get("btc_shock_ratio") or 0.0)
+        wick_instability = float(features.get("wick_instability") or 0.0)
+        breakout_failure_ratio = float(features.get("breakout_failure_ratio") or 0.0)
+        distance_to_vwap_atr = float(features.get("distance_to_vwap_atr") or 0.0)
+
+        if candidate_regime == REGIME_TREND:
+            return (
+                confidence >= max(_ROUTER_CANDIDATE_CONFIDENCE_MIN, 0.50)
+                and (adx >= 13.5 or ema_align >= 0.52)
+                and efficiency >= 0.18
+                and chop <= 60.0
+            )
+        if candidate_regime == REGIME_VOLATILE:
+            return (
+                confidence >= max(_ROUTER_CANDIDATE_CONFIDENCE_MIN + 0.04, 0.58)
+                and (btc_shock >= 1.35 or wick_instability >= 0.50 or breakout_failure_ratio >= 0.24)
+            )
+        if candidate_regime == REGIME_RANGE:
+            return (
+                confidence >= max(_ROUTER_CANDIDATE_CONFIDENCE_MIN, 0.50)
+                and chop >= 49.0
+                and efficiency <= 0.42
+                and distance_to_vwap_atr <= 1.45
+            )
+        return False
+
     def _resolve_regime_for_routing(self, regime_result: Dict[str, Any]) -> tuple[str, str]:
         active_regime = str(regime_result.get("active_regime") or REGIME_UNKNOWN)
         candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
         if active_regime != REGIME_UNKNOWN:
             return active_regime, "active"
+        if _ROUTER_ALLOW_CONFIDENT_CANDIDATE and self._is_confident_candidate(regime_result):
+            return candidate_regime, "confident_candidate"
         if _ROUTER_USE_CANDIDATE_WHEN_UNKNOWN and candidate_regime != REGIME_UNKNOWN:
             return candidate_regime, "candidate_fallback"
         return REGIME_UNKNOWN, "unknown"
