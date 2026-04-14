@@ -19,7 +19,9 @@ from app.strategies.registry import DEFAULT_STRATEGY_ID, get_strategy_registry
 
 _ROUTER_INTERVAL = os.getenv("STRATEGY_ROUTER_INTERVAL", "5m").strip() or "5m"
 _ROUTER_MODE = os.getenv("STRATEGY_ROUTER_MODE", "observe_only").strip().lower() or "observe_only"
-_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN = os.getenv("STRATEGY_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN = os.getenv("STRATEGY_ROUTER_USE_CANDIDATE_WHEN_UNKNOWN", "0").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_BLOCK_UNKNOWN_NO_TRADE = os.getenv("STRATEGY_ROUTER_BLOCK_UNKNOWN_NO_TRADE", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_BLOCK_UNSUPPORTED_NO_TRADE = os.getenv("STRATEGY_ROUTER_BLOCK_UNSUPPORTED_NO_TRADE", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_STATE_TTL_SECONDS = max(int(os.getenv("STRATEGY_ROUTER_STATE_TTL_SECONDS", "21600") or 21600), 300)
 _ROUTER_RANGE_SHADOW_ENABLED = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_RANGE_SHADOW_ALWAYS = os.getenv("STRATEGY_ROUTER_RANGE_SHADOW_ALWAYS", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -204,6 +206,31 @@ class StrategyRouter:
             summary["diagnostics"] = dict(diag)
         return summary
 
+    def _attach_shadow_metadata(
+        self,
+        *,
+        out: Dict[str, Any],
+        symbol: str,
+        ctx: Dict[str, Any],
+        regime_result: Dict[str, Any],
+        resolved_regime: str,
+        regime_source: str,
+    ) -> Dict[str, Any]:
+        shadow_range = self._shadow_summary(
+            symbol=symbol,
+            ctx=ctx,
+            regime_result=regime_result,
+            resolved_regime=resolved_regime,
+            regime_source=regime_source,
+        )
+        out["shadow_range"] = shadow_range
+        out["shadow_strategy_id"] = str(shadow_range.get("strategy_id") or self._range_shadow_strategy_id)
+        out["shadow_signal"] = bool(shadow_range.get("signal"))
+        out["shadow_score"] = float(shadow_range.get("score") or 0.0)
+        out["shadow_direction"] = str(shadow_range.get("direction") or "").lower()
+        out.setdefault("market_context_status", str(ctx.get("status") or "UNKNOWN"))
+        return out
+
     def _blocked_signal(self, symbol: str, *, resolved_regime: str, regime_source: str, regime_result: Dict[str, Any], reason: str) -> Dict[str, Any]:
         return {
             "signal": False,
@@ -236,14 +263,40 @@ class StrategyRouter:
         mapped_strategy_id = self._regime_strategy_map.get(resolved_regime)
         observe_only = self.mode != "enforced"
 
+        if resolved_regime == REGIME_UNKNOWN and _ROUTER_BLOCK_UNKNOWN_NO_TRADE:
+            blocked = self._blocked_signal(
+                symbol,
+                resolved_regime=resolved_regime,
+                regime_source=regime_source,
+                regime_result=regime_result,
+                reason="ROUTER_UNKNOWN_NO_TRADE",
+            )
+            return self._attach_shadow_metadata(
+                out=blocked,
+                symbol=symbol,
+                ctx=ctx,
+                regime_result=regime_result,
+                resolved_regime=resolved_regime,
+                regime_source=regime_source,
+            )
+
         if not mapped_strategy_id:
-            if not observe_only:
-                return self._blocked_signal(
+            if _ROUTER_BLOCK_UNSUPPORTED_NO_TRADE or (not observe_only):
+                reason = "ROUTER_REGIME_SHADOW_ONLY" if resolved_regime == REGIME_RANGE else "ROUTER_REGIME_UNSUPPORTED"
+                blocked = self._blocked_signal(
                     symbol,
                     resolved_regime=resolved_regime,
                     regime_source=regime_source,
                     regime_result=regime_result,
-                    reason="ROUTER_REGIME_UNSUPPORTED",
+                    reason=reason,
+                )
+                return self._attach_shadow_metadata(
+                    out=blocked,
+                    symbol=symbol,
+                    ctx=ctx,
+                    regime_result=regime_result,
+                    resolved_regime=resolved_regime,
+                    regime_source=regime_source,
                 )
             mapped_strategy_id = DEFAULT_STRATEGY_ID
             router_decision = "observe_only_default_strategy"
@@ -272,20 +325,14 @@ class StrategyRouter:
         out["regime_version"] = DETECTOR_VERSION
         out["detector_version"] = DETECTOR_VERSION
         out["regime_context"] = self._regime_summary(regime_result)
-        shadow_range = self._shadow_summary(
+        return self._attach_shadow_metadata(
+            out=out,
             symbol=symbol,
             ctx=ctx,
             regime_result=regime_result,
             resolved_regime=resolved_regime,
             regime_source=regime_source,
         )
-        out["shadow_range"] = shadow_range
-        out["shadow_strategy_id"] = str(shadow_range.get("strategy_id") or self._range_shadow_strategy_id)
-        out["shadow_signal"] = bool(shadow_range.get("signal"))
-        out["shadow_score"] = float(shadow_range.get("score") or 0.0)
-        out["shadow_direction"] = str(shadow_range.get("direction") or "").lower()
-        out.setdefault("market_context_status", str(ctx.get("status") or "UNKNOWN"))
-        return out
 
 
 _ROUTER = StrategyRouter()
