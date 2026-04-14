@@ -65,84 +65,150 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
     distance_to_vwap_atr = float(features.get("distance_to_vwap_atr") or 0.0)
     ema_stack_alignment = float(features.get("ema_stack_alignment") or 0.0)
     trend_bias = str(features.get("trend_bias") or "neutral")
+    recent_move_3 = abs(float(features.get("recent_move_3") or 0.0))
+    btc_recent_move_3 = abs(float(features.get("btc_recent_move_3") or 0.0))
 
-    trend_adx_min = _env_float("REGIME_TREND_ADX_MIN", 18.0)
-    trend_chop_max = _env_float("REGIME_TREND_CHOP_MAX", 51.0)
-    trend_eff_min = _env_float("REGIME_TREND_EFFICIENCY_MIN", 0.34)
-    volatile_btc_shock_min = _env_float("REGIME_VOLATILE_BTC_SHOCK_MIN", 1.85)
-    volatile_wick_min = _env_float("REGIME_VOLATILE_WICK_MIN", 0.60)
-    volatile_breakout_fail_min = _env_float("REGIME_VOLATILE_BREAKOUT_FAIL_MIN", 0.34)
-    volatile_atr_pct_min = _env_float("REGIME_VOLATILE_ATR_PCT_MIN", 0.010)
-    range_adx_max = _env_float("REGIME_RANGE_ADX_MAX", 16.0)
-    range_chop_min = _env_float("REGIME_RANGE_CHOP_MIN", 58.0)
-    range_eff_max = _env_float("REGIME_RANGE_EFFICIENCY_MAX", 0.28)
-    range_vwap_dist_max = _env_float("REGIME_RANGE_VWAP_DIST_ATR_MAX", 0.95)
+    trend_adx_min = _env_float("REGIME_TREND_ADX_MIN", 16.5)
+    trend_chop_max = _env_float("REGIME_TREND_CHOP_MAX", 55.0)
+    trend_eff_min = _env_float("REGIME_TREND_EFFICIENCY_MIN", 0.28)
+    trend_ema_align_min = _env_float("REGIME_TREND_EMA_ALIGN_MIN", 0.60)
+    trend_breakout_fail_max = _env_float("REGIME_TREND_BREAKOUT_FAIL_MAX", 0.22)
+
+    volatile_btc_shock_min = _env_float("REGIME_VOLATILE_BTC_SHOCK_MIN", 1.55)
+    volatile_wick_min = _env_float("REGIME_VOLATILE_WICK_MIN", 0.56)
+    volatile_breakout_fail_min = _env_float("REGIME_VOLATILE_BREAKOUT_FAIL_MIN", 0.26)
+    volatile_atr_pct_min = _env_float("REGIME_VOLATILE_ATR_PCT_MIN", 0.0085)
+
+    range_adx_max = _env_float("REGIME_RANGE_ADX_MAX", 19.0)
+    range_chop_min = _env_float("REGIME_RANGE_CHOP_MIN", 54.0)
+    range_eff_max = _env_float("REGIME_RANGE_EFFICIENCY_MAX", 0.34)
+    range_vwap_dist_max = _env_float("REGIME_RANGE_VWAP_DIST_ATR_MAX", 1.10)
+    range_ema_align_max = _env_float("REGIME_RANGE_EMA_ALIGN_MAX", 0.62)
 
     volatile_score = 0
     volatile_score += _score_bool(btc_shock_ratio >= volatile_btc_shock_min)
     volatile_score += _score_bool(wick_instability >= volatile_wick_min)
     volatile_score += _score_bool(breakout_failure_ratio >= volatile_breakout_fail_min)
     volatile_score += _score_bool(atr_pct >= volatile_atr_pct_min)
-    volatile_score += _score_bool(body_quality <= 0.38 and efficiency <= 0.42)
+    volatile_score += _score_bool(body_quality <= 0.42 and efficiency <= 0.45)
+    volatile_score += _score_bool(recent_move_3 >= max(atr_pct * 0.55, 0.0035) or btc_recent_move_3 >= 0.0035)
 
     trend_score = 0
     trend_score += _score_bool(adx >= trend_adx_min)
     trend_score += _score_bool(chop <= trend_chop_max)
     trend_score += _score_bool(efficiency >= trend_eff_min)
-    trend_score += _score_bool(ema_stack_alignment >= 0.66)
-    trend_score += _score_bool(breakout_failure_ratio <= 0.15)
+    trend_score += _score_bool(ema_stack_alignment >= trend_ema_align_min)
+    trend_score += _score_bool(breakout_failure_ratio <= trend_breakout_fail_max)
+    trend_score += _score_bool(body_quality >= 0.38)
 
     range_score = 0
     range_score += _score_bool(adx <= range_adx_max)
     range_score += _score_bool(chop >= range_chop_min)
     range_score += _score_bool(efficiency <= range_eff_max)
     range_score += _score_bool(distance_to_vwap_atr <= range_vwap_dist_max)
-    range_score += _score_bool(breakout_failure_ratio >= 0.12)
+    range_score += _score_bool(ema_stack_alignment <= range_ema_align_max)
+    range_score += _score_bool(breakout_failure_ratio >= 0.08 or wick_instability >= 0.46)
 
-    if volatile_score >= 3 and volatile_score >= trend_score and volatile_score >= range_score:
+    scores = {
+        REGIME_TREND: trend_score,
+        REGIME_VOLATILE: volatile_score,
+        REGIME_RANGE: range_score,
+    }
+    best_regime = max(scores, key=scores.get)
+    best_score = int(scores.get(best_regime) or 0)
+    ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    second_score = int(ordered[1][1]) if len(ordered) > 1 else 0
+
+    trend_ready = (
+        trend_score >= 4
+        or (
+            trend_score >= 3
+            and adx >= trend_adx_min * 0.95
+            and efficiency >= trend_eff_min * 0.90
+            and ema_stack_alignment >= max(0.56, trend_ema_align_min * 0.92)
+        )
+    )
+    volatile_ready = (
+        volatile_score >= 4
+        or (
+            volatile_score >= 3
+            and (
+                btc_shock_ratio >= volatile_btc_shock_min
+                or (wick_instability >= volatile_wick_min and breakout_failure_ratio >= volatile_breakout_fail_min * 0.90)
+            )
+        )
+    )
+    range_ready = (
+        range_score >= 4
+        or (
+            range_score >= 3
+            and adx <= range_adx_max * 1.08
+            and chop >= range_chop_min * 0.94
+            and efficiency <= max(range_eff_max * 1.08, 0.38)
+            and distance_to_vwap_atr <= range_vwap_dist_max * 1.10
+        )
+    )
+
+    volatile_decisive = btc_shock_ratio >= volatile_btc_shock_min * 1.10 or wick_instability >= max(volatile_wick_min + 0.06, 0.64)
+    trend_decisive = ema_stack_alignment >= max(trend_ema_align_min + 0.08, 0.70) or breakout_failure_ratio <= min(trend_breakout_fail_max * 0.75, 0.12)
+    range_decisive = distance_to_vwap_atr <= min(range_vwap_dist_max * 0.75, 0.82) or chop >= max(range_chop_min + 4.0, 58.0)
+
+    if volatile_ready and volatile_score >= max(trend_score, range_score) and (volatile_score - second_score >= 1 or volatile_decisive):
         candidate = REGIME_VOLATILE
-        confidence = min(0.99, 0.45 + 0.11 * volatile_score)
+        confidence = min(0.99, 0.42 + 0.08 * volatile_score + 0.03 * max(0, volatile_score - second_score))
         reasons.extend([
+            f"volatile_score={volatile_score}",
             f"btc_shock_ratio={btc_shock_ratio:.2f}",
             f"wick_instability={wick_instability:.2f}",
             f"breakout_failure_ratio={breakout_failure_ratio:.2f}",
+            f"atr_pct={atr_pct:.4f}",
         ])
-    elif trend_score >= 4 and trend_score > volatile_score and trend_score >= range_score:
+    elif trend_ready and trend_score >= max(range_score, volatile_score) and (trend_score - second_score >= 2 or trend_decisive):
         candidate = REGIME_TREND
-        confidence = min(0.99, 0.40 + 0.10 * trend_score)
+        confidence = min(0.99, 0.40 + 0.07 * trend_score + 0.03 * max(0, trend_score - second_score))
         reasons.extend([
+            f"trend_score={trend_score}",
             f"adx={adx:.2f}",
             f"choppiness={chop:.2f}",
             f"efficiency_ratio={efficiency:.2f}",
             f"ema_stack_alignment={ema_stack_alignment:.2f}",
         ])
-    elif range_score >= 4 and volatile_score <= 2:
+    elif range_ready and range_score >= max(trend_score, volatile_score) and (range_score - second_score >= 2 or range_decisive):
         candidate = REGIME_RANGE
-        confidence = min(0.99, 0.40 + 0.10 * range_score)
+        confidence = min(0.99, 0.40 + 0.07 * range_score + 0.03 * max(0, range_score - second_score))
         reasons.extend([
+            f"range_score={range_score}",
             f"adx={adx:.2f}",
             f"choppiness={chop:.2f}",
             f"efficiency_ratio={efficiency:.2f}",
             f"distance_to_vwap_atr={distance_to_vwap_atr:.2f}",
         ])
+    elif best_score >= 4 and (best_score - second_score) >= 2:
+        candidate = best_regime
+        confidence = min(0.72, 0.34 + 0.06 * best_score)
+        reasons.extend([
+            f"soft_classification={best_regime.lower()}",
+            f"scores trend={trend_score} volatile={volatile_score} range={range_score}",
+            f"adx={adx:.2f}",
+            f"choppiness={chop:.2f}",
+            f"efficiency_ratio={efficiency:.2f}",
+        ])
     else:
         candidate = REGIME_UNKNOWN
-        confidence = 0.20
+        confidence = 0.18
         reasons.extend([
             f"mixed_scores trend={trend_score} volatile={volatile_score} range={range_score}",
             f"adx={adx:.2f}",
             f"choppiness={chop:.2f}",
+            f"efficiency_ratio={efficiency:.2f}",
+            f"ema_stack_alignment={ema_stack_alignment:.2f}",
         ])
 
     return {
         "candidate_regime": candidate,
         "confidence": confidence,
         "reasons": reasons,
-        "scores": {
-            REGIME_TREND: trend_score,
-            REGIME_VOLATILE: volatile_score,
-            REGIME_RANGE: range_score,
-        },
+        "scores": scores,
         "regime_bias": trend_bias,
     }
 
