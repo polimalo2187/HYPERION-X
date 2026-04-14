@@ -63,6 +63,28 @@ SHORTLIST_EVAL_MIN_CANDIDATES = max(int(os.getenv("SHORTLIST_EVAL_MIN_CANDIDATES
 SHORTLIST_HARD_CAP = max(int(os.getenv("SHORTLIST_HARD_CAP", "8") or 8), 1)
 SLOW_SYMBOL_EVAL_SECONDS = max(float(os.getenv("SLOW_SYMBOL_EVAL_SECONDS", "4.5") or 4.5), 0.5)
 SLOW_CYCLE_WARN_SECONDS = max(float(os.getenv("SLOW_CYCLE_WARN_SECONDS", "25") or 25), 5.0)
+SHORTLIST_FETCH_MULTIPLIER = max(int(os.getenv("SHORTLIST_FETCH_MULTIPLIER", "3") or 3), 1)
+DATA_UNAVAILABLE_QUARANTINE_SECONDS = max(float(os.getenv("DATA_UNAVAILABLE_QUARANTINE_SECONDS", "180") or 180), 30.0)
+ROUTER_SHADOW_ONLY_COOLDOWN_SECONDS = max(float(os.getenv("ROUTER_SHADOW_ONLY_COOLDOWN_SECONDS", "180") or 180), 30.0)
+REJECT_COOLDOWN_BUFFER_SECONDS = max(float(os.getenv("REJECT_COOLDOWN_BUFFER_SECONDS", "8") or 8), 0.0)
+
+_SHORTLIST_SKIP_LOCK = threading.Lock()
+_SHORTLIST_SKIP_CACHE: dict[str, dict[str, Any]] = {}
+_DETERMINISTIC_REJECTION_REASONS = {
+    "NO_BREAKDOWN",
+    "NO_BREAKOUT",
+    "NO_RETEST_BAR",
+    "RETEST_CLOSE_BAD",
+    "RETEST_TOO_DEEP",
+    "NO_RETEST_TOUCH",
+    "TRIGGER_BODY_WEAK",
+    "TRIGGER_CLOSE_LOCATION_BAD",
+    "RETEST_VOLUME_WEAK",
+    "TRIGGER_REJECTION_WEAK",
+    "TRIGGER_CANDLE_TOO_LARGE",
+    "TRIGGER_BODY_OVEREXTENDED",
+    "TOO_EXTENDED_AFTER_RETEST",
+}
 
 
 def _engine_clamp(value: float, lo: float, hi: float) -> float:
@@ -89,6 +111,63 @@ def _safe_str(value: Any, default: str = "") -> str:
         return s if s else str(default)
     except Exception:
         return str(default)
+
+
+def _prune_shortlist_skip_cache(now_ts: float | None = None) -> None:
+    now = float(now_ts or time.time())
+    with _SHORTLIST_SKIP_LOCK:
+        dead = [k for k, v in _SHORTLIST_SKIP_CACHE.items() if float(v.get("expires_at") or 0.0) <= now]
+        for k in dead:
+            _SHORTLIST_SKIP_CACHE.pop(k, None)
+
+
+def _next_timeframe_boundary_ts(tf_seconds: int = 300, buffer_seconds: float = 0.0) -> float:
+    now = time.time()
+    tf = max(int(tf_seconds or 300), 60)
+    current_bucket = int(now // tf)
+    return float((current_bucket + 1) * tf + max(float(buffer_seconds or 0.0), 0.0))
+
+
+def _cooldown_expiry_for_reason(reason: str) -> float:
+    upper = str(reason or "").strip().upper()
+    if upper in _DETERMINISTIC_REJECTION_REASONS:
+        return _next_timeframe_boundary_ts(300, REJECT_COOLDOWN_BUFFER_SECONDS)
+    if upper == "ROUTER_REGIME_SHADOW_ONLY":
+        return time.time() + float(ROUTER_SHADOW_ONLY_COOLDOWN_SECONDS)
+    if upper.startswith("ROUTER_DATA_UNAVAILABLE") or upper.startswith("ROUTER_BTC_DATA_UNAVAILABLE"):
+        return time.time() + float(DATA_UNAVAILABLE_QUARANTINE_SECONDS)
+    return 0.0
+
+
+def _cache_shortlist_skip(symbol: str, reason: str, detail: str = "") -> None:
+    sym = str(symbol or "").strip().upper()
+    rsn = str(reason or "").strip().upper()
+    if not sym or not rsn:
+        return
+    expires_at = _cooldown_expiry_for_reason(rsn)
+    if expires_at <= time.time():
+        return
+    with _SHORTLIST_SKIP_LOCK:
+        _SHORTLIST_SKIP_CACHE[sym] = {
+            "reason": rsn,
+            "detail": str(detail or "")[:220],
+            "expires_at": float(expires_at),
+        }
+
+
+def _get_shortlist_skip(symbol: str) -> dict[str, Any] | None:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None
+    _prune_shortlist_skip_cache()
+    with _SHORTLIST_SKIP_LOCK:
+        row = _SHORTLIST_SKIP_CACHE.get(sym)
+        if not row:
+            return None
+        if float(row.get("expires_at") or 0.0) <= time.time():
+            _SHORTLIST_SKIP_CACHE.pop(sym, None)
+            return None
+        return dict(row)
 
 
 def _build_trade_plan(
@@ -3197,7 +3276,8 @@ def _candidate_rank_tuple(signal: dict, scanner_row: dict) -> tuple:
 def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: set[str]) -> dict | None:
     shortlist_started_ts = time.time()
     limit = _signal_candidate_limit()
-    shortlist = get_ranked_symbols(exclude_symbols=exclude_symbols, limit=limit)
+    fetch_limit = max(int(limit * SHORTLIST_FETCH_MULTIPLIER), int(limit))
+    shortlist = get_ranked_symbols(exclude_symbols=exclude_symbols, limit=fetch_limit)
     shortlist_fetch_elapsed_s = time.time() - shortlist_started_ts
     if not shortlist:
         log("Scanner no devolvió candidatos", "WARN")
@@ -3208,7 +3288,7 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
     eval_started_ts = time.time()
     budget_deadline_ts = eval_started_ts + float(SHORTLIST_EVAL_BUDGET_SECONDS)
     btc_context = build_market_context(
-        symbol="BTC-USDC",
+        symbol="BTC",
         interval=TF_5M,
         limit=LOOKBACK_5M,
         ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
@@ -3224,15 +3304,26 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
     budget_exhausted = False
 
     for idx, candidate in enumerate(shortlist, start=1):
-        if idx > int(limit):
+        if evaluated_count >= int(limit):
             break
-        if idx > int(SHORTLIST_EVAL_MIN_CANDIDATES) and time.time() >= budget_deadline_ts:
+        if evaluated_count >= int(SHORTLIST_EVAL_MIN_CANDIDATES) and time.time() >= budget_deadline_ts:
             budget_exhausted = True
             blocked_samples.append("SHORTLIST_TIME_BUDGET_EXHAUSTED")
             break
 
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
+            continue
+
+        cached_skip = _get_shortlist_skip(symbol)
+        if cached_skip:
+            if len(blocked_samples) < 6:
+                cached_reason = str(cached_skip.get("reason") or "COOLDOWN")
+                cached_detail = str(cached_skip.get("detail") or "").strip()
+                if cached_detail:
+                    blocked_samples.append(f"{symbol}:COOLDOWN_{cached_reason}[{cached_detail[:140]}]")
+                else:
+                    blocked_samples.append(f"{symbol}:COOLDOWN_{cached_reason}")
             continue
 
         evaluated_count += 1
@@ -3310,6 +3401,7 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                 execution_mode="live",
                 extra=extra_payload,
             )
+            _cache_shortlist_skip(symbol, reason, router_detail)
             continue
 
         strength = float(signal.get("strength", 0.0) or 0.0)
@@ -3391,7 +3483,7 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
 
     if not best_choice:
         suffix = f" reasons={'; '.join(blocked_samples)}" if blocked_samples else ""
-        log(f"Shortlist scanner sin setup accionable (evaluados={len(shortlist)}){suffix}", "INFO")
+        log(f"Shortlist scanner sin setup accionable (evaluados={evaluated_count}/{len(shortlist)}){suffix}", "INFO")
         try:
             database_module.record_strategy_router_event(
                 int(user_id),
@@ -3423,7 +3515,8 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                     "regime_summary": {},
                     "extra": {
                         "phase": "shortlist_no_signal",
-                        "evaluated": int(len(shortlist) or 0),
+                        "evaluated": int(evaluated_count or 0),
+                        "fetched": int(len(shortlist) or 0),
                         "blocked_samples": list(blocked_samples[:6]),
                         "slow_samples": list(slow_samples[:6]),
                         "evaluated_count": int(evaluated_count or 0),
