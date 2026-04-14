@@ -137,6 +137,9 @@ class StrategyRouter:
                 "wick_instability": float(features.get("wick_instability") or 0.0),
                 "breakout_failure_ratio": float(features.get("breakout_failure_ratio") or 0.0),
                 "btc_shock_ratio": float(features.get("btc_shock_ratio") or 0.0),
+                "distance_to_vwap_atr": float(features.get("distance_to_vwap_atr") or 0.0),
+                "ema_stack_alignment": float(features.get("ema_stack_alignment") or 0.0),
+                "body_quality": float(features.get("body_quality") or 0.0),
             },
         }
 
@@ -236,8 +239,8 @@ class StrategyRouter:
             "signal": False,
             "reason": reason,
             "coin": symbol,
-            "strategy_id": DEFAULT_STRATEGY_ID,
-            "strategy_model": DEFAULT_STRATEGY_ID,
+            "strategy_id": "none",
+            "strategy_model": "none",
             "strategy_version": "router",
             "regime_id": resolved_regime,
             "regime_version": DETECTOR_VERSION,
