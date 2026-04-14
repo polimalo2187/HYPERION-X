@@ -228,7 +228,7 @@ def detect_regime(
         from app.market_context import build_market_context
 
     ctx = market_context or build_market_context(symbol, interval=interval)
-    btc_ctx = btc_context or build_market_context("BTC-USDC", interval=interval)
+    btc_ctx = btc_context or build_market_context("BTC", interval=interval)
     features = build_regime_features(symbol, market_context=ctx, btc_context=btc_ctx, interval=interval)
     candidate = classify_candidate_regime(features)
 
