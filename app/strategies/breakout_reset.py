@@ -31,36 +31,36 @@ BLOCKED_MEME_KEYWORDS = {x.strip().upper() for x in _BLOCKED_MEME_ENV.split(",")
 MIN_CANDLES_REQUIRED = 260
 MIN_NONZERO_VOLUME_RATIO = 0.92
 
-ADX_MIN = 14.6
+ADX_MIN = 13.2
 # Recalibración v5: aflojamos el núcleo (breakout/retest/ADX) para recuperar frecuencia
 # sin tocar las protecciones anti-chase / anti-vela expandida que ya estaban filtrando
 # entradas claramente tardías.
-ATR_PCT_MIN = 0.0009
-ATR_PCT_MAX = 0.0145
+ATR_PCT_MIN = 0.00075
+ATR_PCT_MAX = 0.0165
 ATR_PCT_EXTREME = 0.0175
 
 BREAKOUT_LOOKBACK = 24
 BREAKOUT_MIN_ATR_FRAC = 0.075
-BREAKOUT_CONFIRM_CLOSE_ATR = 0.09
-BREAKOUT_MAX_AGE_BARS = 6
-RETEST_TOL_ATR = 0.62
+BREAKOUT_CONFIRM_CLOSE_ATR = 0.075
+BREAKOUT_MAX_AGE_BARS = 8
+RETEST_TOL_ATR = 0.72
 RETEST_HARD_FAIL_ATR = 1.30
-MAX_CHASE_ATR = 0.72
-MIN_BODY_RATIO = 0.27
-BREAKOUT_MIN_BODY_RATIO = 0.34
-BREAKOUT_MIN_RVOL = 0.92
-TRIGGER_MIN_RVOL = 0.95
-TRIGGER_CLOSE_POS_LONG_MIN = 0.57
-TRIGGER_CLOSE_POS_SHORT_MAX = 0.43
-TRIGGER_MAX_RANGE_ATR = 1.35
-TRIGGER_MAX_BODY_ATR = 0.95
-TRIGGER_MAX_EMA20_EXTENSION_ATR = 1.05
-TREND_STACK_MIN_PCT = 0.00075
+MAX_CHASE_ATR = 0.95
+MIN_BODY_RATIO = 0.24
+BREAKOUT_MIN_BODY_RATIO = 0.30
+BREAKOUT_MIN_RVOL = 0.86
+TRIGGER_MIN_RVOL = 0.88
+TRIGGER_CLOSE_POS_LONG_MIN = 0.54
+TRIGGER_CLOSE_POS_SHORT_MAX = 0.46
+TRIGGER_MAX_RANGE_ATR = 1.55
+TRIGGER_MAX_BODY_ATR = 1.08
+TRIGGER_MAX_EMA20_EXTENSION_ATR = 1.28
+TREND_STACK_MIN_PCT = 0.00055
 
-RETEST_CLOSE_ATR_TOL = 0.10
-RETEST_EMA20_TOL_ATR = 0.12
-RETEST_CONFIRM_CLOSE_POS_FLEX_LONG = 0.55
-RETEST_CONFIRM_CLOSE_POS_FLEX_SHORT = 0.45
+RETEST_CLOSE_ATR_TOL = 0.13
+RETEST_EMA20_TOL_ATR = 0.16
+RETEST_CONFIRM_CLOSE_POS_FLEX_LONG = 0.52
+RETEST_CONFIRM_CLOSE_POS_FLEX_SHORT = 0.48
 
 ATR_SL_MULT = 1.10
 ATR_SL_MIN_PCT = 0.0058
@@ -68,7 +68,7 @@ ATR_SL_MAX_PCT = 0.0125
 SWING_BUFFER_ATR = 0.22
 
 MAX_SCORE = 100.0
-MIN_SCORE_TO_SIGNAL = 78.0
+MIN_SCORE_TO_SIGNAL = 73.0
 STRENGTH_MIN = 0.20
 STRENGTH_MAX = 0.97
 
@@ -682,8 +682,8 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
         slope50 = _pct_change(float(ema50[-1]), float(ema50[max(0, len(ema50) - 1 - EMA_SLOPE_LOOKBACK)] or ema50[-1]))
         slope200 = _pct_change(float(ema200[-1]), float(ema200[max(0, len(ema200) - 1 - EMA_SLOPE_LOOKBACK)] or ema200[-1]))
 
-        long_trend = ema20[-1] > ema50[-1] and close5 > ema50[-1] and slope50 > 0.0002 and slope200 > -0.0015
-        short_trend = ema20[-1] < ema50[-1] and close5 < ema50[-1] and slope50 < -0.0002 and slope200 < 0.0015
+        long_trend = ema20[-1] > ema50[-1] and close5 > ema50[-1] and slope50 > 0.00012 and slope200 > -0.0022
+        short_trend = ema20[-1] < ema50[-1] and close5 < ema50[-1] and slope50 < -0.00012 and slope200 < 0.0022
 
         if long_trend:
             direction = "long"
@@ -730,20 +730,20 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
 
         setup_quality = _clamp(
             (0.22 * adx_quality)
-            + (0.17 * slope_quality)
+            + (0.18 * slope_quality)
             + (0.12 * body_quality)
-            + (0.09 * breakout_body_quality)
-            + (0.18 * volume_quality)
+            + (0.10 * breakout_body_quality)
+            + (0.19 * volume_quality)
             + (0.10 * retest_location_quality)
-            + (0.06 * retest_proximity_quality)
-            + (0.10 * trend_stack_quality)
+            + (0.07 * retest_proximity_quality)
+            + (0.11 * trend_stack_quality)
             + (0.06 * atr_regime_quality)
-            - (0.06 * extension_penalty)
-            - (0.04 * age_penalty),
+            - (0.04 * extension_penalty)
+            - (0.02 * age_penalty),
             0.0,
             1.0,
         )
-        score = round(min(MAX_SCORE, 64.0 + (36.0 * setup_quality)), 2)
+        score = round(min(MAX_SCORE, 62.0 + (38.0 * setup_quality)), 2)
         if score < MIN_SCORE_TO_SIGNAL:
             return {
                 "signal": False,
@@ -789,7 +789,7 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             "ema20_5m": round(float(ema20[-1]), 6),
             "adx1": round(adx5, 2),
             "adx15": round(adx5, 2),
-            "strategy_model": "breakout_retest_5m_v5_exit_asymmetry",
+            "strategy_model": "breakout_retest_5m_v6_recalibrated",
             "market_context_status": str(market_context.get("status") or st5),
         }
         if LOG_SIGNAL_DIAGNOSTICS:
