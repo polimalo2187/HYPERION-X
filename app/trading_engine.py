@@ -3275,18 +3275,32 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
 
         if not signal.get("signal"):
             reason = str(signal.get("reason") or "NO_SIGNAL")
+            router_detail = str(signal.get("router_reason_detail") or "").strip()
             if bool(shadow.get("signal")) and len(blocked_samples) < 6:
                 blocked_samples.append(
                     f"{symbol}:SHADOW_RANGE:{str(shadow.get('direction') or '').lower()}:{float(shadow.get('score') or 0.0):.2f}"
                 )
             else:
                 if len(blocked_samples) < 6:
-                    blocked_samples.append(f"{symbol}:{reason}")
+                    if reason.startswith("ROUTER_") and router_detail:
+                        blocked_samples.append(f"{symbol}:{reason}[{router_detail[:180]}]")
+                    else:
+                        blocked_samples.append(f"{symbol}:{reason}")
 
             reject_event_type = "router_blocked" if reason.startswith("ROUTER_") else "strategy_rejected"
             reject_scanner = dict(candidate or {})
             reject_scanner["shortlist_rank"] = idx
             reject_scanner["shortlist_size"] = len(shortlist)
+            extra_payload = {
+                "phase": "shortlist_rejected",
+                "reject_reason": reason,
+                "reject_reason_detail": router_detail,
+                "router_reason": str(signal.get("router_reason") or reason),
+                "router_regime_source": str(signal.get("router_regime_source") or ""),
+                "router_candidate_regime": str(signal.get("router_candidate_regime") or ""),
+                "router_candidate_confidence": float(signal.get("router_candidate_confidence") or 0.0),
+                "router_candidate_scores": dict(signal.get("router_candidate_scores") or {}),
+            }
             _record_strategy_router_event(
                 user_id,
                 event_type=reject_event_type,
@@ -3294,7 +3308,7 @@ def _select_best_signal_from_scanner_shortlist(user_id: int, exclude_symbols: se
                 signal=signal,
                 scanner_meta=reject_scanner,
                 execution_mode="live",
-                extra={"phase": "shortlist_rejected", "reject_reason": reason},
+                extra=extra_payload,
             )
             continue
 
