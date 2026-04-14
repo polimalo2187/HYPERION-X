@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Dict, List, Optional, Set
 
@@ -28,6 +29,9 @@ def safe_log(*args):
 _LAST_GOOD_RESULTS: List[dict] = []
 _LAST_UPDATE_TS: float = 0.0
 MAX_CACHE_AGE = 300  # 5 minutos
+SCANNER_HTTP_TIMEOUT_SECONDS = max(float(os.getenv("SCANNER_HTTP_TIMEOUT_SECONDS", "4.0") or 4.0), 1.0)
+SCANNER_HTTP_RETRIES = max(int(os.getenv("SCANNER_HTTP_RETRIES", "2") or 2), 1)
+SCANNER_HTTP_BACKOFF = max(float(os.getenv("SCANNER_HTTP_BACKOFF", "0.35") or 0.35), 0.0)
 
 
 # ============================================================
@@ -63,7 +67,7 @@ def _as_perp_symbol(coin: str) -> str:
 # ============================================================
 
 def _fetch_markets() -> Dict[str, dict]:
-    r = make_request("/info", {"type": "metaAndAssetCtxs"})
+    r = make_request("/info", {"type": "metaAndAssetCtxs"}, retries=SCANNER_HTTP_RETRIES, backoff=SCANNER_HTTP_BACKOFF, timeout=SCANNER_HTTP_TIMEOUT_SECONDS)
     if not r or not isinstance(r, list) or len(r) < 2:
         return {}
 
