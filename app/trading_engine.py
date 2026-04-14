@@ -21,6 +21,7 @@
 import time
 import os
 import json
+import math
 import threading
 import traceback
 from datetime import datetime, timedelta, date, timezone
@@ -35,7 +36,7 @@ from app.strategy import (
     get_trade_management_params_for_strategy,
 )
 from app.risk import validate_trade_conditions
-from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot
+from app.hyperliquid_client import place_market_order, place_stop_loss, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot, get_asset_index, get_sz_decimals, get_exchange_min_order_notional_usdc
 
 from app.database import (
     register_trade,
@@ -407,6 +408,8 @@ def _build_active_trade_snapshot(
         "manager_bootstrap_pending": bool(manager_bootstrap_pending),
     })
     snapshot.setdefault("partial_tp_taken", False)
+    snapshot.setdefault("partial_tp_blocked", False)
+    snapshot.setdefault("partial_tp_blocked_reason", "")
     snapshot.setdefault("break_even_armed", False)
     snapshot.setdefault("trailing_active", False)
     snapshot.setdefault("best_pnl_pct", 0.0)
@@ -2480,27 +2483,74 @@ def _reconcile_orphan_closed_trade(user_id: int) -> bool:
     return profit != 0.0 or (_get_active_trade(user_id) is None)
 
 
-def _attempt_partial_take_profit(*, user_id: int, symbol: str, symbol_for_exec: str, direction: str, opposite: str, close_fraction: float) -> bool:
+def _floor_qty_to_step(qty: float, sz_decimals: int) -> float:
+    try:
+        dec = max(int(sz_decimals or 0), 0)
+    except Exception:
+        dec = 0
+    factor = 10 ** dec
+    try:
+        return math.floor(max(float(qty), 0.0) * factor) / factor
+    except Exception:
+        return 0.0
+
+
+def _attempt_partial_take_profit(*, user_id: int, symbol: str, symbol_for_exec: str, direction: str, opposite: str, close_fraction: float) -> dict[str, Any]:
     try:
         size_signed = float(get_open_position_size(user_id, symbol_for_exec) or 0.0)
     except Exception:
         size_signed = 0.0
     if size_signed == 0.0:
-        return False
-    qty = abs(size_signed) * float(close_fraction)
-    qty = round(float(qty), 8)
+        return {"filled": False, "terminal_skip": False, "reason": "NO_OPEN_SIZE"}
+
+    raw_qty = abs(size_signed) * float(close_fraction)
+    asset_index = get_asset_index(symbol_for_exec)
+    try:
+        sz_decimals = int(get_sz_decimals(int(asset_index))) if asset_index is not None else 8
+    except Exception:
+        sz_decimals = 8
+    qty = _floor_qty_to_step(raw_qty, sz_decimals)
+
     if qty < float(MIN_QTY_COIN):
-        return False
+        log(
+            f"PARTIAL_TP_SKIPPED_MIN_QTY user={user_id} symbol={symbol} dir={direction} close_fraction={float(close_fraction):.4f} "
+            f"raw_qty={float(raw_qty):.8f} qty={float(qty):.8f} min_qty={float(MIN_QTY_COIN):.8f}",
+            "WARN",
+        )
+        return {"filled": False, "terminal_skip": True, "reason": "MIN_QTY", "qty": float(qty)}
+
+    mark_price = float(get_price(symbol_for_exec) or 0.0)
+    if mark_price <= 0.0:
+        return {"filled": False, "terminal_skip": False, "reason": "NO_PRICE", "qty": float(qty)}
+
+    notional = float(qty) * float(mark_price)
+    min_notional = float(get_exchange_min_order_notional_usdc() or 0.0)
+    if min_notional > 0.0 and notional < min_notional:
+        log(
+            f"PARTIAL_TP_SKIPPED_MIN_NOTIONAL user={user_id} symbol={symbol} dir={direction} close_fraction={float(close_fraction):.4f} "
+            f"qty={float(qty):.8f} px={float(mark_price):.8f} notional={float(notional):.4f} min_notional={float(min_notional):.4f}",
+            "WARN",
+        )
+        return {
+            "filled": False,
+            "terminal_skip": True,
+            "reason": "MIN_NOTIONAL",
+            "qty": float(qty),
+            "notional": float(notional),
+            "min_notional": float(min_notional),
+        }
+
     try:
         resp = place_market_order(user_id, symbol_for_exec, opposite, qty, reduce_only=True)
     except Exception as e:
         log(f"PARTIAL_TP error user={user_id} symbol={symbol} err={e}", "ERROR")
-        return False
+        return {"filled": False, "terminal_skip": False, "reason": f"EXCEPTION:{type(e).__name__}", "qty": float(qty)}
     if not resp or (not _resp_ok(resp)) or (not _is_filled_exchange_response(resp)):
-        log(f"PARTIAL_TP no fill user={user_id} symbol={symbol} resp={resp}", "WARN")
-        return False
+        reason = str((resp or {}).get("reason") or "NO_FILL") if isinstance(resp, dict) else "NO_FILL"
+        log(f"PARTIAL_TP no fill user={user_id} symbol={symbol} reason={reason} resp={resp}", "WARN")
+        return {"filled": False, "terminal_skip": False, "reason": reason, "qty": float(qty)}
     log(f"PARTIAL_TP_FILLED user={user_id} symbol={symbol} dir={direction} close_fraction={float(close_fraction):.4f} qty={qty:.8f}", "WARN")
-    return True
+    return {"filled": True, "terminal_skip": False, "reason": "FILLED", "qty": float(qty)}
 
 
 def _arm_break_even_stop(*, user_id: int, symbol: str, symbol_for_exec: str, direction: str, entry_price: float, break_even_offset_price: float) -> bool:
@@ -2590,6 +2640,8 @@ def _manage_trade_until_close(
 
     trailing_active = bool(active_runtime.get("trailing_active", False))
     partial_tp_taken = bool(active_runtime.get("partial_tp_taken", False))
+    partial_tp_blocked = bool(active_runtime.get("partial_tp_blocked", False))
+    partial_tp_blocked_reason = _safe_str(active_runtime.get("partial_tp_blocked_reason"), "")
     break_even_armed = bool(active_runtime.get("break_even_armed", False))
     partial_tp_activation_price = float((active_runtime.get("partial_tp_activation_price", mgmt.get("partial_tp_activation_price", 0.0)) or 0.0))
     partial_tp_close_fraction = _engine_clamp(float((active_runtime.get("partial_tp_close_fraction", mgmt.get("partial_tp_close_fraction", 0.0)) or 0.0)), 0.18, 0.45)
@@ -2623,6 +2675,8 @@ def _manage_trade_until_close(
         last_pnl_pct=0.0,
         partial_tp_activation_price=float(partial_tp_activation_price),
         partial_tp_close_fraction=float(partial_tp_close_fraction),
+        partial_tp_blocked=bool(partial_tp_blocked),
+        partial_tp_blocked_reason=_safe_str(partial_tp_blocked_reason, ""),
         strength_check_ts=float(strength_check_ts),
         manager_heartbeat_ts=time.time(),
     )
@@ -2675,6 +2729,8 @@ def _manage_trade_until_close(
                 last_pnl_pct=float(pnl_pct),
                 trailing_active=bool(trailing_active),
                 partial_tp_taken=bool(partial_tp_taken),
+                partial_tp_blocked=bool(partial_tp_blocked),
+                partial_tp_blocked_reason=_safe_str(partial_tp_blocked_reason, ""),
                 break_even_armed=bool(break_even_armed),
                 best_pnl_pct=float(best_pnl_pct),
                 trailing_stop_pnl=(float(trailing_stop_pnl) if trailing_stop_pnl is not None else None),
@@ -2718,8 +2774,8 @@ def _manage_trade_until_close(
                 )
                 break
 
-        if strategy_managed and (not partial_tp_taken) and partial_tp_activation_price > 0.0 and pnl_pct >= partial_tp_activation_price:
-            partial_done = _attempt_partial_take_profit(
+        if strategy_managed and (not partial_tp_taken) and (not partial_tp_blocked) and partial_tp_activation_price > 0.0 and pnl_pct >= partial_tp_activation_price:
+            partial_result = _attempt_partial_take_profit(
                 user_id=user_id,
                 symbol=symbol,
                 symbol_for_exec=symbol_for_exec,
@@ -2727,11 +2783,24 @@ def _manage_trade_until_close(
                 opposite=opposite,
                 close_fraction=float(partial_tp_close_fraction),
             )
-            if partial_done:
+            if partial_result.get("filled"):
                 partial_tp_taken = True
                 _update_active_trade_fields(
                     user_id,
                     partial_tp_taken=True,
+                    partial_tp_blocked=False,
+                    partial_tp_blocked_reason="",
+                    last_price=float(price),
+                    last_pnl_pct=float(pnl_pct),
+                    manager_heartbeat_ts=time.time(),
+                )
+            elif partial_result.get("terminal_skip"):
+                partial_tp_blocked = True
+                partial_tp_blocked_reason = _safe_str(partial_result.get("reason"), "PARTIAL_BLOCKED")
+                _update_active_trade_fields(
+                    user_id,
+                    partial_tp_blocked=True,
+                    partial_tp_blocked_reason=partial_tp_blocked_reason,
                     last_price=float(price),
                     last_pnl_pct=float(pnl_pct),
                     manager_heartbeat_ts=time.time(),
