@@ -57,6 +57,8 @@ from app.database import (
     # Stats por usuario (admin)
     get_user_trade_stats,
     reset_user_trade_stats_epoch,
+    get_strategy_runtime_overview,
+    get_strategy_router_events,
     publish_runtime_component,
     describe_runtime_identity,
 )
@@ -117,6 +119,122 @@ async def _send_runtime_issue_alert(context: ContextTypes.DEFAULT_TYPE, componen
     if now - last_sent < float(cooldown_seconds or 300):
         return
     _RUNTIME_ALERTS[dedupe_key] = now
+
+
+def _fmt_int(value) -> str:
+    try:
+        return f"{int(value or 0):,}".replace(',', '.')
+    except Exception:
+        return '0'
+
+
+def _strategy_bucket_line(label: str, bucket: dict | None, *, shadow: bool = False) -> str:
+    data = bucket or {}
+    signals = int(data.get('signals_total') or 0)
+    selected = int(data.get('selected_total') or 0)
+    opened = int(data.get('trades_opened_total') or 0)
+    shadow_hits = int(data.get('shadow_signal_total') or 0)
+    if shadow:
+        return f"• {label}: shadow={_fmt_int(shadow_hits)} | señales={_fmt_int(signals)} | eventos={_fmt_int(data.get('events_total') or 0)}"
+    return f"• {label}: señales={_fmt_int(signals)} | select={_fmt_int(selected)} | abiertas={_fmt_int(opened)}"
+
+
+def _event_icon(event_type: str | None) -> str:
+    mapping = {
+        'trade_opened': '🟢',
+        'signal_selected': '🎯',
+        'signal_blocked_risk': '🛑',
+        'shadow_opportunity': '👻',
+    }
+    return mapping.get(str(event_type or '').strip().lower(), '•')
+
+
+def _compact_strategy_event(event: dict | None) -> str:
+    item = event or {}
+    symbol = str(item.get('symbol') or '?').upper()
+    strategy_id = str(item.get('strategy_id') or 'unknown').strip().lower()
+    regime_id = str(item.get('regime_id') or 'unknown').strip().lower()
+    event_type = str(item.get('event_type') or 'event').strip().lower()
+    direction = str(item.get('direction') or '').strip().lower()
+    shadow_summary = item.get('shadow_summary') if isinstance(item.get('shadow_summary'), dict) else {}
+    signal_summary = item.get('signal_summary') if isinstance(item.get('signal_summary'), dict) else {}
+    extra = item.get('extra') if isinstance(item.get('extra'), dict) else {}
+
+    if event_type == 'shadow_opportunity':
+        direction = str(shadow_summary.get('direction') or direction or '-').lower()
+        score = shadow_summary.get('score')
+        score_txt = f" | score={float(score):.2f}" if isinstance(score, (int, float)) else ''
+        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {direction or '-'}{score_txt}"
+
+    if event_type == 'signal_blocked_risk':
+        risk_reason = str(extra.get('risk_reason') or signal_summary.get('risk_reason') or '-').strip()
+        risk_reason = risk_reason[:32]
+        return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {risk_reason or '-'}"
+
+    detail = direction or '-'
+    return f"{_event_icon(event_type)} {symbol} | {strategy_id} | {regime_id} | {detail}"
+
+
+def _build_strategy_status_text(overview: dict, recent_live: list[dict], recent_shadow: list[dict], recent_blocked: list[dict]) -> str:
+    counts = overview.get('counts') if isinstance(overview.get('counts'), dict) else {}
+    breakdown = overview.get('breakdown') if isinstance(overview.get('breakdown'), dict) else {}
+    strategy_breakdown = breakdown.get('strategy') if isinstance(breakdown.get('strategy'), dict) else {}
+    regime_breakdown = breakdown.get('regime') if isinstance(breakdown.get('regime'), dict) else {}
+    event_type_breakdown = breakdown.get('event_type') if isinstance(breakdown.get('event_type'), dict) else {}
+
+    lines = [
+        '🧠 STRATEGY / REGIME STATUS',
+        '───────────────────────────',
+        f"Usuarios runtime: {_fmt_int(counts.get('unique_users'))} | Símbolos: {_fmt_int(counts.get('unique_symbols'))} | Filas: {_fmt_int(counts.get('summary_rows'))}",
+        f"Eventos: {_fmt_int(counts.get('events_total'))} | Live: {_fmt_int(counts.get('live_events_total'))} | Shadow: {_fmt_int(counts.get('shadow_events_total'))}",
+        f"Señales: {_fmt_int(counts.get('signals_total'))} | Seleccionadas: {_fmt_int(counts.get('selected_total'))} | Abiertas: {_fmt_int(counts.get('trades_opened_total'))}",
+        f"Blocked risk: {_fmt_int(event_type_breakdown.get('signal_blocked_risk'))} | Shadow opps: {_fmt_int(event_type_breakdown.get('shadow_opportunity'))} | Regime changes: {_fmt_int(counts.get('regime_changes_total'))}",
+        '',
+        '📡 ESTRATEGIAS',
+        _strategy_bucket_line('breakout_reset', strategy_breakdown.get('breakout_reset')),
+        _strategy_bucket_line('liquidity_sweep_reversal', strategy_breakdown.get('liquidity_sweep_reversal')),
+        _strategy_bucket_line('range_mean_reversion', strategy_breakdown.get('range_mean_reversion'), shadow=True),
+        '',
+        '🧭 REGÍMENES',
+        f"• trend_continuation: {_fmt_int((regime_breakdown.get('trend_continuation') or {}).get('events_total'))}",
+        f"• volatile_sweep: {_fmt_int((regime_breakdown.get('volatile_sweep') or {}).get('events_total'))}",
+        f"• range: {_fmt_int((regime_breakdown.get('range') or {}).get('events_total'))}",
+        f"• unknown: {_fmt_int((regime_breakdown.get('unknown') or {}).get('events_total'))}",
+    ]
+
+    if recent_live:
+        lines.extend(['', '🔥 ÚLTIMOS LIVE'])
+        lines.extend(_compact_strategy_event(item) for item in recent_live[:4])
+    if recent_shadow:
+        lines.extend(['', '👻 ÚLTIMOS SHADOW'])
+        lines.extend(_compact_strategy_event(item) for item in recent_shadow[:4])
+    if recent_blocked:
+        lines.extend(['', '🛑 ÚLTIMOS BLOQUEADOS'])
+        lines.extend(_compact_strategy_event(item) for item in recent_blocked[:4])
+
+    msg = '\n'.join(lines).strip()
+    if len(msg) > 3900:
+        msg = msg[:3890].rstrip() + '\n…'
+    return msg
+
+
+async def strategy_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or int(user.id) != ADMIN_TELEGRAM_ID:
+        await update.effective_message.reply_text('⛔ Acceso no autorizado.')
+        return
+
+    try:
+        overview = get_strategy_runtime_overview(None, limit_recent_events=10) or {}
+        recent_live = get_strategy_router_events(None, limit=4, execution_mode='live') or []
+        recent_shadow = get_strategy_router_events(None, limit=4, event_type='shadow_opportunity') or []
+        recent_blocked = get_strategy_router_events(None, limit=4, event_type='signal_blocked_risk') or []
+        message = _build_strategy_status_text(overview, recent_live, recent_shadow, recent_blocked)
+    except Exception as exc:
+        logging.exception('Fallo /strategy')
+        message = f'⚠ No se pudo construir el resumen estratégico: {exc}'
+
+    await update.effective_message.reply_text(message)
 
     try:
         await context.bot.send_message(chat_id=admin_id, text=_build_runtime_issue_message(component, outcome))
@@ -845,6 +963,7 @@ def run_bot():
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("panel", start))
     app.add_handler(CommandHandler("miniapp", miniapp_command))
+    app.add_handler(CommandHandler("strategy", strategy_status_command))
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
