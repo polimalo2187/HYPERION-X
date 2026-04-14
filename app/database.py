@@ -1246,6 +1246,78 @@ def _safe_counter_key(value: str | None) -> str:
     return cleaned or 'unknown'
 
 
+def _strategy_runtime_query(
+    *,
+    user_id: int | None = None,
+    symbol: str | None = None,
+    execution_mode: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+    event_type: str | None = None,
+) -> dict:
+    query: dict = {}
+    try:
+        if user_id is not None:
+            query['user_id'] = int(user_id)
+    except Exception:
+        return {'user_id': '__invalid__'}
+
+    normalized_symbol = str(symbol or '').strip().upper()
+    if normalized_symbol:
+        query['symbol'] = normalized_symbol
+
+    normalized_mode = str(execution_mode or '').strip().lower()
+    if normalized_mode:
+        query['execution_mode'] = normalized_mode
+
+    normalized_strategy = str(strategy_id or '').strip().lower()
+    if normalized_strategy:
+        query['strategy_id'] = normalized_strategy
+
+    normalized_regime = str(regime_id or '').strip().lower()
+    if normalized_regime:
+        query['regime_id'] = normalized_regime
+
+    normalized_event = _safe_counter_key(event_type) if str(event_type or '').strip() else None
+    if normalized_event:
+        query['event_type'] = normalized_event
+    return query
+
+
+def _normalize_strategy_runtime_doc(doc: dict | None) -> dict:
+    raw = dict(doc or {})
+    raw.pop('_id', None)
+    for key in (
+        'created_at',
+        'last_seen_at',
+    ):
+        if isinstance(raw.get(key), datetime):
+            raw[key] = raw[key].isoformat()
+
+    for nested_key in (
+        'signal_summary',
+        'shadow_summary',
+        'scanner_summary',
+        'regime_summary',
+        'last_signal_summary',
+        'last_shadow_summary',
+        'last_scanner_summary',
+        'last_regime_summary',
+        'extra',
+        'last_extra',
+    ):
+        nested = raw.get(nested_key)
+        if isinstance(nested, dict):
+            normalized_nested = {}
+            for k, v in nested.items():
+                if isinstance(v, datetime):
+                    normalized_nested[k] = v.isoformat()
+                else:
+                    normalized_nested[k] = v
+            raw[nested_key] = normalized_nested
+    return raw
+
+
 def _build_strategy_runtime_counter_delta(payload: dict) -> dict:
     event_key = _safe_counter_key(payload.get('event_type'))
     execution_mode = _safe_counter_key(payload.get('execution_mode'))
@@ -1368,21 +1440,221 @@ def record_strategy_router_event(user_id: int, payload: dict | None) -> bool:
         return False
 
 
-def get_strategy_runtime_summary(user_id: int, limit: int = 100) -> list[dict]:
-    try:
-        uid = int(user_id)
-    except Exception:
-        return []
+def get_strategy_router_events(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    event_type: str | None = None,
+    execution_mode: str | None = None,
+    symbol: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> list[dict]:
     lim = max(1, min(int(limit or 100), 500))
+    query = _strategy_runtime_query(
+        user_id=user_id,
+        symbol=symbol,
+        execution_mode=execution_mode,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+        event_type=event_type,
+    )
+    if query.get('user_id') == '__invalid__':
+        return []
     try:
-        cursor = strategy_runtime_summary_col.find({'user_id': uid}, {'_id': 0}).sort('last_seen_at', -1).limit(lim)
-        return list(cursor)
+        cursor = strategy_router_events_col.find(query, {'_id': 0}).sort('created_at', -1).limit(lim)
+        return [_normalize_strategy_runtime_doc(item) for item in cursor]
     except Exception as e:
         try:
-            db_log(f"⚠ get_strategy_runtime_summary error user_id={uid}: {e}")
+            db_log(f"⚠ get_strategy_router_events error query={query}: {e}")
         except Exception:
             pass
         return []
+
+
+def get_strategy_runtime_summary(
+    user_id: int | None = None,
+    *,
+    limit: int = 100,
+    symbol: str | None = None,
+    execution_mode: str | None = None,
+    strategy_id: str | None = None,
+    regime_id: str | None = None,
+) -> list[dict]:
+    lim = max(1, min(int(limit or 100), 500))
+    query = _strategy_runtime_query(
+        user_id=user_id,
+        symbol=symbol,
+        execution_mode=execution_mode,
+        strategy_id=strategy_id,
+        regime_id=regime_id,
+    )
+    if query.get('user_id') == '__invalid__':
+        return []
+    try:
+        cursor = strategy_runtime_summary_col.find(query, {'_id': 0}).sort('last_seen_at', -1).limit(lim)
+        return [_normalize_strategy_runtime_doc(item) for item in cursor]
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_strategy_runtime_summary error query={query}: {e}")
+        except Exception:
+            pass
+        return []
+
+
+def get_strategy_runtime_overview(user_id: int | None = None, limit_recent_events: int = 25) -> dict:
+    query = _strategy_runtime_query(user_id=user_id)
+    if query.get('user_id') == '__invalid__':
+        return {
+            'scope_user_id': None,
+            'counts': {},
+            'breakdown': {'execution_mode': {}, 'strategy': {}, 'regime': {}, 'event_type': {}},
+            'recent_events': [],
+            'partial': True,
+            'error': 'invalid_user_id',
+        }
+
+    counts = {
+        'summary_rows': 0,
+        'unique_users': 0,
+        'unique_symbols': 0,
+        'unique_strategies': 0,
+        'unique_regimes': 0,
+        'events_total': 0,
+        'live_events_total': 0,
+        'shadow_events_total': 0,
+        'router_events_total': 0,
+        'signals_total': 0,
+        'live_signals_total': 0,
+        'shadow_signals_total': 0,
+        'selected_total': 0,
+        'trades_opened_total': 0,
+        'regime_changes_total': 0,
+        'shadow_evaluated_total': 0,
+        'shadow_signal_total': 0,
+    }
+    breakdown = {
+        'execution_mode': {},
+        'strategy': {},
+        'regime': {},
+        'event_type': {},
+    }
+
+    try:
+        projection = {
+            '_id': 0,
+            'user_id': 1,
+            'symbol': 1,
+            'strategy_id': 1,
+            'regime_id': 1,
+            'execution_mode': 1,
+            'event_type_counts': 1,
+            'events_total': 1,
+            'live_events_total': 1,
+            'shadow_events_total': 1,
+            'router_events_total': 1,
+            'signals_total': 1,
+            'live_signals_total': 1,
+            'shadow_signals_total': 1,
+            'selected_total': 1,
+            'trades_opened_total': 1,
+            'regime_changes_total': 1,
+            'shadow_evaluated_total': 1,
+            'shadow_signal_total': 1,
+            'last_seen_at': 1,
+        }
+        rows = list(strategy_runtime_summary_col.find(query, projection))
+        users = set()
+        symbols = set()
+        strategies = set()
+        regimes = set()
+        counter_fields = [
+            'events_total',
+            'live_events_total',
+            'shadow_events_total',
+            'router_events_total',
+            'signals_total',
+            'live_signals_total',
+            'shadow_signals_total',
+            'selected_total',
+            'trades_opened_total',
+            'regime_changes_total',
+            'shadow_evaluated_total',
+            'shadow_signal_total',
+        ]
+
+        for row in rows:
+            counts['summary_rows'] += 1
+            users.add(row.get('user_id'))
+            if row.get('symbol'):
+                symbols.add(row.get('symbol'))
+            if row.get('strategy_id'):
+                strategies.add(row.get('strategy_id'))
+            if row.get('regime_id'):
+                regimes.add(row.get('regime_id'))
+
+            for field in counter_fields:
+                counts[field] += int(row.get(field) or 0)
+
+            mode_key = _safe_counter_key(row.get('execution_mode'))
+            strategy_key = _safe_counter_key(row.get('strategy_id'))
+            regime_key = _safe_counter_key(row.get('regime_id'))
+
+            mode_bucket = breakdown['execution_mode'].setdefault(mode_key, {'rows': 0, 'events_total': 0, 'signals_total': 0, 'selected_total': 0, 'trades_opened_total': 0, 'shadow_signal_total': 0})
+            mode_bucket['rows'] += 1
+            mode_bucket['events_total'] += int(row.get('events_total') or 0)
+            mode_bucket['signals_total'] += int(row.get('signals_total') or 0)
+            mode_bucket['selected_total'] += int(row.get('selected_total') or 0)
+            mode_bucket['trades_opened_total'] += int(row.get('trades_opened_total') or 0)
+            mode_bucket['shadow_signal_total'] += int(row.get('shadow_signal_total') or 0)
+
+            strategy_bucket = breakdown['strategy'].setdefault(strategy_key, {'rows': 0, 'events_total': 0, 'signals_total': 0, 'selected_total': 0, 'trades_opened_total': 0, 'shadow_signal_total': 0})
+            strategy_bucket['rows'] += 1
+            strategy_bucket['events_total'] += int(row.get('events_total') or 0)
+            strategy_bucket['signals_total'] += int(row.get('signals_total') or 0)
+            strategy_bucket['selected_total'] += int(row.get('selected_total') or 0)
+            strategy_bucket['trades_opened_total'] += int(row.get('trades_opened_total') or 0)
+            strategy_bucket['shadow_signal_total'] += int(row.get('shadow_signal_total') or 0)
+
+            regime_bucket = breakdown['regime'].setdefault(regime_key, {'rows': 0, 'events_total': 0, 'signals_total': 0, 'selected_total': 0, 'trades_opened_total': 0, 'shadow_signal_total': 0})
+            regime_bucket['rows'] += 1
+            regime_bucket['events_total'] += int(row.get('events_total') or 0)
+            regime_bucket['signals_total'] += int(row.get('signals_total') or 0)
+            regime_bucket['selected_total'] += int(row.get('selected_total') or 0)
+            regime_bucket['trades_opened_total'] += int(row.get('trades_opened_total') or 0)
+            regime_bucket['shadow_signal_total'] += int(row.get('shadow_signal_total') or 0)
+
+            event_counts = row.get('event_type_counts') if isinstance(row.get('event_type_counts'), dict) else {}
+            for raw_event_key, raw_event_count in event_counts.items():
+                event_key = _safe_counter_key(raw_event_key)
+                breakdown['event_type'][event_key] = int(breakdown['event_type'].get(event_key) or 0) + int(raw_event_count or 0)
+
+        counts['unique_users'] = len([x for x in users if x is not None])
+        counts['unique_symbols'] = len(symbols)
+        counts['unique_strategies'] = len(strategies)
+        counts['unique_regimes'] = len(regimes)
+    except Exception as e:
+        try:
+            db_log(f"⚠ get_strategy_runtime_overview aggregate error query={query}: {e}")
+        except Exception:
+            pass
+        return {
+            'scope_user_id': int(user_id) if user_id is not None else None,
+            'counts': counts,
+            'breakdown': breakdown,
+            'recent_events': [],
+            'partial': True,
+            'error': str(e),
+        }
+
+    recent_events = get_strategy_router_events(user_id=user_id, limit=max(1, min(int(limit_recent_events or 25), 200)))
+    return {
+        'scope_user_id': int(user_id) if user_id is not None else None,
+        'counts': counts,
+        'breakdown': breakdown,
+        'recent_events': recent_events,
+        'partial': False,
+    }
 
 # ============================================================
 # USUARIOS
