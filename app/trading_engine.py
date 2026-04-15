@@ -1208,11 +1208,52 @@ def _fetch_frontend_open_orders(user_id: int) -> list[dict[str, Any]]:
         return []
 
 
+def _classify_reduce_only_trigger_role(*, order: dict[str, Any], current_px: float, direction: str) -> str:
+    """Distingue SL vs TP al leer frontendOpenOrders.
+
+    Hyperliquid expone ``orderType`` y ``triggerCondition`` en frontendOpenOrders,
+    pero dependiendo del caso no siempre vienen uniformes. Primero intentamos
+    clasificar por metadata textual y, si no alcanza, inferimos por la posición
+    relativa del trigger frente al precio actual.
+    """
+    try:
+        order_type = str(order.get("orderType") or "").strip().lower()
+        trigger_condition = str(order.get("triggerCondition") or "").strip().lower()
+
+        if "take" in order_type or "tp" in order_type or "profit" in trigger_condition:
+            return "tp"
+        if "stop" in order_type or "sl" in order_type or "loss" in trigger_condition:
+            return "sl"
+
+        trig = float(order.get("triggerPx") or 0.0)
+        if trig <= 0.0 or current_px <= 0.0:
+            return "unknown"
+
+        tol = _stop_price_tolerance(trig, current_px)
+        if str(direction).lower() == "short":
+            if trig > (current_px + tol):
+                return "sl"
+            if trig < (current_px - tol):
+                return "tp"
+        else:
+            if trig < (current_px - tol):
+                return "sl"
+            if trig > (current_px + tol):
+                return "tp"
+    except Exception:
+        return "unknown"
+    return "unknown"
+
+
 def _list_live_exchange_stops(user_id: int, symbol_for_exec: str, direction: str) -> list[dict[str, Any]]:
     coin = _norm_coin(symbol_for_exec)
     expected_side = "A" if str(direction).lower() == "long" else "B"
     found: list[dict[str, Any]] = []
     orders = _fetch_frontend_open_orders(user_id)
+    try:
+        current_px = float(get_price(symbol_for_exec) or 0.0)
+    except Exception:
+        current_px = 0.0
     for od in orders:
         try:
             if _norm_coin(str(od.get("coin") or "")) != coin:
@@ -1225,6 +1266,9 @@ def _list_live_exchange_stops(user_id: int, symbol_for_exec: str, direction: str
                 continue
             trig = float(od.get("triggerPx") or 0.0)
             if trig <= 0.0:
+                continue
+            role = _classify_reduce_only_trigger_role(order=od, current_px=float(current_px), direction=str(direction))
+            if role != "sl":
                 continue
             found.append({"trigger_price": float(trig), "raw": od})
         except Exception:
