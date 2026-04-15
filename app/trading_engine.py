@@ -1417,14 +1417,29 @@ def _ensure_exchange_protection_pair(
     context: str,
     stop_mode: str = "initial",
     replace_existing: bool = True,
-) -> bool:
+) -> dict[str, Any]:
+    """Asegura protección en exchange con prioridad de seguridad.
+
+    Devuelve un dict con el estado final de SL/TP para que el caller no marque
+    falsamente que ambas patas quedaron activas cuando el exchange rechazó una.
+    """
+    result = {
+        "ok": False,
+        "sl_ok": False,
+        "tp_ok": False,
+        "reason": "UNKNOWN",
+        "stop_trigger": 0.0,
+        "tp_trigger": 0.0,
+        "raw": None,
+    }
     try:
         if qty_coin <= 0 or stop_trigger_price <= 0 or take_profit_trigger_price <= 0:
             log(
                 f"{context}: parámetros inválidos para asegurar protección symbol={symbol} qty={qty_coin} stop={stop_trigger_price} tp={take_profit_trigger_price}",
                 "ERROR",
             )
-            return False
+            result["reason"] = "INVALID_PARAMS"
+            return result
 
         current_px = 0.0
         try:
@@ -1452,7 +1467,8 @@ def _ensure_exchange_protection_pair(
                 )
             except Exception as e:
                 log(f"PROTECTION_SYNC[{context}] cancel existing triggers failed coin={symbol} dir={direction} err={e}", "CRITICAL")
-                return False
+                result["reason"] = "CANCEL_FAILED"
+                return result
 
         attempt_errors: list[str] = []
         for stop_idx, stop_candidate in enumerate(stop_candidates[:6], start=1):
@@ -1472,8 +1488,7 @@ def _ensure_exchange_protection_pair(
                     stop_trigger_price=float(stop_candidate),
                     take_profit_trigger_price=float(tp_candidate),
                 )
-                ok = bool(isinstance(pair_resp, dict) and pair_resp.get("ok"))
-                if ok:
+                if isinstance(pair_resp, dict) and pair_resp.get("ok"):
                     placed_stop = float(pair_resp.get("stopTriggerPx") or stop_candidate)
                     placed_tp = float(pair_resp.get("tpTriggerPx") or tp_candidate)
                     log(
@@ -1495,26 +1510,56 @@ def _ensure_exchange_protection_pair(
                         exchange_tp_reference_price=float(placed_tp),
                         exchange_tp_updated_at=time.time(),
                     )
-                    return True
+                    result.update({
+                        "ok": True,
+                        "sl_ok": True,
+                        "tp_ok": True,
+                        "reason": str(pair_resp.get("reason") or "PAIR_ACCEPTED"),
+                        "stop_trigger": float(placed_stop),
+                        "tp_trigger": float(placed_tp),
+                        "raw": pair_resp,
+                    })
+                    return result
 
                 reason = (pair_resp or {}).get("reason") if isinstance(pair_resp, dict) else "NO_RESP"
                 err = (pair_resp or {}).get("error", "") if isinstance(pair_resp, dict) else ""
                 attempt_errors.append(f"sl{stop_idx}/tp{tp_idx}:{float(stop_candidate):.8f}|{float(tp_candidate):.8f}:{reason}:{err}")
 
         log(
-            f"{context}: PROTECTION NO colocada en exchange coin={symbol} dir={direction} stop_candidates={stop_candidates} tp_candidates={tp_candidates} current~{current_px:.8f} attempts={' | '.join(attempt_errors)}",
+            f"{context}: PROTECTION PAIR NO colocada en exchange coin={symbol} dir={direction} stop_candidates={stop_candidates} tp_candidates={tp_candidates} current~{current_px:.8f} attempts={' | '.join(attempt_errors)}",
             "CRITICAL",
         )
+
+        stop_ok = _ensure_exchange_stop_trigger(
+            user_id=user_id,
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            direction=direction,
+            qty_coin=float(qty_coin),
+            trigger_price=float(stop_candidates[0]),
+            context=f"{context}_SL_FALLBACK",
+            replace_existing=False,
+        )
+        stop_live = _current_protective_stop_trigger(user_id, symbol_for_exec, direction) if stop_ok else 0.0
         _update_active_trade_fields(
             user_id,
-            sl_in_exchange=False,
+            sl_in_exchange=bool(stop_ok),
             tp_in_exchange=False,
             exchange_stop_context=str(context),
             exchange_stop_updated_at=time.time(),
             exchange_tp_context=str(context),
             exchange_tp_updated_at=time.time(),
         )
-        return False
+        result.update({
+            "ok": bool(stop_ok),
+            "sl_ok": bool(stop_ok),
+            "tp_ok": False,
+            "reason": "SL_ONLY_FALLBACK" if stop_ok else "PAIR_AND_SL_FAILED",
+            "stop_trigger": float(stop_live or 0.0),
+            "tp_trigger": 0.0,
+            "raw": {"pair_attempts": attempt_errors},
+        })
+        return result
     except Exception as e:
         log(f"{context}: PROTECTION ERROR inesperado coin={symbol} dir={direction} err={e}", "CRITICAL")
         _update_active_trade_fields(
@@ -1526,7 +1571,8 @@ def _ensure_exchange_protection_pair(
             exchange_tp_context=str(context),
             exchange_tp_updated_at=time.time(),
         )
-        return False
+        result.update({"reason": f"EXCEPTION:{type(e).__name__}"})
+        return result
 
 
 def _ensure_exchange_stop_loss(
@@ -2973,7 +3019,7 @@ def _arm_break_even_stop(*, user_id: int, symbol: str, symbol_for_exec: str, dir
     if qty <= 0.0:
         return False
     be_abs = _pct_to_abs_price(entry_price, float(break_even_offset_price), direction, kind="force_min_profit")
-    ok = _ensure_exchange_protection_pair(
+    protection = _ensure_exchange_protection_pair(
         user_id=user_id,
         symbol=symbol,
         symbol_for_exec=symbol_for_exec,
@@ -2985,43 +3031,21 @@ def _arm_break_even_stop(*, user_id: int, symbol: str, symbol_for_exec: str, dir
         stop_mode="break_even",
         replace_existing=True,
     )
+    ok = bool(protection.get("sl_ok"))
     if ok:
         _update_active_trade_fields(
             user_id,
             break_even_armed=True,
+            sl_in_exchange=bool(protection.get("sl_ok")),
+            tp_in_exchange=bool(protection.get("tp_ok")),
             exchange_stop_mode="break_even",
             exchange_stop_reference_price=float(be_abs),
             exchange_tp_mode="fixed",
             exchange_tp_reference_price=float(take_profit_trigger_price),
         )
-        log(f"BREAK_EVEN_ARMED user={user_id} symbol={symbol} dir={direction} be_offset_pct={float(break_even_offset_price):.6f} break_even_price={be_abs:.8f} fixed_tp_price={float(take_profit_trigger_price):.8f}", "WARN")
-    return ok
-
-
-def _sync_trailing_exchange_stop(*, user_id: int, symbol: str, symbol_for_exec: str, direction: str, trailing_exit_price: float, context: str) -> bool:
-    try:
-        size_signed = float(get_open_position_size(user_id, symbol_for_exec) or 0.0)
-    except Exception:
-        size_signed = 0.0
-    qty = abs(size_signed)
-    if qty <= 0.0 or trailing_exit_price <= 0.0:
-        return False
-    ok = _ensure_exchange_stop_trigger(
-        user_id=user_id,
-        symbol=symbol,
-        symbol_for_exec=symbol_for_exec,
-        direction=direction,
-        qty_coin=float(qty),
-        trigger_price=float(trailing_exit_price),
-        context=context,
-        replace_existing=True,
-    )
-    if ok:
-        _update_active_trade_fields(
-            user_id,
-            trailing_active=True,
-            exchange_stop_mode="trailing",
-            exchange_stop_reference_price=float(trailing_exit_price),
+        log(
+            f"BREAK_EVEN_ARMED user={user_id} symbol={symbol} dir={direction} be_offset_pct={float(break_even_offset_price):.6f} break_even_price={be_abs:.8f} fixed_tp_price={float(take_profit_trigger_price):.8f} sl_ok={bool(protection.get('sl_ok'))} tp_ok={bool(protection.get('tp_ok'))}",
+            "WARN",
         )
     return ok
 
@@ -3043,85 +3067,37 @@ def _manage_trade_until_close(
     sl_price_pct: float | None = None,
     mgmt: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Gestiona una posición (SL + trailing) hasta cerrarla. Corre en thread daemon.
-    mode: 'NEW' o 'ADOPT' para logs.
-    """
-    # Aceptamos sl_price_pct para compatibilidad con el launcher del manager.
-    # El stop real sigue viviendo en el exchange; aquí no cambiamos la lógica de cierre.
     _ = sl_price_pct
     active_runtime = _get_active_trade(user_id) or {}
     if mgmt is None:
         mgmt = _coalesce_management_params(active_trade=active_runtime, entry_strength=float(entry_strength), best_score=float(best_score))
     else:
         mgmt = _coalesce_management_params(signal=mgmt, active_trade=active_runtime, entry_strength=float(entry_strength), best_score=float(best_score))
+
     tp_activate_price = float(mgmt["tp_activate_price"])
-    trail_retrace_price = float(mgmt["trail_retrace_price"])
     strategy_managed = str(mgmt.get("bucket") or "") != "exchange_only"
-
-    # El stop real vive en el exchange; el manager no usa un SL interno fijo para evitar inconsistencias.
-    log(
-        f"🧠 MANAGER[{mode}] start user={user_id} {symbol} dir={direction} "
-        f"entry={entry_price} qty_coin~{qty_coin_for_log} notional~{qty_usdc_for_profit:.4f} "
-        f"(bucket={mgmt['bucket']}, partial_tp={float(mgmt.get('partial_tp_activation_price', 0.0)):.6f}, TP_activa={tp_activate_price:.6f}, retrace={trail_retrace_price:.6f}, "
-        f"be_act={float(mgmt.get('break_even_activation_price', 0.0)):.6f}, be_offset={float(mgmt.get('break_even_offset_price', 0.0)):.6f}, "
-        f"force_min_profit={float(mgmt['force_min_profit_price']):.6f}, force_min_strength={float(mgmt['force_min_strength']):.4f})",
-        "WARN",
-    )
-    _log_trade_plan(
-        context=(f"MANAGER_{mode}_FROZEN" if _has_frozen_trade_plan(active_runtime) else f"MANAGER_{mode}"),
-        user_id=user_id,
-        symbol=symbol,
-        direction=direction,
-        entry_price=float(entry_price),
-        sl_price_pct=float((_get_active_trade(user_id) or {}).get("sl_price_pct", sl_price_pct or 0.0) or 0.0),
-        tp_activate_price=float(tp_activate_price),
-        trail_retrace_price=float(trail_retrace_price),
-        force_min_profit_price=float(mgmt["force_min_profit_price"]),
-        force_min_strength=float(mgmt["force_min_strength"]),
-        qty_coin=float(qty_coin_for_log),
-        notional_usdc=float(qty_usdc_for_profit),
-        bucket=str(mgmt.get("bucket", "")),
-    )
-
-    trailing_active = bool(active_runtime.get("trailing_active", False))
-    partial_tp_taken = bool(active_runtime.get("partial_tp_taken", False))
-    partial_tp_blocked = bool(active_runtime.get("partial_tp_blocked", False))
-    partial_tp_blocked_reason = _safe_str(active_runtime.get("partial_tp_blocked_reason"), "")
     break_even_armed = bool(active_runtime.get("break_even_armed", False))
-    partial_tp_activation_price = float((active_runtime.get("partial_tp_activation_price", mgmt.get("partial_tp_activation_price", 0.0)) or 0.0))
-    partial_tp_close_fraction = _engine_clamp(float((active_runtime.get("partial_tp_close_fraction", mgmt.get("partial_tp_close_fraction", 0.0)) or 0.0)), 0.18, 0.45)
     break_even_activation_price = float((active_runtime.get("break_even_activation_price", mgmt.get("break_even_activation_price", 0.0)) or 0.0))
     break_even_offset_price = float((active_runtime.get("break_even_offset_price", mgmt.get("break_even_offset_price", 0.0)) or 0.0))
     best_pnl_pct = float(active_runtime.get("best_pnl_pct", 0.0) or 0.0)
-    trailing_stop_pnl = active_runtime.get("trailing_stop_pnl", None)
-    try:
-        trailing_stop_pnl = float(trailing_stop_pnl) if trailing_stop_pnl is not None else None
-    except Exception:
-        trailing_stop_pnl = None
     peak_price = float(active_runtime.get("peak_price", entry_price) or entry_price)
     strength_check_ts = float(active_runtime.get("strength_check_ts", 0.0) or 0.0)
     last_pos_sync_ts = 0.0
     last_runtime_flush_ts = 0.0
 
-    if trailing_active:
-        log(
-            f"MANAGER[{mode}] restored runtime user={user_id} symbol={symbol} trailing_active={trailing_active} "
-            f"best_pnl_pct={best_pnl_pct:.6f} trailing_stop_pnl={float(trailing_stop_pnl or 0.0):.6f} peak_price={peak_price:.8f}",
-            "WARN",
-        )
+    log(
+        f"🧠 MANAGER[{mode}] start user={user_id} {symbol} dir={direction} entry={entry_price} qty_coin~{qty_coin_for_log} notional~{qty_usdc_for_profit:.4f} "
+        f"(bucket={mgmt['bucket']}, TP_fijo={tp_activate_price:.6f}, be_act={float(mgmt.get('break_even_activation_price', 0.0)):.6f}, be_offset={float(mgmt.get('break_even_offset_price', 0.0)):.6f})",
+        "WARN",
+    )
 
     _update_active_trade_fields(
         user_id,
-        trailing_active=bool(trailing_active),
+        break_even_armed=bool(break_even_armed),
         best_pnl_pct=float(best_pnl_pct),
-        trailing_stop_pnl=trailing_stop_pnl,
         peak_price=float(peak_price),
         last_price=float(entry_price),
         last_pnl_pct=0.0,
-        partial_tp_activation_price=float(partial_tp_activation_price),
-        partial_tp_close_fraction=float(partial_tp_close_fraction),
-        partial_tp_blocked=bool(partial_tp_blocked),
-        partial_tp_blocked_reason=_safe_str(partial_tp_blocked_reason, ""),
         strength_check_ts=float(strength_check_ts),
         manager_heartbeat_ts=time.time(),
     )
@@ -3148,10 +3124,8 @@ def _manage_trade_until_close(
                         exit_pnl_pct = (exit_price - entry_price) / entry_price
                     else:
                         exit_pnl_pct = (entry_price - exit_price) / entry_price
-                sl_abs = _pct_to_abs_price(entry_price, float((_get_active_trade(user_id) or {}).get("sl_price_pct", sl_price_pct or 0.0) or 0.0), direction, kind="sl")
                 log(
-                    f"EXCHANGE_POSITION_CLOSED[{mode}] user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} "
-                    f"observed_exit_price={float(exit_price):.8f} observed_pnl_pct={float(exit_pnl_pct):.6f} configured_sl_price={sl_abs:.8f}",
+                    f"EXCHANGE_POSITION_CLOSED[{mode}] user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} observed_exit_price={float(exit_price):.8f} observed_pnl_pct={float(exit_pnl_pct):.6f}",
                     "CRITICAL",
                 )
                 break
@@ -3166,55 +3140,74 @@ def _manage_trade_until_close(
         else:
             pnl_pct = (entry_price - price) / entry_price
 
+        best_pnl_pct = max(best_pnl_pct, pnl_pct)
+        if direction == "long":
+            peak_price = max(float(peak_price), float(price))
+        else:
+            peak_price = min(float(peak_price), float(price)) if peak_price > 0 else float(price)
+
+        fixed_tp_price = _pct_to_abs_price(entry_price, float(tp_activate_price), direction, kind="tp_activate")
+        desired_stop_price = _pct_to_abs_price(entry_price, float((_get_active_trade(user_id) or {}).get("sl_price_pct", sl_price_pct or 0.0) or 0.0), direction, kind="sl")
+        if break_even_armed:
+            desired_stop_price = _pct_to_abs_price(entry_price, float(break_even_offset_price), direction, kind="force_min_profit")
+
+        state = _get_active_trade(user_id) or {}
+        sl_guard_live = bool(state.get("sl_in_exchange", False))
+        tp_guard_live = bool(state.get("tp_in_exchange", False))
+
         if (now_ts - float(last_runtime_flush_ts)) >= float(max(POSITION_SYNC_INTERVAL, 2.0)):
             last_runtime_flush_ts = now_ts
             _update_active_trade_fields(
                 user_id,
                 last_price=float(price),
                 last_pnl_pct=float(pnl_pct),
-                trailing_active=bool(trailing_active),
-                partial_tp_taken=bool(partial_tp_taken),
-                partial_tp_blocked=bool(partial_tp_blocked),
-                partial_tp_blocked_reason=_safe_str(partial_tp_blocked_reason, ""),
                 break_even_armed=bool(break_even_armed),
                 best_pnl_pct=float(best_pnl_pct),
-                trailing_stop_pnl=(float(trailing_stop_pnl) if trailing_stop_pnl is not None else None),
                 peak_price=float(peak_price),
                 strength_check_ts=float(strength_check_ts),
                 manager_heartbeat_ts=time.time(),
             )
 
-        # Toda la protección vive en el exchange: TP fijo + SL fijo y, si aplica,
-    # upgrade a break-even protector. No hacemos trailing, parcial ni force-close.
-    fixed_tp_price = _pct_to_abs_price(entry_price, float(tp_activate_price), direction, kind="tp_activate")
+        if not tp_guard_live and fixed_tp_price > 0.0:
+            tp_hit = (direction == "long" and price >= fixed_tp_price) or (direction == "short" and price <= fixed_tp_price)
+            if tp_hit:
+                exit_reason = "FIXED_TP_FALLBACK"
+                exit_price = float(price)
+                exit_pnl_pct = float(pnl_pct)
+                break
 
-    if strategy_managed and (not break_even_armed) and break_even_activation_price > 0.0 and pnl_pct >= break_even_activation_price:
-        be_done = _arm_break_even_stop(
-            user_id=user_id,
-            symbol=symbol,
-            symbol_for_exec=symbol_for_exec,
-            direction=direction,
-            entry_price=float(entry_price),
-            break_even_offset_price=float(break_even_offset_price),
-            take_profit_trigger_price=float(fixed_tp_price),
-        )
-        if be_done:
-            break_even_armed = True
-            _update_active_trade_fields(
-                user_id,
-                break_even_armed=True,
-                sl_in_exchange=True,
-                tp_in_exchange=True,
-                last_price=float(price),
-                last_pnl_pct=float(pnl_pct),
-                manager_heartbeat_ts=time.time(),
+        if not sl_guard_live and desired_stop_price > 0.0:
+            stop_hit = (direction == "long" and price <= desired_stop_price) or (direction == "short" and price >= desired_stop_price)
+            if stop_hit:
+                exit_reason = "STOP_FALLBACK"
+                exit_price = float(price)
+                exit_pnl_pct = float(pnl_pct)
+                break
+
+        if strategy_managed and (not break_even_armed) and break_even_activation_price > 0.0 and pnl_pct >= break_even_activation_price:
+            be_done = _arm_break_even_stop(
+                user_id=user_id,
+                symbol=symbol,
+                symbol_for_exec=symbol_for_exec,
+                direction=direction,
+                entry_price=float(entry_price),
+                break_even_offset_price=float(break_even_offset_price),
+                take_profit_trigger_price=float(fixed_tp_price),
             )
+            if be_done:
+                break_even_armed = True
+                _update_active_trade_fields(
+                    user_id,
+                    break_even_armed=True,
+                    last_price=float(price),
+                    last_pnl_pct=float(pnl_pct),
+                    manager_heartbeat_ts=time.time(),
+                )
 
         time.sleep(PRICE_CHECK_INTERVAL)
 
     log(f"Cerrando posición (MANAGER[{mode}]) {symbol} reason={exit_reason}", "WARN")
 
-    # Siempre intentamos cancelar órdenes pendientes (incluye el STOP en exchange si quedó resting).
     try:
         cancel_all_orders_for_symbol(user_id, symbol_for_exec)
     except Exception as e:
@@ -3225,7 +3218,6 @@ def _manage_trade_until_close(
     except Exception:
         size_signed_now = 0.0
 
-    # Si ya no hay size, asumimos que el exchange la cerró (por STOP/liq/manual) y registramos el trade.
     if size_signed_now == 0.0:
         log(f"MANAGER[{mode}] {symbol}: size=0 al cerrar — asumiendo ya cerrado en exchange", "WARN")
         _finalize_trade_close(
@@ -3246,14 +3238,12 @@ def _manage_trade_until_close(
 
     close_qty = abs(size_signed_now)
     close_side = "sell" if size_signed_now > 0 else "buy"
-
     close_resp = place_market_order(user_id, symbol_for_exec, close_side, close_qty, reduce_only=True)
 
     if not close_resp or (not _resp_ok(close_resp)) or (not _is_filled_exchange_response(close_resp)):
         log(f"MANAGER[{mode}]: cierre NO confirmado por exchange ({symbol}) — revisa en Hyperliquid", "CRITICAL")
         return
 
-    # Limpieza: cancelar órdenes pendientes (incluye STOP en exchange) para evitar 'órdenes colgadas'
     try:
         cxl = cancel_all_orders_for_symbol(user_id, symbol_for_exec)
         if isinstance(cxl, dict) and cxl.get("ok"):
@@ -3277,6 +3267,7 @@ def _manage_trade_until_close(
         exit_pnl_pct=float(exit_pnl_pct),
         source=f"MANAGER[{mode}]",
     )
+
 
 def _manage_existing_open_position(user_id: int) -> Optional[dict]:
     """Adopta una posición ya abierta en el exchange y asegura que el manager esté corriendo en background.
@@ -3448,7 +3439,7 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
             stop_context = f"{stop_context}_BREAK_EVEN"
             stop_mode = "break_even"
 
-        adopt_sl_ok = _ensure_exchange_protection_pair(
+        adopt_protection = _ensure_exchange_protection_pair(
             user_id=user_id,
             symbol=symbol,
             symbol_for_exec=symbol_for_exec,
@@ -3460,11 +3451,13 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
             stop_mode=str(stop_mode),
             replace_existing=True,
         )
+        adopt_sl_ok = bool(adopt_protection.get("sl_ok"))
+        adopt_tp_ok = bool(adopt_protection.get("tp_ok"))
 
         _update_active_trade_fields(
             user_id,
             sl_in_exchange=bool(adopt_sl_ok),
-            tp_in_exchange=bool(adopt_sl_ok),
+            tp_in_exchange=bool(adopt_tp_ok),
             adopt_sl_checked_at=now_ts,
             exchange_stop_mode=str(stop_mode),
             exchange_stop_reference_price=float(desired_stop_price),
@@ -3473,12 +3466,12 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
         )
         if adopt_sl_ok:
             log(
-                f"🛡️ ADOPT protección validada user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} mode={stop_mode} stop_price={float(desired_stop_price):.8f} tp_price={float(desired_tp_price):.8f}",
+                f"🛡️ ADOPT protección validada user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} mode={stop_mode} stop_price={float(desired_stop_price):.8f} tp_price={float(desired_tp_price):.8f} sl_ok={bool(adopt_sl_ok)} tp_ok={bool(adopt_tp_ok)} reason={adopt_protection.get('reason')}",
                 "WARN",
             )
         else:
             log(
-                f"🛡️ ADOPT NO pudo validar/crear protección user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} mode={stop_mode} stop_price={float(desired_stop_price):.8f} tp_price={float(desired_tp_price):.8f}",
+                f"🛡️ ADOPT NO pudo validar/crear protección user={user_id} symbol={symbol} dir={direction} entry={float(entry_price):.8f} mode={stop_mode} stop_price={float(desired_stop_price):.8f} tp_price={float(desired_tp_price):.8f} reason={adopt_protection.get('reason')}",
                 "CRITICAL",
             )
 
@@ -4311,7 +4304,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         # TP fijo + SL fijo desde la apertura; luego solo se permite upgrade a break-even.
         initial_stop_price = _pct_to_abs_price(float(entry_price), float(sl_price_pct), direction, kind="sl")
         fixed_tp_price = _pct_to_abs_price(float(entry_price), float(mgmt["tp_activate_price"]), direction, kind="tp_activate")
-        protection_in_exchange_ok = _ensure_exchange_protection_pair(
+        protection_in_exchange = _ensure_exchange_protection_pair(
             user_id=user_id,
             symbol=symbol,
             symbol_for_exec=symbol_for_exec,
@@ -4325,8 +4318,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         )
         _update_active_trade_fields(
             user_id,
-            sl_in_exchange=bool(protection_in_exchange_ok),
-            tp_in_exchange=bool(protection_in_exchange_ok),
+            sl_in_exchange=bool(protection_in_exchange.get("sl_ok")),
+            tp_in_exchange=bool(protection_in_exchange.get("tp_ok")),
             manager_bootstrap_pending=True,
             trade_plan=trade_plan,
             entry_context=entry_context,
