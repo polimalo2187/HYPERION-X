@@ -1228,10 +1228,32 @@ def _extract_statuses(resp: Any) -> list:
 
 def _parse_status(status_obj: Any) -> Dict[str, Any]:
     """
-    statuses[i] suele ser dict con UNA clave:
-      {"filled": {...}} o {"error": "..."} o {"resting": {...}}
+    statuses[i] puede venir en varios formatos según la acción:
+      - {"filled": {...}}
+      - {"error": "..."}
+      - {"resting": {...}}
+      - "waitingForTrigger" / "open" / "resting"
+
+    En Hyperliquid, ``waitingForTrigger`` significa que la trigger order fue
+    aceptada y quedó viva en exchange esperando el disparo. Eso NO es un error.
     """
     out = {"kind": "unknown", "error": "", "filled_sz": 0.0}
+
+    if isinstance(status_obj, str):
+        raw = str(status_obj or "").strip()
+        normalized = raw.replace("_", "").replace("-", "").replace(" ", "").lower()
+        if normalized in ("waitingfortrigger", "resting", "open", "success"):
+            out["kind"] = "resting"
+            return out
+        if normalized in ("filled", "fill"):
+            out["kind"] = "filled"
+            return out
+        if normalized in ("error", "rejected", "reject"):
+            out["kind"] = "error"
+            out["error"] = raw
+            return out
+        return out
+
     if not isinstance(status_obj, dict) or not status_obj:
         return out
 
@@ -1252,9 +1274,18 @@ def _parse_status(status_obj: Any) -> Dict[str, Any]:
                     pass
         return out
 
+    if "filled" in status_obj and not isinstance(status_obj.get("filled"), dict):
+        out["kind"] = "filled"
+        return out
+
     if "resting" in status_obj:
         out["kind"] = "resting"
         return out
+
+    if "status" in status_obj:
+        nested = _parse_status(status_obj.get("status"))
+        if nested.get("kind") != "unknown":
+            return nested
 
     out["kind"] = "unknown"
     return out
