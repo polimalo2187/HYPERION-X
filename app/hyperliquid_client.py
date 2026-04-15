@@ -12,7 +12,7 @@
 import time
 import threading
 import httpx
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 from decimal import Decimal, ROUND_DOWN, ROUND_UP, InvalidOperation
 
 # Si la posición abierta es menor que este notional, la tratamos como DUST.
@@ -245,6 +245,123 @@ def get_price(symbol: str) -> float:
 # ------------------------------------------------------------
 # L2 Book -> best bid/ask
 # ------------------------------------------------------------
+
+def _extract_oid_from_open_order(order: Any) -> Optional[int]:
+    if not isinstance(order, dict):
+        return None
+    for key in ("oid", "orderId", "order_id", "o"):
+        try:
+            val = order.get(key)
+            if val is None:
+                continue
+            return int(str(val).strip())
+        except Exception:
+            continue
+    return None
+
+
+def get_frontend_open_orders(user_id: int) -> List[dict]:
+    wallet = get_user_wallet(user_id)
+    if not wallet:
+        return []
+    r = make_request("/info", {"type": "frontendOpenOrders", "user": wallet})
+    if isinstance(r, list):
+        return [x for x in r if isinstance(x, dict)]
+    return []
+
+
+def get_open_orders(user_id: int) -> List[dict]:
+    wallet = get_user_wallet(user_id)
+    if not wallet:
+        return []
+    r = make_request("/info", {"type": "openOrders", "user": wallet})
+    if isinstance(r, list):
+        return [x for x in r if isinstance(x, dict)]
+    return []
+
+
+def cancel_orders(
+    user_id: int,
+    symbol: str,
+    order_ids: List[int],
+    vault_address: Optional[str] = None,
+):
+    wallet = get_user_wallet(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        return {"ok": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
+    if not wallet or not private_key:
+        return {"ok": False, "reason": "NO_WALLET_OR_KEY"}
+
+    coin = norm_coin(symbol)
+    asset = get_asset_index(coin)
+    if asset is None:
+        return {"ok": False, "reason": "NO_ASSET", "coin": coin}
+
+    normalized_ids: List[int] = []
+    for oid in order_ids or []:
+        try:
+            normalized_ids.append(int(oid))
+        except Exception:
+            continue
+    if not normalized_ids:
+        return {"ok": True, "reason": "NO_ORDER_IDS", "coin": coin, "cancelled": []}
+
+    nonce = int(time.time() * 1000)
+    expires_after_ms = nonce + 60_000
+    action = {
+        "type": "cancel",
+        "cancels": [{"a": asset, "o": int(oid)} for oid in normalized_ids],
+    }
+
+    try:
+        signer = HyperliquidSigner(private_key)
+        signature = signer.sign(
+            action,
+            nonce,
+            vault_address=vault_address,
+            expires_after_ms=expires_after_ms,
+        )
+    except Exception as e:
+        return {"ok": False, "reason": "SIGN_ERROR", "coin": coin, "error": str(e)}
+
+    payload = {"action": action, "nonce": nonce, "signature": signature, "expiresAfter": expires_after_ms}
+    if vault_address:
+        payload["vaultAddress"] = vault_address
+
+    r = make_request("/exchange", payload)
+    st, inner = _unwrap_exchange(r)
+    if st == "err":
+        return {"ok": False, "reason": "EXCHANGE_ERR", "coin": coin, "raw": r}
+
+    statuses = _extract_statuses(r)
+    cancelled: List[int] = []
+    errors: List[str] = []
+
+    if statuses:
+        for idx, s in enumerate(statuses):
+            parsed = _parse_status(s)
+            oid = normalized_ids[idx] if idx < len(normalized_ids) else None
+            if parsed.get("kind") == "error":
+                errors.append(f"{oid}:{parsed.get('error', '')}")
+            else:
+                if oid is not None:
+                    cancelled.append(int(oid))
+        return {
+            "ok": len(errors) == 0,
+            "reason": "CANCELLED" if len(errors) == 0 else "PARTIAL_CANCEL",
+            "coin": coin,
+            "cancelled": cancelled,
+            "errors": errors,
+            "raw": r,
+        }
+
+    if isinstance(inner, dict):
+        return {"ok": True, "reason": "CANCELLED", "coin": coin, "cancelled": normalized_ids, "raw": r}
+
+    return {"ok": False, "reason": "NO_CANCEL_STATUSES", "coin": coin, "raw": r}
+
 
 def _get_l2_book(coin: str) -> Optional[dict]:
     coin = norm_coin(coin)
@@ -1639,10 +1756,6 @@ def place_position_tpsl_pair(
     Coloca un par TP/SL REAL en el exchange como trigger orders reduceOnly,
     agrupados con ``positionTpsl`` para que el exchange trate ambas protecciones
     como un bracket de posición.
-
-    - position_side describe la posición actual abierta (long/short).
-    - qty es el tamaño total de la posición a proteger.
-    - stop_trigger_price y take_profit_trigger_price son precios absolutos.
     """
     wallet = get_user_wallet(user_id)
     try:
@@ -1731,42 +1844,48 @@ def place_position_tpsl_pair(
         payload["vaultAddress"] = vault_address
 
     r = make_request("/exchange", payload)
+    if isinstance(r, dict) and r.get("_http_error"):
+        return {"ok": False, "reason": "HTTP_ERROR", "coin": coin, "error": f"HTTP {r.get('_http_status')} {r.get('_http_body')}", "raw": r}
+
     st, inner = _unwrap_exchange(r)
     if st == "err":
-        return {"ok": False, "reason": "EXCHANGE_ERR", "coin": coin, "raw": r}
+        return {"ok": False, "reason": "EXCHANGE_ERR", "coin": coin, "error": str(inner), "raw": r}
 
     statuses = _extract_statuses(r)
-    if len(statuses) < 2:
-        return {"ok": False, "reason": "NO_PAIR_STATUSES", "coin": coin, "raw": r}
+    if not statuses:
+        return {"ok": False, "reason": "NO_PAIR_STATUSES", "coin": coin, "error": str(inner), "raw": r}
 
-    parsed = [_parse_status(item) for item in statuses[:2]]
-    if any(item.get("kind") == "error" for item in parsed):
-        errors = [str(item.get("error") or "") for item in parsed if item.get("kind") == "error"]
+    parsed = [_parse_status(item) for item in statuses]
+    errors = [str(item.get("error") or "") for item in parsed if item.get("kind") == "error"]
+    if errors:
         return {
             "ok": False,
             "reason": "EXCHANGE_ERROR",
             "coin": coin,
             "error": " | ".join(err for err in errors if err),
+            "statuses": parsed,
             "raw": r,
         }
 
     accepted_kinds = {"resting", "filled"}
-    if any(item.get("kind") not in accepted_kinds for item in parsed):
+    accepted = [item for item in parsed if item.get("kind") in accepted_kinds]
+    if len(accepted) >= 2:
         return {
-            "ok": False,
-            "reason": "PAIR_NOT_ACCEPTED",
+            "ok": True,
+            "reason": "PAIR_ACCEPTED",
             "coin": coin,
+            "stopTriggerPx": stop_str,
+            "tpTriggerPx": tp_str,
+            "sz": s_str,
             "statuses": parsed,
             "raw": r,
         }
 
     return {
-        "ok": True,
-        "reason": "PAIR_ACCEPTED",
+        "ok": False,
+        "reason": "PAIR_NOT_ACCEPTED",
         "coin": coin,
-        "stopTriggerPx": stop_str,
-        "tpTriggerPx": tp_str,
-        "sz": s_str,
+        "error": str(inner),
         "statuses": parsed,
         "raw": r,
     }
@@ -1785,57 +1904,47 @@ def cancel_all_orders_for_symbol(
     symbol: str,
     vault_address: Optional[str] = None,
 ):
-    """Cancela todas las órdenes abiertas del símbolo (asset) para esta wallet/vault.
+    """Cancela las órdenes abiertas del símbolo (asset) para esta wallet/vault.
 
-    Nota: en Hyperliquid, 'cancelAll' es por asset; esto elimina stops/resting orders
-    que puedan quedar colgados después de cerrar la posición.
+    Implementación segura para producción:
+    - descubre órdenes abiertas vía /info
+    - cancela por oid usando la acción documentada ``cancel``
+    - no usa ``cancelAll`` porque no está documentado en la API oficial actual
     """
-    wallet = get_user_wallet(user_id)
-    try:
-        private_key = get_user_private_key(user_id)
-    except PrivateKeyDecryptError:
-        return {"ok": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
-    if not wallet or not private_key:
-        return {"ok": False, "reason": "NO_WALLET_OR_KEY"}
-
     coin = norm_coin(symbol)
-    asset = get_asset_index(coin)
-    if asset is None:
-        return {"ok": False, "reason": "NO_ASSET", "coin": coin}
-
-    nonce = int(time.time() * 1000)
-    expires_after_ms = nonce + 60_000
-
-    action = {"type": "cancelAll", "asset": asset}
-
+    orders = []
     try:
-        signer = HyperliquidSigner(private_key)
-        signature = signer.sign(
-            action,
-            nonce,
-            vault_address=vault_address,
-            expires_after_ms=expires_after_ms,
-        )
-    except Exception as e:
-        return {"ok": False, "reason": "SIGN_ERROR", "coin": coin, "error": str(e)}
+        orders = get_frontend_open_orders(user_id)
+    except Exception:
+        orders = []
+    if not orders:
+        try:
+            orders = get_open_orders(user_id)
+        except Exception:
+            orders = []
 
-    payload = {"action": action, "nonce": nonce, "signature": signature, "expiresAfter": expires_after_ms}
-    if vault_address:
-        payload["vaultAddress"] = vault_address
+    target_oids: List[int] = []
+    for od in orders:
+        try:
+            if norm_coin(str(od.get("coin") or od.get("symbol") or "")) != coin:
+                continue
+            oid = _extract_oid_from_open_order(od)
+            if oid is None:
+                continue
+            target_oids.append(int(oid))
+        except Exception:
+            continue
 
-    r = make_request("/exchange", payload)
-    st, _ = _unwrap_exchange(r)
-    if st == "err":
-        return {"ok": False, "reason": "EXCHANGE_ERR", "coin": coin, "raw": r}
+    deduped = sorted(set(target_oids))
+    if not deduped:
+        return {"ok": True, "reason": "NO_OPEN_ORDERS", "coin": coin, "cancelled": []}
 
-    statuses = _extract_statuses(r)
-    if statuses:
-        for s in statuses:
-            parsed = _parse_status(s)
-            if parsed.get("kind") == "error":
-                return {"ok": False, "reason": "EXCHANGE_ERROR", "coin": coin, "error": parsed.get("error", ""), "raw": r}
-
-    return {"ok": True, "reason": "CANCELLED", "coin": coin, "raw": r}
+    return cancel_orders(
+        user_id=user_id,
+        symbol=symbol,
+        order_ids=deduped,
+        vault_address=vault_address,
+    )
 
 # Wrappers
 # ------------------------------------------------------------
