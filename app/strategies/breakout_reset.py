@@ -797,9 +797,8 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
                 f"SIGNAL coin={coin} dir={out['direction']} close_5={out['close_5']} t5={out['last_candle_t_5m']} age5s={round(age5,1)} "
                 f"adx5={round(adx5,2)} atr_pct={out['atr_pct']} vol_regime={out['vol_regime']} score={out['score']} "
                 f"breakout_rvol={out['breakout_rvol']} trigger_rvol={out['trigger_rvol']} bars_since_breakout={out['bars_since_breakout']} ema_stack_pct={out['ema_stack_pct']} "
-                f"breakout=OK sl_pct={out['sl_price_pct']} partial_tp={out['partial_tp_activation_price']} tp_act={out['tp_activation_price']} retrace={out['trail_retrace_price']} "
-                f"be_act={out['break_even_activation_price']} be_offset={out['break_even_offset_price']} force_min_profit={out['force_min_profit_price']} "
-                f"force_min_strength={out['force_min_strength']} bucket={out['mgmt_bucket']}"
+                f"breakout=OK sl_pct={out['sl_price_pct']} tp_fixed={out['tp_activation_price']} "
+                f"be_act={out['break_even_activation_price']} be_offset={out['break_even_offset_price']} bucket={out['mgmt_bucket']}"
             )
         return out
     except Exception as e:
