@@ -25,24 +25,24 @@ STRATEGY_VERSION = "v1"
 STRATEGY_MODEL = "liquidity_sweep_reversal_5m_v1"
 
 SWEEP_LOOKBACK = 34
-SWEEP_MAX_AGE_BARS = 4
-SWEEP_MIN_DEPTH_ATR = 0.18
-SWEEP_MIN_WICK_RATIO = 0.42
-SWEEP_MIN_RVOL = 0.92
-SWEEP_RECOVER_TOL_ATR = 0.20
-TRIGGER_MIN_RVOL = 0.88
-TRIGGER_MIN_BODY_RATIO = 0.23
-TRIGGER_CLOSE_POS_LONG_MIN = 0.58
-TRIGGER_CLOSE_POS_SHORT_MAX = 0.42
-TRIGGER_EXTENSION_MAX_ATR = 1.55
-TRIGGER_EMA20_RECOVER_TOL_ATR = 0.42
-TRIGGER_EMA50_RECOVER_TOL_ATR = 0.85
-RETEST_INVALIDATION_ATR = 0.30
+SWEEP_MAX_AGE_BARS = 6
+SWEEP_MIN_DEPTH_ATR = 0.14
+SWEEP_MIN_WICK_RATIO = 0.36
+SWEEP_MIN_RVOL = 0.78
+SWEEP_RECOVER_TOL_ATR = 0.28
+TRIGGER_MIN_RVOL = 0.72
+TRIGGER_MIN_BODY_RATIO = 0.17
+TRIGGER_CLOSE_POS_LONG_MIN = 0.52
+TRIGGER_CLOSE_POS_SHORT_MAX = 0.48
+TRIGGER_EXTENSION_MAX_ATR = 1.90
+TRIGGER_EMA20_RECOVER_TOL_ATR = 0.55
+TRIGGER_EMA50_RECOVER_TOL_ATR = 1.05
+RETEST_INVALIDATION_ATR = 0.42
 SL_BUFFER_ATR = 0.18
 SL_MIN_PCT = 0.0058
 SL_MAX_PCT = 0.0148
 TARGET_LOOKBACK = 48
-MIN_RR = 1.32
+MIN_RR = 1.12
 ATR_PCT_MIN = 0.0017
 ATR_PCT_MAX = 0.0280
 LOG_SIGNAL_DIAGNOSTICS = os.getenv("LOG_LIQUIDITY_SIGNAL_DIAGNOSTICS", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -519,12 +519,12 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> Dict[str, Any]:
         sl_pct = _clamp(float(sl_pct), SL_MIN_PCT, SL_MAX_PCT)
 
         score = float(candidate.get("score") or 0.0)
-        if score < 79.0:
+        if score < 74.0:
             return {
                 "signal": False,
                 "reason": "SCORE_TOO_LOW",
                 "coin": coin,
-                "diag": {"score": round(score, 2), "min_score": 79.0, "candidate": dict(candidate)},
+                "diag": {"score": round(score, 2), "min_score": 74.0, "candidate": dict(candidate)},
             }
 
         strength = _clamp(score / 100.0, 0.22, 0.96)
