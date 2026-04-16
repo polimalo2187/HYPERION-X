@@ -761,7 +761,7 @@ MIN_QTY_COIN = 0.0001    # qty mínimo en coin (seguridad)
 
 
 # Gestión técnica del manager.
-# La lógica de trading (TP dinámico, retrace y pérdida de fuerza)
+# La lógica de trading usa TP fijo en exchange, SL fijo en exchange y upgrade opcional a break-even protector
 # la define strategy.py y el engine solo la ejecuta.
 TP_FORCE_CHECK_INTERVAL = 15.0      # segundos entre re-evaluaciones de fuerza
 
@@ -842,17 +842,17 @@ def _trail_exit_price_from_price(peak_or_trough_price: float, retrace_pct: float
     return (px * (1.0 - retr)) if d == "long" else (px * (1.0 + retr))
 
 
-def _log_trade_plan(*, context: str, user_id: int, symbol: str, direction: str, entry_price: float, sl_price_pct: float, tp_activate_price: float, trail_retrace_price: float, force_min_profit_price: float, force_min_strength: float, qty_coin: float = 0.0, notional_usdc: float = 0.0, bucket: str = "") -> None:
+def _log_trade_plan(*, context: str, user_id: int, symbol: str, direction: str, entry_price: float, sl_price_pct: float, tp_activate_price: float, break_even_activation_price: float, break_even_offset_price: float, qty_coin: float = 0.0, notional_usdc: float = 0.0, bucket: str = "") -> None:
     sl_abs = _pct_to_abs_price(entry_price, sl_price_pct, direction, kind="sl")
     tp_abs = _pct_to_abs_price(entry_price, tp_activate_price, direction, kind="tp_activate")
-    force_abs = _pct_to_abs_price(entry_price, force_min_profit_price, direction, kind="force_min_profit")
+    be_abs = _pct_to_abs_price(entry_price, break_even_offset_price, direction, kind="force_min_profit")
     log(
         f"TRADE_PLAN[{context}] user={user_id} symbol={symbol} dir={direction} "
         f"entry={float(entry_price):.8f} qty_coin={float(qty_coin):.8f} notional~={float(notional_usdc):.4f} "
         f"sl_pct={float(sl_price_pct):.6f} sl_price={sl_abs:.8f} "
-        f"tp_activation_pct={float(tp_activate_price):.6f} tp_activation_price={tp_abs:.8f} "
-        f"trail_retrace_pct={float(trail_retrace_price):.6f} force_min_profit_pct={float(force_min_profit_price):.6f} "
-        f"force_min_profit_price={force_abs:.8f} force_min_strength={float(force_min_strength):.4f} bucket={bucket or 'n/a'}",
+        f"tp_fixed_pct={float(tp_activate_price):.6f} tp_fixed_price={tp_abs:.8f} "
+        f"be_activation_pct={float(break_even_activation_price):.6f} be_offset_pct={float(break_even_offset_price):.6f} "
+        f"be_price={be_abs:.8f} bucket={bucket or 'n/a'}",
         "WARN",
     )
 
@@ -3453,9 +3453,8 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
             entry_price=float(entry_price),
             sl_price_pct=float(adopt_sl_price_pct),
             tp_activate_price=float(adopt_mgmt.get("tp_activate_price", 0.0) or 0.0),
-            trail_retrace_price=float(adopt_mgmt.get("trail_retrace_price", 0.0) or 0.0),
-            force_min_profit_price=float(adopt_mgmt.get("force_min_profit_price", 0.0) or 0.0),
-            force_min_strength=float(adopt_mgmt.get("force_min_strength", 0.0) or 0.0),
+            break_even_activation_price=float(adopt_mgmt.get("break_even_activation_price", 0.0) or 0.0),
+            break_even_offset_price=float(adopt_mgmt.get("break_even_offset_price", 0.0) or 0.0),
             qty_coin=float(qty_coin_real),
             notional_usdc=float(qty_usdc_real),
             bucket=str(adopt_mgmt.get("bucket", "")),
@@ -4176,9 +4175,9 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         sl_price_pct = float(strategy_sl_price_pct)
 
         log(
-            f"Riesgo dinámico por trade: bucket={mgmt['bucket']} TP activa trailing={tp_activate_price:.6f}, "
-            f"retrace={float(mgmt['trail_retrace_price']):.6f}, strategy_sl={strategy_sl_price_pct:.6f}, SL(exchange)={sl_price_pct:.6f}, "
-            f"force_min_profit={float(mgmt['force_min_profit_price']):.6f}, force_min_strength={float(mgmt['force_min_strength']):.4f}",
+            f"Plan de riesgo por trade: bucket={mgmt['bucket']} TP_fijo={tp_activate_price:.6f}, "
+            f"BE_act={float(mgmt.get('break_even_activation_price', 0.0)):.6f}, BE_offset={float(mgmt.get('break_even_offset_price', 0.0)):.6f}, "
+            f"strategy_sl={strategy_sl_price_pct:.6f}, SL(exchange)={sl_price_pct:.6f}",
             "INFO",
         )
         # ✅ Sizing real gobernado por risk.py.
@@ -4268,7 +4267,7 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             log("Precio de entrada inválido", "ERROR")
             return None
 
-        # ✅ Estado del trailing por %PnL
+        # ✅ Estado mínimo de protección para TP fijo + SL fijo + break-even
         # ✅ SANITY CHECK POST-FILL (ANTI-ÓRDENES RIDÍCULAS / DUST)
         size_real_signed = float(get_open_position_size(user_id, symbol_for_exec) or 0.0)
         size_real = abs(size_real_signed)
@@ -4336,9 +4335,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             entry_price=float(entry_price),
             sl_price_pct=float(sl_price_pct),
             tp_activate_price=float(mgmt["tp_activate_price"]),
-            trail_retrace_price=float(mgmt["trail_retrace_price"]),
-            force_min_profit_price=float(mgmt["force_min_profit_price"]),
-            force_min_strength=float(mgmt["force_min_strength"]),
+            break_even_activation_price=float(mgmt.get("break_even_activation_price", 0.0) or 0.0),
+            break_even_offset_price=float(mgmt.get("break_even_offset_price", 0.0) or 0.0),
             qty_coin=float(size_real),
             notional_usdc=float(notional_real),
             bucket=str(mgmt.get("bucket", "")),
