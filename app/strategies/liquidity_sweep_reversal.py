@@ -571,7 +571,7 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> Dict[str, Any]:
                 f"SIGNAL coin={coin} dir={direction} close_5={out['close_5']} adx5={adx5:.2f} atr_pct={atr_pct:.6f} "
                 f"score={out['score']:.2f} strength={out['strength']:.4f} sweep_depth_atr={out['sweep_depth_atr']:.4f} "
                 f"bars_since_sweep={out['bars_since_sweep']} rr={out['rr_estimate']:.4f} sl_pct={out['sl_price_pct']:.6f} "
-                f"partial_tp={out['partial_tp_activation_price']:.6f} tp_act={out['tp_activation_price']:.6f} retrace={out['trail_retrace_price']:.6f}"
+                f"tp_fixed={out['tp_activation_price']:.6f} be_act={out['break_even_activation_price']:.6f} be_offset={out['break_even_offset_price']:.6f}"
             )
         return out
     except Exception as e:
