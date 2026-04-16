@@ -35,6 +35,10 @@ _ROUTER_ALLOW_RANGE_CANDIDATE = os.getenv("STRATEGY_ROUTER_ALLOW_RANGE_CANDIDATE
 _ROUTER_ALLOW_TREND_CANDIDATE_BREAKOUT = os.getenv("STRATEGY_ROUTER_ALLOW_TREND_CANDIDATE_BREAKOUT", "1").strip().lower() not in {"0", "false", "no", "off"}
 _ROUTER_TREND_CANDIDATE_CONFIDENCE_MIN = max(float(os.getenv("STRATEGY_ROUTER_TREND_CANDIDATE_CONFIDENCE_MIN", "0.44") or 0.44), 0.0)
 _ROUTER_TREND_CANDIDATE_SCORE_MIN = max(int(os.getenv("STRATEGY_ROUTER_TREND_CANDIDATE_SCORE_MIN", "2") or 2), 1)
+_ROUTER_LIQUIDITY_PROBE_ENABLED = os.getenv("STRATEGY_ROUTER_LIQUIDITY_PROBE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+_ROUTER_LIQUIDITY_PROBE_MIN_VOL_SCORE = max(int(os.getenv("STRATEGY_ROUTER_LIQUIDITY_PROBE_MIN_VOL_SCORE", "3") or 3), 1)
+_ROUTER_LIQUIDITY_PROBE_MIN_CONFIDENCE = max(float(os.getenv("STRATEGY_ROUTER_LIQUIDITY_PROBE_MIN_CONFIDENCE", "0.42") or 0.42), 0.0)
+_ROUTER_LIQUIDITY_PROBE_MIN_SIGNAL_SCORE = max(float(os.getenv("STRATEGY_ROUTER_LIQUIDITY_PROBE_MIN_SIGNAL_SCORE", "74.0") or 74.0), 0.0)
 
 
 _SUPPORTED_ROUTER_MODES = {"observe_only", "enforced"}
@@ -205,6 +209,53 @@ class StrategyRouter:
             and breakout_failure_ratio <= 0.34
             and body_quality >= 0.24
         )
+
+    def _should_probe_liquidity(self, regime_result: Dict[str, Any], resolved_regime: str) -> bool:
+        if not _ROUTER_LIQUIDITY_PROBE_ENABLED:
+            return False
+        if resolved_regime == REGIME_VOLATILE:
+            return True
+        if resolved_regime != REGIME_TREND:
+            return False
+
+        candidate_regime = str(regime_result.get("candidate_regime") or REGIME_UNKNOWN)
+        confidence = float(regime_result.get("candidate_confidence") or 0.0)
+        scores = regime_result.get("candidate_scores") if isinstance(regime_result.get("candidate_scores"), dict) else {}
+        vol_score = float(scores.get(REGIME_VOLATILE) or 0.0)
+        features = regime_result.get("features") if isinstance(regime_result.get("features"), dict) else {}
+        wick_instability = float(features.get("wick_instability") or 0.0)
+        breakout_failure_ratio = float(features.get("breakout_failure_ratio") or 0.0)
+        btc_shock = float(features.get("btc_shock_ratio") or 0.0)
+        atr_pct = float(features.get("atr_pct") or 0.0)
+
+        if candidate_regime == REGIME_VOLATILE and confidence >= _ROUTER_LIQUIDITY_PROBE_MIN_CONFIDENCE:
+            return True
+
+        return (
+            vol_score >= _ROUTER_LIQUIDITY_PROBE_MIN_VOL_SCORE
+            and (
+                wick_instability >= 0.46
+                or breakout_failure_ratio >= 0.18
+                or (btc_shock >= 1.05 and atr_pct >= 0.0055)
+            )
+        )
+
+    def _evaluate_strategy(self, strategy_id: str, symbol: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
+        strategy = self._registry.get(strategy_id)
+        out = strategy.evaluate(symbol, market_context=ctx)
+        if not isinstance(out, dict):
+            return {
+                "signal": False,
+                "reason": "ROUTER_INVALID_STRATEGY_OUTPUT",
+                "coin": symbol,
+                "strategy_id": strategy_id,
+                "strategy_model": getattr(strategy, "strategy_model", strategy_id),
+                "strategy_version": getattr(strategy, "strategy_version", "v0"),
+            }
+        out.setdefault("strategy_id", getattr(strategy, "strategy_id", strategy_id))
+        out.setdefault("strategy_version", getattr(strategy, "strategy_version", "v0"))
+        out.setdefault("strategy_model", getattr(strategy, "strategy_model", strategy_id))
+        return out
 
     def _context_failure_reason(self, ctx: Dict[str, Any], interval: str, *, prefix: str) -> Optional[str]:
         tf = ((ctx or {}).get("timeframes") or {}).get(interval) or {}
@@ -536,31 +587,53 @@ class StrategyRouter:
         else:
             router_decision = "mapped_strategy_selected"
 
-        strategy = self._registry.get(mapped_strategy_id)
-        out = strategy.evaluate(symbol, market_context=ctx)
-        if not isinstance(out, dict):
-            return self._blocked_signal(
-                symbol,
-                resolved_regime=resolved_regime,
-                regime_source=regime_source,
-                regime_result=regime_result,
-                reason="ROUTER_INVALID_STRATEGY_OUTPUT",
-            )
+        primary_strategy_id = mapped_strategy_id
+        strategy_ids_to_consider = [primary_strategy_id]
+        if primary_strategy_id == DEFAULT_STRATEGY_ID and self._should_probe_liquidity(regime_result, resolved_regime):
+            strategy_ids_to_consider.append("liquidity_sweep_reversal")
 
-        out.setdefault("strategy_id", getattr(strategy, "strategy_id", mapped_strategy_id))
-        out.setdefault("strategy_version", getattr(strategy, "strategy_version", "v0"))
-        out.setdefault("strategy_model", getattr(strategy, "strategy_model", mapped_strategy_id))
+        attempted: list[Dict[str, Any]] = []
+        primary_out: Optional[Dict[str, Any]] = None
+        out: Optional[Dict[str, Any]] = None
+        selected_strategy_id = primary_strategy_id
+        selected_router_decision = router_decision
+
+        for idx, strategy_id in enumerate(strategy_ids_to_consider):
+            current_out = self._evaluate_strategy(strategy_id, symbol, ctx)
+            attempted.append({
+                "strategy_id": strategy_id,
+                "signal": bool(current_out.get("signal")),
+                "reason": str(current_out.get("reason") or ""),
+                "score": float(current_out.get("score") or 0.0),
+            })
+            if idx == 0:
+                primary_out = current_out
+                if bool(current_out.get("signal")):
+                    out = current_out
+                    break
+                continue
+
+            if bool(current_out.get("signal")) and float(current_out.get("score") or 0.0) >= _ROUTER_LIQUIDITY_PROBE_MIN_SIGNAL_SCORE:
+                out = current_out
+                selected_strategy_id = strategy_id
+                selected_router_decision = "trend_liquidity_probe_selected"
+                break
+
+        if out is None:
+            out = primary_out or {"signal": False, "reason": "ROUTER_INVALID_STRATEGY_OUTPUT", "coin": symbol, "strategy_id": primary_strategy_id}
+
         out["router_mode"] = self.mode
-        out["router_decision"] = router_decision
+        out["router_decision"] = selected_router_decision
         out["router_regime_source"] = regime_source
-        out["router_strategy_id"] = mapped_strategy_id
+        out["router_strategy_id"] = selected_strategy_id
+        out["router_considered_strategies"] = attempted
         out["regime_id"] = resolved_regime
         out["regime_version"] = DETECTOR_VERSION
         out["detector_version"] = DETECTOR_VERSION
         out["regime_context"] = self._regime_summary(regime_result)
         out["btc_context_missing"] = bool(regime_result.get("btc_context_missing"))
         if out["btc_context_missing"]:
-            out["router_decision"] = f"{router_decision}_degraded_no_btc"
+            out["router_decision"] = f"{selected_router_decision}_degraded_no_btc"
         return self._attach_shadow_metadata(
             out=out,
             symbol=symbol,
