@@ -561,73 +561,95 @@ def _detect_breakout_retest_short(
     return True, "OK", diag
 
 
-def _dynamic_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
+def _compute_breakout_fixed_tp_pct(
+    *,
+    score: float,
+    atr_pct: float,
+    sl_pct: float,
+    bars_since_breakout: int,
+    breakout_rvol: float,
+    trigger_rvol: float,
+) -> Tuple[float, float]:
+    sl_pct = max(float(sl_pct or 0.0), ATR_SL_MIN_PCT)
+    score = float(score or 0.0)
+    atr_pct = float(atr_pct or 0.0)
+    bars_since_breakout = max(1, int(bars_since_breakout or 1))
+    breakout_rvol = float(breakout_rvol or 1.0)
+    trigger_rvol = float(trigger_rvol or 1.0)
+
+    if score >= 90.0:
+        rr_target = 1.48
+    elif score >= 83.0:
+        rr_target = 1.34
+    else:
+        rr_target = 1.20
+
+    rr_target += _clamp((breakout_rvol - 1.0) * 0.05, -0.03, 0.08)
+    rr_target += _clamp((trigger_rvol - 1.0) * 0.04, -0.03, 0.08)
+    rr_target += _clamp((atr_pct - 0.0060) * 8.0, -0.05, 0.10)
+    rr_target -= _clamp((bars_since_breakout - 1) * 0.05, 0.0, 0.14)
+    rr_target = _clamp(rr_target, 1.12, 1.62)
+
+    atr_anchor = atr_pct * (0.72 if score >= 90.0 else (0.66 if score >= 83.0 else 0.60))
+    tp_pct = max(sl_pct * rr_target, atr_anchor)
+    tp_pct = _clamp(tp_pct, max(sl_pct * 1.10, 0.0064), 0.0162)
+    return round(tp_pct, 6), round(rr_target, 4)
+
+
+def _dynamic_trade_management_params(
+    strength: float,
+    score: float,
+    atr_pct: Optional[float] = None,
+    *,
+    sl_pct: Optional[float] = None,
+    bars_since_breakout: int = 1,
+    breakout_rvol: float = 1.0,
+    trigger_rvol: float = 1.0,
+) -> Dict[str, Any]:
     atr_pct = float(atr_pct or 0.0)
     score = float(score or 0.0)
     strength = float(strength or 0.0)
+    sl_pct = float(sl_pct or ATR_SL_MIN_PCT)
 
-    # La versión anterior monetizaba demasiado pronto: el trailing se activaba muy cerca
-    # del entry y permitía winners pequeños frente a SL completos. Aquí forzamos una
-    # asimetría más profesional:
-    # - aseguramos break-even antes de pedir extensión grande,
-    # - tomamos una parte moderada cuando ya hay beneficio real,
-    # - dejamos el runner para movimientos más limpios,
-    # - y exigimos más deterioro para matar el trade por fuerza.
-    if score >= 90.0:
-        bucket = "strong"
-        break_even_activation = 0.0068
-        partial_tp = 0.0108
-        partial_frac = 0.22
-        act = 0.0168
-        retrace = 0.0032
-        force = 0.0118
-    elif score >= 83.0:
-        bucket = "base"
-        break_even_activation = 0.0061
-        partial_tp = 0.0098
-        partial_frac = 0.28
-        act = 0.0146
-        retrace = 0.0035
-        force = 0.0102
-    else:
-        bucket = "weak"
-        break_even_activation = 0.0055
-        partial_tp = 0.0088
-        partial_frac = 0.34
-        act = 0.0128
-        retrace = 0.0038
-        force = 0.0090
+    tp_fixed, tp_rr_multiple = _compute_breakout_fixed_tp_pct(
+        score=score,
+        atr_pct=atr_pct,
+        sl_pct=sl_pct,
+        bars_since_breakout=bars_since_breakout,
+        breakout_rvol=breakout_rvol,
+        trigger_rvol=trigger_rvol,
+    )
 
-    # En volatilidad alta damos un poco más de espacio, pero sin volver a la asimetría
-    # negativa donde el trade gana menos de lo que arriesga la mayor parte del tiempo.
-    vol_add = _clamp((atr_pct - 0.0055) * 0.15, -0.0006, 0.0010)
-    break_even_activation = _clamp(break_even_activation + (vol_add * 0.35), 0.0050, 0.0084)
-    partial_tp = _clamp(partial_tp + (vol_add * 0.75), break_even_activation + 0.0021, 0.0119)
-    act = _clamp(act + vol_add, partial_tp + 0.0020, 0.0188)
-    retrace = _clamp(retrace + (vol_add * 0.55), 0.0028, 0.0044)
-    force = _clamp(force + (vol_add * 0.65), partial_tp, act - 0.0012)
+    break_even_activation = _clamp(max(sl_pct * 0.58, tp_fixed * 0.48), 0.0050, max(tp_fixed - 0.0012, 0.0050))
+    break_even_activation = min(break_even_activation, tp_fixed * 0.74)
 
     # El offset del break-even debe cubrir fees/slippage sin ahogar la posición.
     break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00125)
 
-    # Exigimos una degradación más seria antes de cerrar por fuerza.
-    force_strength = _clamp(max(0.11, strength * 0.54), 0.11, 0.82)
+    if score >= 90.0:
+        bucket = "strong"
+    elif score >= 83.0:
+        bucket = "base"
+    else:
+        bucket = "weak"
+
     return {
         "bucket": bucket,
-        "tp_activation_price": round(act, 6),
-        "trail_retrace_price": round(retrace, 6),
-        "force_min_profit_price": round(force, 6),
-        "force_min_strength": round(force_strength, 4),
-        "partial_tp_activation_price": round(partial_tp, 6),
-        "partial_tp_close_fraction": round(partial_frac, 4),
+        "tp_activation_price": round(tp_fixed, 6),
+        "trail_retrace_price": 0.0,
+        "force_min_profit_price": 999999.0,
+        "force_min_strength": 0.0,
+        "partial_tp_activation_price": 999999.0,
+        "partial_tp_close_fraction": 0.0,
         "break_even_activation_price": round(break_even_activation, 6),
         "break_even_offset_price": round(break_even_offset, 6),
+        "tp_rr_multiple": round(tp_rr_multiple, 4),
         "vol_regime": _volatility_regime_from_atr_pct(atr_pct),
     }
 
 
-def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
-    return _dynamic_trade_management_params(strength, score, atr_pct)
+def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None, sl_pct: Optional[float] = None) -> Dict[str, Any]:
+    return _dynamic_trade_management_params(strength, score, atr_pct, sl_pct=sl_pct)
 
 
 def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
@@ -760,7 +782,15 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             }
 
         strength = _clamp(score / 100.0, STRENGTH_MIN, STRENGTH_MAX)
-        mgmt = _dynamic_trade_management_params(strength, score, atr_pct)
+        mgmt = _dynamic_trade_management_params(
+            strength,
+            score,
+            atr_pct,
+            sl_pct=sl_pct,
+            bars_since_breakout=bars_since_breakout,
+            breakout_rvol=breakout_rvol,
+            trigger_rvol=trigger_rvol,
+        )
 
         out = {
             "signal": True,
@@ -791,13 +821,14 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             "adx15": round(adx5, 2),
             "strategy_model": "breakout_retest_5m_v6_recalibrated",
             "market_context_status": str(market_context.get("status") or st5),
+            "tp_rr_multiple": float(mgmt.get("tp_rr_multiple", 0.0) or 0.0),
         }
         if LOG_SIGNAL_DIAGNOSTICS:
             _log(
                 f"SIGNAL coin={coin} dir={out['direction']} close_5={out['close_5']} t5={out['last_candle_t_5m']} age5s={round(age5,1)} "
                 f"adx5={round(adx5,2)} atr_pct={out['atr_pct']} vol_regime={out['vol_regime']} score={out['score']} "
                 f"breakout_rvol={out['breakout_rvol']} trigger_rvol={out['trigger_rvol']} bars_since_breakout={out['bars_since_breakout']} ema_stack_pct={out['ema_stack_pct']} "
-                f"breakout=OK sl_pct={out['sl_price_pct']} tp_fixed={out['tp_activation_price']} "
+                f"breakout=OK sl_pct={out['sl_price_pct']} tp_fixed={out['tp_activation_price']} tp_rr={out['tp_rr_multiple']:.4f} "
                 f"be_act={out['break_even_activation_price']} be_offset={out['break_even_offset_price']} bucket={out['mgmt_bucket']}"
             )
         return out
