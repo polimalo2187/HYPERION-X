@@ -74,10 +74,10 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
     trend_ema_align_min = _env_float("REGIME_TREND_EMA_ALIGN_MIN", 0.54)
     trend_breakout_fail_max = _env_float("REGIME_TREND_BREAKOUT_FAIL_MAX", 0.26)
 
-    volatile_btc_shock_min = _env_float("REGIME_VOLATILE_BTC_SHOCK_MIN", 1.55)
-    volatile_wick_min = _env_float("REGIME_VOLATILE_WICK_MIN", 0.56)
-    volatile_breakout_fail_min = _env_float("REGIME_VOLATILE_BREAKOUT_FAIL_MIN", 0.26)
-    volatile_atr_pct_min = _env_float("REGIME_VOLATILE_ATR_PCT_MIN", 0.0085)
+    volatile_btc_shock_min = _env_float("REGIME_VOLATILE_BTC_SHOCK_MIN", 1.20)
+    volatile_wick_min = _env_float("REGIME_VOLATILE_WICK_MIN", 0.48)
+    volatile_breakout_fail_min = _env_float("REGIME_VOLATILE_BREAKOUT_FAIL_MIN", 0.18)
+    volatile_atr_pct_min = _env_float("REGIME_VOLATILE_ATR_PCT_MIN", 0.0060)
 
     range_adx_max = _env_float("REGIME_RANGE_ADX_MAX", 22.0)
     range_chop_min = _env_float("REGIME_RANGE_CHOP_MIN", 51.0)
@@ -133,9 +133,17 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
         or (
             volatile_score >= 3
             and (
-                btc_shock_ratio >= volatile_btc_shock_min
-                or (wick_instability >= volatile_wick_min and breakout_failure_ratio >= volatile_breakout_fail_min * 0.90)
+                btc_shock_ratio >= volatile_btc_shock_min * 0.92
+                or wick_instability >= max(volatile_wick_min * 0.92, 0.46)
+                or breakout_failure_ratio >= volatile_breakout_fail_min * 0.95
+                or atr_pct >= volatile_atr_pct_min * 1.05
             )
+        )
+        or (
+            volatile_score >= 2
+            and wick_instability >= max(volatile_wick_min + 0.02, 0.50)
+            and breakout_failure_ratio >= volatile_breakout_fail_min
+            and atr_pct >= volatile_atr_pct_min
         )
     )
     range_ready = (
@@ -149,7 +157,11 @@ def classify_candidate_regime(features: Dict[str, Any]) -> Dict[str, Any]:
         )
     )
 
-    volatile_decisive = btc_shock_ratio >= volatile_btc_shock_min * 1.08 or wick_instability >= max(volatile_wick_min + 0.05, 0.62)
+    volatile_decisive = (
+        btc_shock_ratio >= volatile_btc_shock_min * 1.02
+        or wick_instability >= max(volatile_wick_min + 0.03, 0.56)
+        or (breakout_failure_ratio >= volatile_breakout_fail_min + 0.06 and atr_pct >= volatile_atr_pct_min * 1.05)
+    )
     trend_decisive = ema_stack_alignment >= max(trend_ema_align_min + 0.06, 0.64) or breakout_failure_ratio <= min(trend_breakout_fail_max * 0.80, 0.14)
     range_decisive = distance_to_vwap_atr <= min(range_vwap_dist_max * 0.82, 0.95) or chop >= max(range_chop_min + 3.0, 56.0)
 
