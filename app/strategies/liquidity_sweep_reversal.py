@@ -131,61 +131,104 @@ def _validate_symbol_quality(coin: str, candles: List[dict]) -> Tuple[bool, str,
     return True, "OK", {"base": _base_coin(coin), "bars": len(valid), "nonzero_vol_ratio": round(nonzero_vol_ratio, 4)}
 
 
-def _compute_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
+def _compute_liquidity_fixed_tp_pct(
+    *,
+    score: float,
+    atr_pct: float,
+    sl_pct: float,
+    rr_estimate: float,
+    structural_tp_pct: float,
+    bars_since_sweep: int,
+    trigger_rvol: float,
+) -> Tuple[float, float]:
+    sl_pct = max(float(sl_pct or 0.0), SL_MIN_PCT)
+    score = float(score or 0.0)
+    atr_pct = float(atr_pct or 0.0)
+    rr_estimate = float(rr_estimate or 0.0)
+    structural_tp_pct = max(float(structural_tp_pct or 0.0), 0.0)
+    bars_since_sweep = max(1, int(bars_since_sweep or 1))
+    trigger_rvol = float(trigger_rvol or 1.0)
+
+    if score >= 89.0:
+        rr_target = 1.14
+    elif score >= 82.0:
+        rr_target = 1.04
+    else:
+        rr_target = 0.94
+
+    rr_target += _clamp((min(rr_estimate, 2.0) - 1.0) * 0.08, -0.03, 0.10)
+    rr_target += _clamp((trigger_rvol - 1.0) * 0.03, -0.02, 0.05)
+    rr_target -= _clamp((bars_since_sweep - 1) * 0.04, 0.0, 0.12)
+    rr_target += _clamp((atr_pct - 0.0070) * 4.0, -0.02, 0.04)
+    rr_target = _clamp(rr_target, 0.88, 1.24)
+
+    tp_pct = sl_pct * rr_target
+    if structural_tp_pct > 0.0:
+        tp_pct = min(tp_pct, structural_tp_pct * (0.76 if score >= 89.0 else (0.72 if score >= 82.0 else 0.68)))
+        floor_pct = max(0.0048, min(structural_tp_pct * 0.60, sl_pct * 0.96))
+        ceil_pct = min(0.0112, structural_tp_pct * 0.90)
+    else:
+        floor_pct = max(0.0048, sl_pct * 0.90)
+        ceil_pct = 0.0112
+
+    tp_pct = _clamp(tp_pct, floor_pct, max(floor_pct, ceil_pct))
+    return round(tp_pct, 6), round(rr_target, 4)
+
+
+def _compute_management_params(
+    strength: float,
+    score: float,
+    atr_pct: Optional[float] = None,
+    *,
+    sl_pct: Optional[float] = None,
+    rr_estimate: float = 0.0,
+    structural_tp_pct: float = 0.0,
+    bars_since_sweep: int = 1,
+    trigger_rvol: float = 1.0,
+) -> Dict[str, Any]:
     atr_pct = float(atr_pct or 0.0)
     score = float(score or 0.0)
     strength = float(strength or 0.0)
+    sl_pct = float(sl_pct or SL_MIN_PCT)
+
+    tp_fixed, tp_rr_multiple = _compute_liquidity_fixed_tp_pct(
+        score=score,
+        atr_pct=atr_pct,
+        sl_pct=sl_pct,
+        rr_estimate=rr_estimate,
+        structural_tp_pct=structural_tp_pct,
+        bars_since_sweep=bars_since_sweep,
+        trigger_rvol=trigger_rvol,
+    )
+
+    break_even_activation = _clamp(max(sl_pct * 0.54, tp_fixed * 0.52), 0.0039, max(tp_fixed - 0.0010, 0.0039))
+    break_even_activation = min(break_even_activation, tp_fixed * 0.78)
+    break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00130)
 
     if score >= 89.0:
         bucket = "liquidity_strong"
-        break_even_activation = 0.0053
-        partial_tp = 0.0083
-        partial_frac = 0.30
-        tp_act = 0.0126
-        retrace = 0.0034
-        force = 0.0088
     elif score >= 82.0:
         bucket = "liquidity_base"
-        break_even_activation = 0.0048
-        partial_tp = 0.0076
-        partial_frac = 0.34
-        tp_act = 0.0112
-        retrace = 0.0037
-        force = 0.0080
     else:
         bucket = "liquidity_weak"
-        break_even_activation = 0.0043
-        partial_tp = 0.0069
-        partial_frac = 0.38
-        tp_act = 0.0100
-        retrace = 0.0039
-        force = 0.0073
-
-    vol_add = _clamp((atr_pct - 0.0070) * 0.16, -0.0007, 0.0013)
-    break_even_activation = _clamp(break_even_activation + (vol_add * 0.30), 0.0040, 0.0072)
-    partial_tp = _clamp(partial_tp + (vol_add * 0.65), break_even_activation + 0.0017, 0.0106)
-    tp_act = _clamp(tp_act + vol_add, partial_tp + 0.0015, 0.0158)
-    retrace = _clamp(retrace + (vol_add * 0.55), 0.0030, 0.0048)
-    force = _clamp(force + (vol_add * 0.60), partial_tp, tp_act - 0.0010)
-    break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00130)
-    force_strength = _clamp(max(0.12, strength * 0.56), 0.12, 0.84)
 
     return {
         "bucket": bucket,
-        "tp_activation_price": round(tp_act, 6),
-        "trail_retrace_price": round(retrace, 6),
-        "force_min_profit_price": round(force, 6),
-        "force_min_strength": round(force_strength, 4),
-        "partial_tp_activation_price": round(partial_tp, 6),
-        "partial_tp_close_fraction": round(partial_frac, 4),
+        "tp_activation_price": round(tp_fixed, 6),
+        "trail_retrace_price": 0.0,
+        "force_min_profit_price": 999999.0,
+        "force_min_strength": 0.0,
+        "partial_tp_activation_price": 999999.0,
+        "partial_tp_close_fraction": 0.0,
         "break_even_activation_price": round(break_even_activation, 6),
         "break_even_offset_price": round(break_even_offset, 6),
+        "tp_rr_multiple": round(tp_rr_multiple, 4),
         "vol_regime": "volatile" if atr_pct >= 0.0095 else ("active" if atr_pct >= 0.0050 else "normal"),
     }
 
 
-def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
-    return _compute_management_params(strength, score, atr_pct)
+def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None, sl_pct: Optional[float] = None) -> Dict[str, Any]:
+    return _compute_management_params(strength, score, atr_pct, sl_pct=sl_pct)
 
 
 def _score_candidate(
@@ -527,8 +570,22 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> Dict[str, Any]:
                 "diag": {"score": round(score, 2), "min_score": 74.0, "candidate": dict(candidate)},
             }
 
+        structural_tp_pct = 0.0
+        target_level = float(candidate.get("target_level") or 0.0)
+        if target_level > 0.0:
+            structural_tp_pct = (abs(target_level - close5) / max(close5, 1e-12))
+
         strength = _clamp(score / 100.0, 0.22, 0.96)
-        mgmt = _compute_management_params(strength, score, atr_pct)
+        mgmt = _compute_management_params(
+            strength,
+            score,
+            atr_pct,
+            sl_pct=sl_pct,
+            rr_estimate=float(candidate.get("rr_estimate") or 0.0),
+            structural_tp_pct=structural_tp_pct,
+            bars_since_sweep=int(candidate.get("bars_since_sweep") or 0),
+            trigger_rvol=float(candidate.get("trigger_rvol") or 0.0),
+        )
 
         out = {
             "signal": True,
@@ -564,6 +621,8 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> Dict[str, Any]:
             "trigger_body_ratio": float(candidate.get("trigger_body_ratio") or 0.0),
             "trigger_close_pos": float(candidate.get("trigger_close_pos") or 0.0),
             "rr_estimate": float(candidate.get("rr_estimate") or 0.0),
+            "structural_tp_pct": round(float(structural_tp_pct), 6),
+            "tp_rr_multiple": float(mgmt.get("tp_rr_multiple", 0.0) or 0.0),
             "market_context_status": str(market_context.get("status") or status),
         }
         if LOG_SIGNAL_DIAGNOSTICS:
@@ -571,7 +630,8 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> Dict[str, Any]:
                 f"SIGNAL coin={coin} dir={direction} close_5={out['close_5']} adx5={adx5:.2f} atr_pct={atr_pct:.6f} "
                 f"score={out['score']:.2f} strength={out['strength']:.4f} sweep_depth_atr={out['sweep_depth_atr']:.4f} "
                 f"bars_since_sweep={out['bars_since_sweep']} rr={out['rr_estimate']:.4f} sl_pct={out['sl_price_pct']:.6f} "
-                f"tp_fixed={out['tp_activation_price']:.6f} be_act={out['break_even_activation_price']:.6f} be_offset={out['break_even_offset_price']:.6f}"
+                f"tp_fixed={out['tp_activation_price']:.6f} tp_rr={out['tp_rr_multiple']:.4f} struct_tp={out['structural_tp_pct']:.6f} "
+                f"be_act={out['break_even_activation_price']:.6f} be_offset={out['break_even_offset_price']:.6f}"
             )
         return out
     except Exception as e:
