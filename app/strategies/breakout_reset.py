@@ -577,22 +577,17 @@ def _compute_breakout_fixed_tp_pct(
     breakout_rvol = float(breakout_rvol or 1.0)
     trigger_rvol = float(trigger_rvol or 1.0)
 
-    if score >= 90.0:
-        rr_target = 1.48
-    elif score >= 83.0:
-        rr_target = 1.34
-    else:
-        rr_target = 1.20
+    # Nuevo marco operativo: TP fijo responsable para breakout.
+    # Requisito del usuario: objetivo total entre 0.7% y 0.9%, nunca por encima de 0.9%.
+    tp_pct = 0.0079
+    tp_pct += _clamp((score - 85.0) * 0.00006, -0.00030, 0.00035)
+    tp_pct += _clamp((breakout_rvol - 1.0) * 0.00005, -0.00010, 0.00022)
+    tp_pct += _clamp((trigger_rvol - 1.0) * 0.00004, -0.00010, 0.00018)
+    tp_pct += _clamp((atr_pct - 0.0060) * 0.18, -0.00022, 0.00022)
+    tp_pct -= _clamp((bars_since_breakout - 1) * 0.00010, 0.0, 0.00045)
+    tp_pct = _clamp(tp_pct, 0.0070, 0.0090)
 
-    rr_target += _clamp((breakout_rvol - 1.0) * 0.05, -0.03, 0.08)
-    rr_target += _clamp((trigger_rvol - 1.0) * 0.04, -0.03, 0.08)
-    rr_target += _clamp((atr_pct - 0.0060) * 8.0, -0.05, 0.10)
-    rr_target -= _clamp((bars_since_breakout - 1) * 0.05, 0.0, 0.14)
-    rr_target = _clamp(rr_target, 1.12, 1.62)
-
-    atr_anchor = atr_pct * (0.72 if score >= 90.0 else (0.66 if score >= 83.0 else 0.60))
-    tp_pct = max(sl_pct * rr_target, atr_anchor)
-    tp_pct = _clamp(tp_pct, max(sl_pct * 1.10, 0.0064), 0.0162)
+    rr_target = tp_pct / max(sl_pct, 1e-12)
     return round(tp_pct, 6), round(rr_target, 4)
 
 
@@ -620,11 +615,10 @@ def _dynamic_trade_management_params(
         trigger_rvol=trigger_rvol,
     )
 
-    break_even_activation = _clamp(max(sl_pct * 0.58, tp_fixed * 0.48), 0.0050, max(tp_fixed - 0.0012, 0.0050))
-    break_even_activation = min(break_even_activation, tp_fixed * 0.74)
+    break_even_activation = _clamp(max(sl_pct * 0.52, tp_fixed * 0.46), 0.0037, min(tp_fixed * 0.62, 0.0052))
 
     # El offset del break-even debe cubrir fees/slippage sin ahogar la posición.
-    break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00125)
+    break_even_offset = _clamp(max(atr_pct * 0.06, 0.00055), 0.00055, 0.00105)
 
     if score >= 90.0:
         bucket = "strong"
