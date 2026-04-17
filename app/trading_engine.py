@@ -749,7 +749,7 @@ SYMBOL_NOFILL_COOLDOWN_SECONDS = 90
 
 # ✅ Sizing (NO toca strategy)
 MARGIN_USE_PCT = 1.0   # legacy
-LEVERAGE = 5.0         # apalancamiento operativo
+LEVERAGE = 10.0        # apalancamiento operativo
 FIXED_MARGIN_USDC = float(os.getenv("FIXED_MARGIN_USDC", os.getenv("FIXED_NOTIONAL_USDC", "3.0")))  # legado: ya no gobierna el sizing de entrada
 
 # ✅ BLINDAJE BANK GRADE (ANTI-ÓRDENES RIDÍCULAS)
