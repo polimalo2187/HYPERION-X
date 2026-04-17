@@ -149,29 +149,19 @@ def _compute_liquidity_fixed_tp_pct(
     bars_since_sweep = max(1, int(bars_since_sweep or 1))
     trigger_rvol = float(trigger_rvol or 1.0)
 
-    if score >= 89.0:
-        rr_target = 1.14
-    elif score >= 82.0:
-        rr_target = 1.04
-    else:
-        rr_target = 0.94
-
-    rr_target += _clamp((min(rr_estimate, 2.0) - 1.0) * 0.08, -0.03, 0.10)
-    rr_target += _clamp((trigger_rvol - 1.0) * 0.03, -0.02, 0.05)
-    rr_target -= _clamp((bars_since_sweep - 1) * 0.04, 0.0, 0.12)
-    rr_target += _clamp((atr_pct - 0.0070) * 4.0, -0.02, 0.04)
-    rr_target = _clamp(rr_target, 0.88, 1.24)
-
-    tp_pct = sl_pct * rr_target
+    # Nuevo marco operativo: TP fijo corto para reversión de liquidez.
+    # Requisito del usuario: objetivo total entre 0.5% y 0.7%.
+    tp_pct = 0.0059
+    tp_pct += _clamp((score - 84.0) * 0.00005, -0.00022, 0.00022)
+    tp_pct += _clamp((min(rr_estimate, 2.0) - 1.0) * 0.00025, -0.00010, 0.00018)
+    tp_pct += _clamp((trigger_rvol - 1.0) * 0.00004, -0.00010, 0.00016)
+    tp_pct += _clamp((atr_pct - 0.0065) * 0.10, -0.00012, 0.00012)
+    tp_pct -= _clamp((bars_since_sweep - 1) * 0.00010, 0.0, 0.00035)
     if structural_tp_pct > 0.0:
-        tp_pct = min(tp_pct, structural_tp_pct * (0.76 if score >= 89.0 else (0.72 if score >= 82.0 else 0.68)))
-        floor_pct = max(0.0048, min(structural_tp_pct * 0.60, sl_pct * 0.96))
-        ceil_pct = min(0.0112, structural_tp_pct * 0.90)
-    else:
-        floor_pct = max(0.0048, sl_pct * 0.90)
-        ceil_pct = 0.0112
+        tp_pct = min(tp_pct, max(0.0050, structural_tp_pct * 0.78))
+    tp_pct = _clamp(tp_pct, 0.0050, 0.0070)
 
-    tp_pct = _clamp(tp_pct, floor_pct, max(floor_pct, ceil_pct))
+    rr_target = tp_pct / max(sl_pct, 1e-12)
     return round(tp_pct, 6), round(rr_target, 4)
 
 
@@ -201,9 +191,8 @@ def _compute_management_params(
         trigger_rvol=trigger_rvol,
     )
 
-    break_even_activation = _clamp(max(sl_pct * 0.54, tp_fixed * 0.52), 0.0039, max(tp_fixed - 0.0010, 0.0039))
-    break_even_activation = min(break_even_activation, tp_fixed * 0.78)
-    break_even_offset = _clamp(max(atr_pct * 0.07, 0.00055), 0.00055, 0.00130)
+    break_even_activation = _clamp(max(sl_pct * 0.46, tp_fixed * 0.40), 0.0028, min(tp_fixed * 0.56, 0.0039))
+    break_even_offset = _clamp(max(atr_pct * 0.06, 0.00050), 0.00050, 0.00095)
 
     if score >= 89.0:
         bucket = "liquidity_strong"
