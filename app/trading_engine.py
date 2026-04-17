@@ -37,7 +37,7 @@ from app.strategy import (
     get_trade_management_params_for_strategy,
 )
 from app.risk import validate_trade_conditions
-from app.hyperliquid_client import place_market_order, place_stop_loss, place_position_tpsl_pair, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot, get_asset_index, get_sz_decimals, get_exchange_min_order_notional_usdc
+from app.hyperliquid_client import place_market_order, place_stop_loss, place_take_profit, place_position_tpsl_pair, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot, get_asset_index, get_sz_decimals, get_exchange_min_order_notional_usdc
 
 from app.database import (
     register_trade,
@@ -1245,6 +1245,141 @@ def _classify_reduce_only_trigger_role(*, order: dict[str, Any], current_px: flo
     return "unknown"
 
 
+def _list_live_exchange_take_profits(user_id: int, symbol_for_exec: str, direction: str) -> list[dict[str, Any]]:
+    coin = _norm_coin(symbol_for_exec)
+    expected_side = "A" if str(direction).lower() == "long" else "B"
+    found: list[dict[str, Any]] = []
+    orders = _fetch_frontend_open_orders(user_id)
+    try:
+        current_px = float(get_price(symbol_for_exec) or 0.0)
+    except Exception:
+        current_px = 0.0
+    for od in orders:
+        try:
+            if _norm_coin(str(od.get("coin") or "")) != coin:
+                continue
+            if not bool(od.get("isTrigger")):
+                continue
+            if not bool(od.get("reduceOnly")):
+                continue
+            if str(od.get("side") or "").upper() != expected_side:
+                continue
+            trig = float(od.get("triggerPx") or 0.0)
+            if trig <= 0.0:
+                continue
+            role = _classify_reduce_only_trigger_role(order=od, current_px=float(current_px), direction=str(direction))
+            if role != "tp":
+                continue
+            found.append({"trigger_price": float(trig), "raw": od})
+        except Exception:
+            continue
+    if str(direction).lower() == "short":
+        found.sort(key=lambda item: float(item.get("trigger_price") or 0.0), reverse=True)
+    else:
+        found.sort(key=lambda item: float(item.get("trigger_price") or 0.0))
+    return found
+
+
+def _current_take_profit_trigger(user_id: int, symbol_for_exec: str, direction: str) -> float:
+    tps = _list_live_exchange_take_profits(user_id, symbol_for_exec, direction)
+    if not tps:
+        return 0.0
+    try:
+        return float(tps[0].get("trigger_price") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _tp_price_tolerance(*values: Any) -> float:
+    decimals = _infer_price_decimals(*values)
+    return max(1e-8, 1.0 / (10 ** max(2, int(decimals))))
+
+
+def _is_same_take_profit(*, current_trigger: float, desired_trigger: float) -> bool:
+    tol = _tp_price_tolerance(current_trigger, desired_trigger)
+    return abs(float(current_trigger) - float(desired_trigger)) <= tol
+
+
+def _ensure_exchange_take_profit_trigger(
+    *,
+    user_id: int,
+    symbol: str,
+    symbol_for_exec: str,
+    direction: str,
+    qty_coin: float,
+    trigger_price: float,
+    context: str,
+) -> bool:
+    try:
+        if qty_coin <= 0 or trigger_price <= 0:
+            log(
+                f"{context}: parámetros inválidos para asegurar TP symbol={symbol} qty={qty_coin} trigger={trigger_price}",
+                "ERROR",
+            )
+            return False
+
+        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
+        if existing_tp > 0.0 and _is_same_take_profit(current_trigger=float(existing_tp), desired_trigger=float(trigger_price)):
+            log(
+                f"TP_SYNC[{context}] mantiene TP existente coin={symbol} dir={direction} existing_trigger={existing_tp:.8f}",
+                "INFO",
+            )
+            _update_active_trade_fields(
+                user_id,
+                tp_in_exchange=True,
+                exchange_tp_trigger=float(existing_tp),
+                exchange_tp_context=str(context),
+                exchange_tp_updated_at=time.time(),
+            )
+            return True
+
+        tp_resp = place_take_profit(
+            user_id=user_id,
+            symbol=symbol_for_exec,
+            position_side=direction,
+            qty=float(qty_coin),
+            trigger_price=float(trigger_price),
+        )
+        ok = bool(isinstance(tp_resp, dict) and tp_resp.get("ok"))
+        if ok:
+            placed_trigger = float(tp_resp.get("triggerPx") or trigger_price)
+            log(
+                f"TP_SYNC[{context}] coin={symbol} dir={direction} trigger={placed_trigger:.8f} qty={float(qty_coin):.8f} status={tp_resp.get('reason')}",
+                "WARN",
+            )
+            _update_active_trade_fields(
+                user_id,
+                tp_in_exchange=True,
+                exchange_tp_trigger=float(placed_trigger),
+                exchange_tp_context=str(context),
+                exchange_tp_updated_at=time.time(),
+            )
+            return True
+
+        reason = (tp_resp or {}).get("reason") if isinstance(tp_resp, dict) else "NO_RESP"
+        err = (tp_resp or {}).get("error", "") if isinstance(tp_resp, dict) else ""
+        log(
+            f"{context}: TP NO colocado en exchange coin={symbol} dir={direction} trigger={float(trigger_price):.8f} reason={reason} err={err}",
+            "CRITICAL",
+        )
+        _update_active_trade_fields(
+            user_id,
+            tp_in_exchange=False,
+            exchange_tp_context=str(context),
+            exchange_tp_updated_at=time.time(),
+        )
+        return False
+    except Exception as e:
+        log(f"{context}: TP ERROR inesperado coin={symbol} dir={direction} err={e}", "CRITICAL")
+        _update_active_trade_fields(
+            user_id,
+            tp_in_exchange=False,
+            exchange_tp_context=str(context),
+            exchange_tp_updated_at=time.time(),
+        )
+        return False
+
+
 def _list_live_exchange_stops(user_id: int, symbol_for_exec: str, direction: str) -> list[dict[str, Any]]:
     coin = _norm_coin(symbol_for_exec)
     expected_side = "A" if str(direction).lower() == "long" else "B"
@@ -1335,35 +1470,19 @@ def _ensure_exchange_stop_trigger(
             raw_trigger=float(trigger_price),
             current_px=float(current_px),
             direction=str(direction),
-        )
-        if not trigger_candidates:
-            trigger_candidates = [float(trigger_price)]
+        ) or [float(trigger_price)]
         desired_trigger = float(trigger_candidates[0])
 
         existing_stops = _list_live_exchange_stops(user_id, symbol_for_exec, direction)
         existing_trigger = float(existing_stops[0].get("trigger_price") or 0.0) if existing_stops else 0.0
-        target_trigger = float(desired_trigger)
 
         if existing_trigger > 0.0:
-            if len(existing_stops) == 1 and not replace_existing:
-                log(
-                    f"STOP_SYNC[{context}] mantiene stop existente coin={symbol} dir={direction} existing_trigger={existing_trigger:.8f}",
-                    "INFO",
-                )
-                _update_active_trade_fields(
-                    user_id,
-                    sl_in_exchange=True,
-                    exchange_stop_trigger=float(existing_trigger),
-                    exchange_stop_context=str(context),
-                    exchange_stop_updated_at=time.time(),
-                )
-                return True
             should_improve = _is_stop_improvement(
                 current_trigger=float(existing_trigger),
                 desired_trigger=float(desired_trigger),
                 direction=str(direction),
             )
-            if len(existing_stops) == 1 and not should_improve:
+            if not should_improve:
                 log(
                     f"STOP_SYNC[{context}] conserva protección existente coin={symbol} dir={direction} existing_trigger={existing_trigger:.8f} desired_trigger={desired_trigger:.8f}",
                     "INFO",
@@ -1376,25 +1495,11 @@ def _ensure_exchange_stop_trigger(
                     exchange_stop_updated_at=time.time(),
                 )
                 return True
-            if not should_improve:
-                target_trigger = float(existing_trigger)
-            try:
-                cxl = cancel_all_orders_for_symbol(user_id, symbol_for_exec)
-                log(
-                    f"STOP_SYNC[{context}] replace existing stop coin={symbol} dir={direction} existing_trigger={existing_trigger:.8f} desired_trigger={desired_trigger:.8f} target_trigger={target_trigger:.8f} cancel_resp={cxl}",
-                    "WARN",
-                )
-            except Exception as e:
-                log(
-                    f"STOP_SYNC[{context}] cancel existing stop failed coin={symbol} dir={direction} err={e}",
-                    "CRITICAL",
-                )
-                return False
-            trigger_candidates = _build_stop_trigger_candidates(
-                raw_trigger=float(target_trigger),
-                current_px=float(current_px),
-                direction=str(direction),
-            ) or [float(target_trigger)]
+
+            log(
+                f"STOP_SYNC[{context}] mejora aditiva sin cancelar coin={symbol} dir={direction} existing_trigger={existing_trigger:.8f} desired_trigger={desired_trigger:.8f}",
+                "WARN",
+            )
 
         attempt_errors: list[str] = []
         for idx, sl_trigger in enumerate(trigger_candidates, start=1):
@@ -1426,6 +1531,20 @@ def _ensure_exchange_stop_trigger(
             err = (sl_resp or {}).get("error", "") if isinstance(sl_resp, dict) else ""
             attempt_errors.append(f"try{idx}:{float(sl_trigger):.8f}:{reason}:{err}")
 
+        if existing_trigger > 0.0:
+            log(
+                f"STOP_SYNC[{context}] no pudo mejorar stop; mantiene protección previa coin={symbol} dir={direction} existing_trigger={existing_trigger:.8f} attempts={' | '.join(attempt_errors)}",
+                "CRITICAL",
+            )
+            _update_active_trade_fields(
+                user_id,
+                sl_in_exchange=True,
+                exchange_stop_trigger=float(existing_trigger),
+                exchange_stop_context=str(context),
+                exchange_stop_updated_at=time.time(),
+            )
+            return True
+
         log(
             f"{context}: STOP NO colocado en exchange coin={symbol} dir={direction} trigger_candidates={trigger_candidates} "
             f"current~{current_px:.8f} attempts={' | '.join(attempt_errors)}",
@@ -1440,13 +1559,15 @@ def _ensure_exchange_stop_trigger(
         return False
     except Exception as e:
         log(f"{context}: STOP ERROR inesperado coin={symbol} dir={direction} err={e}", "CRITICAL")
+        existing_trigger = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
         _update_active_trade_fields(
             user_id,
-            sl_in_exchange=False,
+            sl_in_exchange=bool(existing_trigger > 0.0),
+            exchange_stop_trigger=float(existing_trigger or 0.0),
             exchange_stop_context=str(context),
             exchange_stop_updated_at=time.time(),
         )
-        return False
+        return bool(existing_trigger > 0.0)
 
 
 def _ensure_exchange_protection_pair(
@@ -1462,10 +1583,13 @@ def _ensure_exchange_protection_pair(
     stop_mode: str = "initial",
     replace_existing: bool = True,
 ) -> dict[str, Any]:
-    """Asegura protección en exchange con prioridad de seguridad.
+    """Asegura protección en exchange con prioridad absoluta de no dejar la posición desnuda.
 
-    Devuelve un dict con el estado final de SL/TP para que el caller no marque
-    falsamente que ambas patas quedaron activas cuando el exchange rechazó una.
+    Reglas de seguridad:
+    - nunca cancela primero la protección viva durante adopt / break-even
+    - si ya existe SL/TP utilizable, lo conserva
+    - si falta una pata, intenta añadirla sin tocar la otra
+    - si no puede mejorar el stop, conserva el stop previo
     """
     result = {
         "ok": False,
@@ -1502,120 +1626,173 @@ def _ensure_exchange_protection_pair(
             direction=str(direction),
         ) or [float(take_profit_trigger_price)]
 
-        if replace_existing and _list_live_exchange_stops(user_id, symbol_for_exec, direction):
-            try:
-                cxl = cancel_all_orders_for_symbol(user_id, symbol_for_exec)
-                log(
-                    f"PROTECTION_SYNC[{context}] replace existing triggers coin={symbol} dir={direction} stop={float(stop_trigger_price):.8f} tp={float(take_profit_trigger_price):.8f} cancel_resp={cxl}",
-                    "WARN",
-                )
-            except Exception as e:
-                log(f"PROTECTION_SYNC[{context}] cancel existing triggers failed coin={symbol} dir={direction} err={e}", "CRITICAL")
-                result["reason"] = "CANCEL_FAILED"
-                return result
+        desired_stop = float(stop_candidates[0])
+        desired_tp = float(tp_candidates[0])
+        existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
+        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
 
-        attempt_errors: list[str] = []
-        for stop_idx, stop_candidate in enumerate(stop_candidates[:6], start=1):
-            for tp_idx, tp_candidate in enumerate(tp_candidates[:6], start=1):
-                if not _is_valid_bracket_pair(
-                    stop_trigger=float(stop_candidate),
-                    take_profit_trigger=float(tp_candidate),
-                    direction=str(direction),
-                ):
-                    continue
+        stop_ok = False
+        tp_ok = False
+        stop_live = float(existing_stop or 0.0)
+        tp_live = float(existing_tp or 0.0)
 
-                pair_resp = place_position_tpsl_pair(
+        if existing_stop > 0.0:
+            if _is_stop_improvement(current_trigger=float(existing_stop), desired_trigger=float(desired_stop), direction=str(direction)):
+                stop_ok = _ensure_exchange_stop_trigger(
                     user_id=user_id,
-                    symbol=symbol_for_exec,
-                    position_side=direction,
-                    qty=float(qty_coin),
-                    stop_trigger_price=float(stop_candidate),
-                    take_profit_trigger_price=float(tp_candidate),
+                    symbol=symbol,
+                    symbol_for_exec=symbol_for_exec,
+                    direction=direction,
+                    qty_coin=float(qty_coin),
+                    trigger_price=float(desired_stop),
+                    context=f"{context}_STOP_UPGRADE",
+                    replace_existing=False,
                 )
-                if isinstance(pair_resp, dict) and pair_resp.get("ok"):
-                    placed_stop = float(pair_resp.get("stopTriggerPx") or stop_candidate)
-                    placed_tp = float(pair_resp.get("tpTriggerPx") or tp_candidate)
-                    log(
-                        f"PROTECTION_SYNC[{context}] coin={symbol} dir={direction} stop={placed_stop:.8f} tp={placed_tp:.8f} qty={float(qty_coin):.8f} status={pair_resp.get('reason')} current={current_px if current_px > 0 else 'n/a'} attempts={stop_idx}/{tp_idx}",
-                        "WARN",
+                stop_live = _current_protective_stop_trigger(user_id, symbol_for_exec, direction) if stop_ok else float(existing_stop)
+            else:
+                stop_ok = True
+                stop_live = float(existing_stop)
+        if existing_tp > 0.0:
+            tp_ok = True
+            tp_live = float(existing_tp)
+
+        if not stop_ok and existing_stop <= 0.0 and existing_tp <= 0.0:
+            attempt_errors: list[str] = []
+            for stop_idx, stop_candidate in enumerate(stop_candidates[:6], start=1):
+                for tp_idx, tp_candidate in enumerate(tp_candidates[:6], start=1):
+                    if not _is_valid_bracket_pair(
+                        stop_trigger=float(stop_candidate),
+                        take_profit_trigger=float(tp_candidate),
+                        direction=str(direction),
+                    ):
+                        continue
+                    pair_resp = place_position_tpsl_pair(
+                        user_id=user_id,
+                        symbol=symbol_for_exec,
+                        position_side=direction,
+                        qty=float(qty_coin),
+                        stop_trigger_price=float(stop_candidate),
+                        take_profit_trigger_price=float(tp_candidate),
                     )
-                    _update_active_trade_fields(
-                        user_id,
-                        sl_in_exchange=True,
-                        tp_in_exchange=True,
-                        exchange_stop_trigger=float(placed_stop),
-                        exchange_stop_context=str(context),
-                        exchange_stop_mode=str(stop_mode or "initial"),
-                        exchange_stop_reference_price=float(placed_stop),
-                        exchange_stop_updated_at=time.time(),
-                        exchange_tp_trigger=float(placed_tp),
-                        exchange_tp_context=str(context),
-                        exchange_tp_mode="fixed",
-                        exchange_tp_reference_price=float(placed_tp),
-                        exchange_tp_updated_at=time.time(),
-                    )
-                    result.update({
-                        "ok": True,
-                        "sl_ok": True,
-                        "tp_ok": True,
-                        "reason": str(pair_resp.get("reason") or "PAIR_ACCEPTED"),
-                        "stop_trigger": float(placed_stop),
-                        "tp_trigger": float(placed_tp),
-                        "raw": pair_resp,
-                    })
-                    return result
+                    if isinstance(pair_resp, dict) and pair_resp.get("ok"):
+                        placed_stop = float(pair_resp.get("stopTriggerPx") or stop_candidate)
+                        placed_tp = float(pair_resp.get("tpTriggerPx") or tp_candidate)
+                        log(
+                            f"PROTECTION_SYNC[{context}] coin={symbol} dir={direction} stop={placed_stop:.8f} tp={placed_tp:.8f} qty={float(qty_coin):.8f} status={pair_resp.get('reason')} current={current_px if current_px > 0 else 'n/a'} attempts={stop_idx}/{tp_idx}",
+                            "WARN",
+                        )
+                        _update_active_trade_fields(
+                            user_id,
+                            sl_in_exchange=True,
+                            tp_in_exchange=True,
+                            exchange_stop_trigger=float(placed_stop),
+                            exchange_stop_context=str(context),
+                            exchange_stop_mode=str(stop_mode or "initial"),
+                            exchange_stop_reference_price=float(placed_stop),
+                            exchange_stop_updated_at=time.time(),
+                            exchange_tp_trigger=float(placed_tp),
+                            exchange_tp_context=str(context),
+                            exchange_tp_mode="fixed",
+                            exchange_tp_reference_price=float(placed_tp),
+                            exchange_tp_updated_at=time.time(),
+                        )
+                        result.update({
+                            "ok": True,
+                            "sl_ok": True,
+                            "tp_ok": True,
+                            "reason": str(pair_resp.get("reason") or "PAIR_ACCEPTED"),
+                            "stop_trigger": float(placed_stop),
+                            "tp_trigger": float(placed_tp),
+                            "raw": pair_resp,
+                        })
+                        return result
+                    reason = (pair_resp or {}).get("reason") if isinstance(pair_resp, dict) else "NO_RESP"
+                    err = (pair_resp or {}).get("error", "") if isinstance(pair_resp, dict) else ""
+                    attempt_errors.append(f"sl{stop_idx}/tp{tp_idx}:{float(stop_candidate):.8f}|{float(tp_candidate):.8f}:{reason}:{err}")
+            log(
+                f"{context}: PROTECTION PAIR NO colocada en exchange coin={symbol} dir={direction} stop_candidates={stop_candidates} tp_candidates={tp_candidates} current~{current_px:.8f} attempts={' | '.join(attempt_errors)}",
+                "CRITICAL",
+            )
 
-                reason = (pair_resp or {}).get("reason") if isinstance(pair_resp, dict) else "NO_RESP"
-                err = (pair_resp or {}).get("error", "") if isinstance(pair_resp, dict) else ""
-                attempt_errors.append(f"sl{stop_idx}/tp{tp_idx}:{float(stop_candidate):.8f}|{float(tp_candidate):.8f}:{reason}:{err}")
+        if not stop_ok:
+            stop_ok = _ensure_exchange_stop_trigger(
+                user_id=user_id,
+                symbol=symbol,
+                symbol_for_exec=symbol_for_exec,
+                direction=direction,
+                qty_coin=float(qty_coin),
+                trigger_price=float(desired_stop),
+                context=f"{context}_SL_FALLBACK",
+                replace_existing=False,
+            )
+            stop_live = _current_protective_stop_trigger(user_id, symbol_for_exec, direction) if stop_ok else float(existing_stop or 0.0)
 
-        log(
-            f"{context}: PROTECTION PAIR NO colocada en exchange coin={symbol} dir={direction} stop_candidates={stop_candidates} tp_candidates={tp_candidates} current~{current_px:.8f} attempts={' | '.join(attempt_errors)}",
-            "CRITICAL",
-        )
+        if not tp_ok:
+            tp_ok = _ensure_exchange_take_profit_trigger(
+                user_id=user_id,
+                symbol=symbol,
+                symbol_for_exec=symbol_for_exec,
+                direction=direction,
+                qty_coin=float(qty_coin),
+                trigger_price=float(desired_tp),
+                context=f"{context}_TP_FALLBACK",
+            )
+            tp_live = _current_take_profit_trigger(user_id, symbol_for_exec, direction) if tp_ok else float(existing_tp or 0.0)
 
-        stop_ok = _ensure_exchange_stop_trigger(
-            user_id=user_id,
-            symbol=symbol,
-            symbol_for_exec=symbol_for_exec,
-            direction=direction,
-            qty_coin=float(qty_coin),
-            trigger_price=float(stop_candidates[0]),
-            context=f"{context}_SL_FALLBACK",
-            replace_existing=False,
-        )
-        stop_live = _current_protective_stop_trigger(user_id, symbol_for_exec, direction) if stop_ok else 0.0
         _update_active_trade_fields(
             user_id,
             sl_in_exchange=bool(stop_ok),
-            tp_in_exchange=False,
+            tp_in_exchange=bool(tp_ok),
+            exchange_stop_trigger=float(stop_live or 0.0),
             exchange_stop_context=str(context),
+            exchange_stop_mode=str(stop_mode or "initial"),
+            exchange_stop_reference_price=float(stop_live or desired_stop or 0.0),
             exchange_stop_updated_at=time.time(),
+            exchange_tp_trigger=float(tp_live or 0.0),
             exchange_tp_context=str(context),
+            exchange_tp_mode="fixed",
+            exchange_tp_reference_price=float(tp_live or desired_tp or 0.0),
             exchange_tp_updated_at=time.time(),
         )
+
         result.update({
             "ok": bool(stop_ok),
             "sl_ok": bool(stop_ok),
-            "tp_ok": False,
-            "reason": "SL_ONLY_FALLBACK" if stop_ok else "PAIR_AND_SL_FAILED",
+            "tp_ok": bool(tp_ok),
+            "reason": "PAIR_OK" if (stop_ok and tp_ok) else ("SL_ONLY_FALLBACK" if stop_ok else "PAIR_AND_SL_FAILED"),
             "stop_trigger": float(stop_live or 0.0),
-            "tp_trigger": 0.0,
-            "raw": {"pair_attempts": attempt_errors},
+            "tp_trigger": float(tp_live or 0.0),
+            "raw": {
+                "existing_stop": float(existing_stop or 0.0),
+                "existing_tp": float(existing_tp or 0.0),
+                "desired_stop": float(desired_stop),
+                "desired_tp": float(desired_tp),
+            },
         })
         return result
     except Exception as e:
         log(f"{context}: PROTECTION ERROR inesperado coin={symbol} dir={direction} err={e}", "CRITICAL")
+        existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
+        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
         _update_active_trade_fields(
             user_id,
-            sl_in_exchange=False,
-            tp_in_exchange=False,
+            sl_in_exchange=bool(existing_stop > 0.0),
+            tp_in_exchange=bool(existing_tp > 0.0),
+            exchange_stop_trigger=float(existing_stop or 0.0),
             exchange_stop_context=str(context),
             exchange_stop_updated_at=time.time(),
+            exchange_tp_trigger=float(existing_tp or 0.0),
             exchange_tp_context=str(context),
             exchange_tp_updated_at=time.time(),
         )
-        result.update({"reason": f"EXCEPTION:{type(e).__name__}"})
+        result.update({
+            "reason": f"EXCEPTION:{type(e).__name__}",
+            "sl_ok": bool(existing_stop > 0.0),
+            "tp_ok": bool(existing_tp > 0.0),
+            "ok": bool(existing_stop > 0.0),
+            "stop_trigger": float(existing_stop or 0.0),
+            "tp_trigger": float(existing_tp or 0.0),
+        })
         return result
 
 
