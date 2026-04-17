@@ -1774,6 +1774,102 @@ def place_stop_loss(
     return {"ok": False, "reason": "NO_STATUSES_IN_RESPONSE", "coin": coin, "raw": r}
 
 
+def place_take_profit(
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    qty: float,
+    trigger_price: float,
+    vault_address: Optional[str] = None,
+):
+    """Coloca un TAKE PROFIT REAL en el exchange (Trigger Market) con reduceOnly=True."""
+    wallet = get_user_wallet(user_id)
+    try:
+        private_key = get_user_private_key(user_id)
+    except PrivateKeyDecryptError:
+        return {"ok": False, "reason": "PRIVATE_KEY_DECRYPT_ERROR"}
+    if not wallet or not private_key:
+        return {"ok": False, "reason": "NO_WALLET_OR_KEY"}
+
+    coin = norm_coin(symbol)
+    asset = get_asset_index(coin)
+    if asset is None:
+        return {"ok": False, "reason": "NO_ASSET", "coin": coin}
+
+    sz_decimals = get_sz_decimals(asset)
+    tick_size = get_tick_size(asset)
+
+    ps = (position_side or "").strip().lower()
+    is_buy = ps in ("short", "sell")
+
+    try:
+        trigger_price = float(trigger_price)
+    except Exception:
+        return {"ok": False, "reason": "BAD_TRIGGER_PRICE", "coin": coin}
+
+    if trigger_price <= 0:
+        return {"ok": False, "reason": "BAD_TRIGGER_PRICE", "coin": coin}
+
+    trig_str = _format_price_tick(trigger_price, tick_size, sz_decimals, is_buy=is_buy)
+    qty = max(0.000001, float(qty))
+    s_str = _format_size(qty, sz_decimals)
+
+    nonce = int(time.time() * 1000)
+    expires_after_ms = nonce + 60_000
+
+    action = {
+        "type": "order",
+        "orders": [{
+            "a": asset,
+            "b": bool(is_buy),
+            "p": trig_str,
+            "s": s_str,
+            "r": True,
+            "t": {
+                "trigger": {
+                    "isMarket": True,
+                    "triggerPx": trig_str,
+                    "tpsl": "tp",
+                }
+            },
+        }],
+        "grouping": "na",
+    }
+
+    try:
+        signer = HyperliquidSigner(private_key)
+        signature = signer.sign(
+            action,
+            nonce,
+            vault_address=vault_address,
+            expires_after_ms=expires_after_ms,
+        )
+    except Exception as e:
+        return {"ok": False, "reason": "SIGN_ERROR", "coin": coin, "error": str(e)}
+
+    payload = {"action": action, "nonce": nonce, "signature": signature, "expiresAfter": expires_after_ms}
+    if vault_address:
+        payload["vaultAddress"] = vault_address
+
+    r = make_request("/exchange", payload)
+
+    st, inner = _unwrap_exchange(r)
+    if st == "err":
+        return {"ok": False, "reason": "EXCHANGE_ERR", "coin": coin, "raw": r}
+
+    statuses = _extract_statuses(r)
+    if statuses:
+        first = _parse_status(statuses[0])
+        if first["kind"] == "error":
+            return {"ok": False, "reason": "EXCHANGE_ERROR", "coin": coin, "error": first.get("error", ""), "raw": r}
+        if first["kind"] == "filled":
+            return {"ok": True, "reason": "FILLED", "coin": coin, "triggerPx": trig_str, "sz": s_str, "raw": r}
+        if first["kind"] == "resting":
+            return {"ok": True, "reason": "RESTING", "coin": coin, "triggerPx": trig_str, "sz": s_str, "raw": r}
+
+    return {"ok": False, "reason": "NO_STATUSES_IN_RESPONSE", "coin": coin, "raw": r}
+
+
 def place_position_tpsl_pair(
     user_id: int,
     symbol: str,
