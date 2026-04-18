@@ -110,6 +110,7 @@ const elements = {
   adminActionReasonInput: $('adminActionReasonInput'),
   adminActivateTradingButton: $('adminActivateTradingButton'),
   adminPauseTradingButton: $('adminPauseTradingButton'),
+  adminCloseTradingButton: $('adminCloseTradingButton'),
   adminMigrateKeyButton: $('adminMigrateKeyButton'),
   adminResetCredentialsButton: $('adminResetCredentialsButton'),
   adminResetStatsButton: $('adminResetStatsButton'),
@@ -1572,6 +1573,9 @@ function renderAdminSelectedUser(user) {
   if (elements.adminPauseTradingButton) {
     elements.adminPauseTradingButton.disabled = resolveRequestedTradingStatus(user) !== 'active';
   }
+  if (elements.adminCloseTradingButton) {
+    elements.adminCloseTradingButton.disabled = !Boolean(user.runtime_live_trade || user.runtime_active_symbol);
+  }
   if (elements.adminMigrateKeyButton) {
     elements.adminMigrateKeyButton.disabled = !user.private_key_configured || user.private_key_storage === 'encrypted';
   }
@@ -2044,6 +2048,23 @@ async function pauseTradingForSelectedUser() {
   );
 }
 
+async function closeTradingForSelectedUser() {
+  const selected = state.adminSelectedUser;
+  const symbol = selected?.runtime_active_symbol ? `Símbolo activo: ${selected.runtime_active_symbol}` : 'Se intentará cerrar la posición activa detectada en exchange.';
+  await runAdminSelectedAction(
+    elements.adminCloseTradingButton,
+    (userId) => `/api/v1/admin/users/${userId}/trading/close`,
+    'No se pudo cerrar la operación del usuario.',
+    'warning',
+    'Confirmación reforzada · Cerrar trading',
+    [
+      symbol,
+      'Esta acción fuerza el cierre reduce-only de la posición abierta y deja nuevas entradas pausadas.',
+      'Úsala solo para incidencias o intervención manual de soporte.',
+    ],
+  );
+}
+
 async function migrateKeyForSelectedUser() {
   await runAdminSelectedAction(
     elements.adminMigrateKeyButton,
@@ -2222,6 +2243,9 @@ function bindActions() {
   }
   if (elements.adminPauseTradingButton) {
     elements.adminPauseTradingButton.addEventListener('click', pauseTradingForSelectedUser);
+  }
+  if (elements.adminCloseTradingButton) {
+    elements.adminCloseTradingButton.addEventListener('click', closeTradingForSelectedUser);
   }
   if (elements.adminMigrateKeyButton) {
     elements.adminMigrateKeyButton.addEventListener('click', migrateKeyForSelectedUser);
