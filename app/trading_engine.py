@@ -3536,6 +3536,220 @@ def _manage_trade_until_close(
     )
 
 
+
+
+def admin_force_close_position(user_id: int, *, reason: str | None = None) -> dict[str, Any]:
+    """Cierra forzosamente la posición abierta del usuario desde admin.
+
+    Reglas de seguridad:
+    - cancela triggers/órdenes del símbolo antes del reduce-only close
+    - intenta cierre real en exchange
+    - espera confirmación breve de size=0
+    - persiste el cierre con motivo ADMIN_FORCE_CLOSE si existe contexto local
+    """
+    uid = int(user_id)
+    active = _get_active_trade(uid) or {}
+
+    coin = _get_first_open_position_coin(uid)
+    if not coin and active:
+        coin = _norm_coin(str(active.get('symbol_for_exec') or active.get('symbol') or ''))
+
+    if not coin:
+        if active:
+            try:
+                reconciled = _reconcile_orphan_closed_trade(uid)
+            except Exception:
+                reconciled = False
+            return {
+                'ok': True,
+                'result': 'no_open_position',
+                'message': 'No había posición abierta en exchange. Se limpió el estado local pendiente.' if reconciled else 'No había posición abierta en exchange.',
+                'symbol': str(active.get('symbol') or ''),
+                'reconciled': bool(reconciled),
+            }
+        return {
+            'ok': True,
+            'result': 'no_open_position',
+            'message': 'No había posición abierta en exchange.',
+            'symbol': '',
+            'reconciled': False,
+        }
+
+    symbol_for_exec = _norm_coin(coin)
+    symbol = str(active.get('symbol') or f'{symbol_for_exec}-PERP')
+
+    try:
+        size_signed = float(get_open_position_size(uid, symbol_for_exec) or 0.0)
+    except Exception as e:
+        raise RuntimeError(f'No se pudo leer el tamaño abierto en exchange: {e}')
+
+    if size_signed == 0.0:
+        if active:
+            try:
+                reconciled = _reconcile_orphan_closed_trade(uid)
+            except Exception:
+                reconciled = False
+            return {
+                'ok': True,
+                'result': 'no_open_position',
+                'message': 'La posición ya estaba cerrada en exchange. Se reconciliará el estado local.' if reconciled else 'La posición ya estaba cerrada en exchange.',
+                'symbol': symbol,
+                'reconciled': bool(reconciled),
+            }
+        return {
+            'ok': True,
+            'result': 'no_open_position',
+            'message': 'La posición ya estaba cerrada en exchange.',
+            'symbol': symbol,
+            'reconciled': False,
+        }
+
+    direction = 'long' if size_signed > 0 else 'short'
+    side = 'buy' if size_signed > 0 else 'sell'
+    close_side = 'sell' if size_signed > 0 else 'buy'
+    qty_close = abs(float(size_signed))
+
+    entry_price = float(active.get('entry_price') or 0.0)
+    if entry_price <= 0.0:
+        try:
+            entry_price = float(get_position_entry_price(uid, symbol_for_exec) or 0.0)
+        except Exception:
+            entry_price = 0.0
+    mark_price = 0.0
+    try:
+        mark_price = float(get_price(symbol_for_exec) or 0.0)
+    except Exception:
+        mark_price = 0.0
+    if entry_price <= 0.0:
+        entry_price = float(mark_price or 0.0)
+
+    qty_coin_for_log = float(active.get('qty_coin_for_log') or qty_close or 0.0)
+    if qty_coin_for_log <= 0.0:
+        qty_coin_for_log = float(qty_close)
+    qty_usdc_for_profit = float(active.get('qty_usdc_for_profit') or 0.0)
+    if qty_usdc_for_profit <= 0.0:
+        qty_usdc_for_profit = abs(float(qty_close) * float(entry_price or mark_price or 0.0))
+    best_score = float(active.get('best_score') or 0.0)
+
+    try:
+        _update_active_trade_fields(
+            uid,
+            close_in_progress=True,
+            close_finalized=False,
+            close_started_at=time.time(),
+            close_source='ADMIN_FORCE_CLOSE',
+        )
+    except Exception as e:
+        log(f'ADMIN_FORCE_CLOSE set guard error user={uid} symbol={symbol} err={e}', 'WARN')
+
+    try:
+        cancel_all_orders_for_symbol(uid, symbol_for_exec)
+    except Exception as e:
+        log(f'ADMIN_FORCE_CLOSE pre-cancel error user={uid} symbol={symbol} err={e}', 'WARN')
+
+    close_resp = place_market_order(uid, symbol_for_exec, close_side, qty_close, reduce_only=True)
+    if not close_resp or (not _resp_ok(close_resp)) or (not _is_filled_exchange_response(close_resp)):
+        try:
+            _update_active_trade_fields(
+                uid,
+                close_in_progress=False,
+                close_finalized=False,
+                close_started_at=None,
+                close_source='ADMIN_FORCE_CLOSE',
+            )
+        except Exception:
+            pass
+        raise RuntimeError(f'Cierre reduce-only no confirmado por exchange: {_resp_reason(close_resp) or close_resp}')
+
+    close_order_id_hint = _extract_exchange_order_id(close_resp)
+
+    closed = False
+    last_size = abs(float(size_signed))
+    for _ in range(20):
+        time.sleep(0.30)
+        try:
+            size_now = float(get_open_position_size(uid, symbol_for_exec) or 0.0)
+        except Exception:
+            size_now = 0.0
+        last_size = abs(float(size_now))
+        if size_now == 0.0:
+            closed = True
+            break
+
+    try:
+        cancel_all_orders_for_symbol(uid, symbol_for_exec)
+    except Exception as e:
+        log(f'ADMIN_FORCE_CLOSE post-cancel error user={uid} symbol={symbol} err={e}', 'WARN')
+
+    if not closed and last_size > 0.0:
+        try:
+            _update_active_trade_fields(
+                uid,
+                close_in_progress=False,
+                close_finalized=False,
+                close_started_at=None,
+                close_source='ADMIN_FORCE_CLOSE',
+            )
+        except Exception:
+            pass
+        raise RuntimeError(f'El exchange todavía reporta posición abierta tras el cierre admin. size_restante={last_size:.10f}')
+
+    exit_price = float(_extract_fill_price(close_resp) or mark_price or entry_price or 0.0)
+    exit_pnl_pct = 0.0
+    if entry_price > 0.0 and exit_price > 0.0:
+        if direction == 'long':
+            exit_pnl_pct = (exit_price - entry_price) / entry_price
+        else:
+            exit_pnl_pct = (entry_price - exit_price) / entry_price
+
+    if active and _has_min_trade_close_context(active):
+        profit = _finalize_trade_close(
+            user_id=uid,
+            symbol=symbol,
+            direction=direction,
+            side=side,
+            entry_price=float(entry_price),
+            exit_price=float(exit_price),
+            qty_coin=float(qty_coin_for_log),
+            qty_usdc_for_profit=float(qty_usdc_for_profit),
+            best_score=float(best_score),
+            exit_reason='ADMIN_FORCE_CLOSE',
+            exit_pnl_pct=float(exit_pnl_pct),
+            source='ADMIN_FORCE_CLOSE',
+            close_order_id_hint=str(close_order_id_hint or ''),
+        )
+        return {
+            'ok': True,
+            'result': 'position_closed',
+            'message': f'Posición cerrada manualmente en exchange para {symbol}.',
+            'symbol': symbol,
+            'direction': direction,
+            'qty_closed': float(qty_close),
+            'profit': float(profit),
+            'close_order_id': str(close_order_id_hint or ''),
+            'reason': str(reason or ''),
+            'finalized': True,
+        }
+
+    try:
+        _clear_active_trade(uid)
+    except Exception as e:
+        log(f'ADMIN_FORCE_CLOSE clear active trade fallback error user={uid} symbol={symbol} err={e}', 'WARN')
+
+    return {
+        'ok': True,
+        'result': 'position_closed',
+        'message': f'Posición cerrada manualmente en exchange para {symbol}. El contexto local no tenía datos completos para persistir la operación exacta.',
+        'symbol': symbol,
+        'direction': direction,
+        'qty_closed': float(qty_close),
+        'profit': 0.0,
+        'close_order_id': str(close_order_id_hint or ''),
+        'reason': str(reason or ''),
+        'finalized': False,
+    }
+
+
 def _manage_existing_open_position(user_id: int) -> Optional[dict]:
     """Adopta una posición ya abierta en el exchange y asegura que el manager esté corriendo en background.
     Evita reprocesar ADOPT completo en cada ciclo cuando la misma posición ya está adoptada.
