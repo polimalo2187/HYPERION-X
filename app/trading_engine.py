@@ -37,7 +37,7 @@ from app.strategy import (
     get_trade_management_params_for_strategy,
 )
 from app.risk import validate_trade_conditions
-from app.hyperliquid_client import place_market_order, place_stop_loss, place_take_profit, place_position_tpsl_pair, cancel_all_orders_for_symbol, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot, get_asset_index, get_sz_decimals, get_exchange_min_order_notional_usdc
+from app.hyperliquid_client import place_market_order, place_stop_loss, place_take_profit, place_position_tpsl_pair, cancel_all_orders_for_symbol, cancel_reduce_only_triggers_for_symbol_side, get_price, get_balance, has_open_position, get_position_entry_price, get_open_position_size, make_request, get_last_closed_trade_snapshot, get_account_snapshot, get_asset_index, get_sz_decimals, get_exchange_min_order_notional_usdc
 
 from app.database import (
     register_trade,
@@ -749,7 +749,7 @@ SYMBOL_NOFILL_COOLDOWN_SECONDS = 90
 
 # ✅ Sizing (NO toca strategy)
 MARGIN_USE_PCT = 1.0   # legacy
-LEVERAGE = 10.0        # apalancamiento operativo
+LEVERAGE = 5.0         # apalancamiento operativo
 FIXED_MARGIN_USDC = float(os.getenv("FIXED_MARGIN_USDC", os.getenv("FIXED_NOTIONAL_USDC", "3.0")))  # legado: ya no gobierna el sizing de entrada
 
 # ✅ BLINDAJE BANK GRADE (ANTI-ÓRDENES RIDÍCULAS)
@@ -1318,7 +1318,7 @@ def _ensure_exchange_take_profit_trigger(
             )
             return False
 
-        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
+        existing_tp = 0.0 if str(context).upper().startswith("OPEN") else _current_take_profit_trigger(user_id, symbol_for_exec, direction)
         if existing_tp > 0.0 and _is_same_take_profit(current_trigger=float(existing_tp), desired_trigger=float(trigger_price)):
             log(
                 f"TP_SYNC[{context}] mantiene TP existente coin={symbol} dir={direction} existing_trigger={existing_tp:.8f}",
@@ -1473,7 +1473,7 @@ def _ensure_exchange_stop_trigger(
         ) or [float(trigger_price)]
         desired_trigger = float(trigger_candidates[0])
 
-        existing_stops = _list_live_exchange_stops(user_id, symbol_for_exec, direction)
+        existing_stops = [] if str(context).upper().startswith("OPEN") else _list_live_exchange_stops(user_id, symbol_for_exec, direction)
         existing_trigger = float(existing_stops[0].get("trigger_price") or 0.0) if existing_stops else 0.0
 
         if existing_trigger > 0.0:
@@ -1570,6 +1570,44 @@ def _ensure_exchange_stop_trigger(
         return bool(existing_trigger > 0.0)
 
 
+def _cleanup_stale_reduce_only_triggers_before_open(
+    *,
+    user_id: int,
+    symbol: str,
+    symbol_for_exec: str,
+    direction: str,
+) -> bool:
+    """Antes de montar protección de un trade NUEVO, elimina triggers huérfanos del mismo símbolo/lado.
+
+    Regla de seguridad: como el engine solo llega aquí después de abrir una posición nueva
+    y no debería existir otra posición abierta previa en el mismo símbolo, cualquier trigger
+    reduce-only restante del mismo lado es stale y NO debe heredarse.
+    """
+    try:
+        resp = cancel_reduce_only_triggers_for_symbol_side(
+            user_id=user_id,
+            symbol=symbol_for_exec,
+            position_side=direction,
+        )
+        ok = bool(isinstance(resp, dict) and resp.get("ok"))
+        cancelled = list((resp or {}).get("cancelled") or []) if isinstance(resp, dict) else []
+        reason = (resp or {}).get("reason") if isinstance(resp, dict) else "NO_RESP"
+        if cancelled:
+            log(
+                f"OPEN_PROTECTION_CLEANUP coin={symbol} dir={direction} cancelled_stale_triggers={cancelled} reason={reason}",
+                "WARN",
+            )
+        elif not ok:
+            log(
+                f"OPEN_PROTECTION_CLEANUP coin={symbol} dir={direction} failed reason={reason} raw={resp}",
+                "CRITICAL",
+            )
+        return ok
+    except Exception as e:
+        log(f"OPEN_PROTECTION_CLEANUP coin={symbol} dir={direction} err={e}", "CRITICAL")
+        return False
+
+
 def _ensure_exchange_protection_pair(
     *,
     user_id: int,
@@ -1628,8 +1666,12 @@ def _ensure_exchange_protection_pair(
 
         desired_stop = float(stop_candidates[0])
         desired_tp = float(tp_candidates[0])
-        existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
-        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
+        if str(context).upper().startswith("OPEN"):
+            existing_stop = 0.0
+            existing_tp = 0.0
+        else:
+            existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
+            existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
 
         stop_ok = False
         tp_ok = False
@@ -1772,8 +1814,12 @@ def _ensure_exchange_protection_pair(
         return result
     except Exception as e:
         log(f"{context}: PROTECTION ERROR inesperado coin={symbol} dir={direction} err={e}", "CRITICAL")
-        existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
-        existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
+        if str(context).upper().startswith("OPEN"):
+            existing_stop = 0.0
+            existing_tp = 0.0
+        else:
+            existing_stop = _current_protective_stop_trigger(user_id, symbol_for_exec, direction)
+            existing_tp = _current_take_profit_trigger(user_id, symbol_for_exec, direction)
         _update_active_trade_fields(
             user_id,
             sl_in_exchange=bool(existing_stop > 0.0),
@@ -4520,6 +4566,14 @@ def execute_trade_cycle(user_id: int) -> dict | None:
         )
 
         # ✅ PROTECCIÓN REAL EN EXCHANGE (BANK GRADE):
+        # Antes de montar la protección del trade nuevo, limpiamos triggers reduce-only huérfanos
+        # del mismo símbolo/lado para que un stop viejo nunca se herede al trade actual.
+        _cleanup_stale_reduce_only_triggers_before_open(
+            user_id=user_id,
+            symbol=symbol,
+            symbol_for_exec=symbol_for_exec,
+            direction=direction,
+        )
         # TP fijo + SL fijo desde la apertura; luego solo se permite upgrade a break-even.
         initial_stop_price = _pct_to_abs_price(float(entry_price), float(sl_price_pct), direction, kind="sl")
         fixed_tp_price = _pct_to_abs_price(float(entry_price), float(mgmt["tp_activate_price"]), direction, kind="tp_activate")
