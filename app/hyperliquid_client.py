@@ -1374,7 +1374,7 @@ def get_exchange_min_order_notional_usdc() -> float:
 # ------------------------------------------------------------
 
 FORCE_ISOLATED = True
-FORCE_LEVERAGE = 5
+FORCE_LEVERAGE = 10
 
 def _set_isolated_leverage(
     private_key: str,
