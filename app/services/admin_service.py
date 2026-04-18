@@ -243,6 +243,88 @@ def admin_pause_user_trading(user_id: int, actor_user_id: int | None = None, act
     }
 
 
+def admin_close_user_trading(user_id: int, actor_user_id: int | None = None, actor_username: str | None = None, reason: str | None = None) -> dict:
+    detail_before = admin_get_user_detail(int(user_id))
+
+    if not admin_set_user_trading_status(int(user_id), 'inactive'):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No se pudo pausar el trading del usuario antes del cierre manual')
+
+    try:
+        from app.trading_engine import admin_force_close_position
+        outcome = admin_force_close_position(int(user_id), reason=reason)
+    except Exception as e:
+        _log_action(
+            'close_user_trading',
+            actor_user_id,
+            actor_username,
+            detail_before,
+            reason=reason,
+            status='error',
+            message=f'Error al forzar cierre manual: {e}',
+            metadata={'phase': 'force_close', 'runtime_live_trade': bool(detail_before.get('runtime_live_trade')), 'runtime_active_symbol': detail_before.get('runtime_active_symbol')},
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f'No se pudo cerrar la operación en exchange: {e}')
+
+    detail = admin_get_user_detail(int(user_id))
+    if outcome.get('result') == 'position_closed':
+        symbol = str(outcome.get('symbol') or detail_before.get('runtime_active_symbol') or '-')
+        direction = str(outcome.get('direction') or '').upper() or 'UNKNOWN'
+        qty_closed = float(outcome.get('qty_closed') or 0.0)
+        log_user_activity(
+            int(user_id),
+            'Cierre administrativo ejecutado',
+            f'Soporte administrativo cerró manualmente la posición activa {symbol} ({direction}) y dejó el trading pausado hasta nueva reactivación.',
+            tone='warning',
+            event_type='admin_force_close',
+            metadata={
+                'symbol': symbol,
+                'direction': direction.lower(),
+                'qty_closed': qty_closed,
+                'close_order_id': str(outcome.get('close_order_id') or ''),
+                'admin_reason': reason or '',
+            },
+        )
+    else:
+        log_user_activity(
+            int(user_id),
+            'Trading pausado sin posición activa',
+            'Soporte administrativo pausó el trading. No se detectó posición abierta en exchange para cerrar.',
+            tone='warning',
+            event_type='admin_force_close_no_position',
+            metadata={
+                'runtime_active_symbol': detail_before.get('runtime_active_symbol'),
+                'admin_reason': reason or '',
+            },
+        )
+
+    message = str(outcome.get('message') or 'Trading pausado por admin')
+    if outcome.get('result') == 'position_closed':
+        message = f"{message} Nuevas entradas quedaron pausadas hasta reactivación manual."
+
+    _log_action(
+        'close_user_trading',
+        actor_user_id,
+        actor_username,
+        detail,
+        reason=reason,
+        message=message,
+        metadata={
+            'close_result': outcome.get('result'),
+            'symbol': outcome.get('symbol') or detail_before.get('runtime_active_symbol'),
+            'direction': outcome.get('direction'),
+            'qty_closed': float(outcome.get('qty_closed') or 0.0),
+            'close_order_id': str(outcome.get('close_order_id') or ''),
+            'finalized': bool(outcome.get('finalized', False)),
+        },
+    )
+    return {
+        'result': outcome.get('result') or 'trading_closed',
+        'message': message,
+        'user': detail,
+        'close': outcome,
+    }
+
+
 def admin_activate_user_trading(user_id: int, actor_user_id: int | None = None, actor_username: str | None = None, reason: str | None = None) -> dict:
     access = ensure_access_on_activate(int(user_id))
     if not access.get('allowed', False):
