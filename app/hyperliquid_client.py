@@ -2026,6 +2026,63 @@ def place_position_tpsl_pair(
 # - Cancela TODAS las órdenes abiertas del asset (símbolo).
 # ------------------------------------------------------------
 
+
+
+def cancel_reduce_only_triggers_for_symbol_side(
+    user_id: int,
+    symbol: str,
+    position_side: str,
+    vault_address: Optional[str] = None,
+):
+    """Cancela SOLO triggers reduce-only del símbolo y lado indicado.
+
+    Uso principal: limpiar stops/TP huérfanos antes de montar la protección
+    de un trade NUEVO sin tocar órdenes no relacionadas.
+    """
+    coin = norm_coin(symbol)
+    expected_side = "A" if str(position_side).lower() == "long" else "B"
+    try:
+        orders = get_frontend_open_orders(user_id)
+    except Exception:
+        orders = []
+
+    target_oids: List[int] = []
+    for od in orders:
+        try:
+            if norm_coin(str(od.get("coin") or od.get("symbol") or "")) != coin:
+                continue
+            if not bool(od.get("isTrigger")):
+                continue
+            if not bool(od.get("reduceOnly")):
+                continue
+            if str(od.get("side") or "").upper() != expected_side:
+                continue
+            oid = _extract_oid_from_open_order(od)
+            if oid is None:
+                continue
+            target_oids.append(int(oid))
+        except Exception:
+            continue
+
+    deduped = sorted(set(target_oids))
+    if not deduped:
+        return {
+            "ok": True,
+            "reason": "NO_REDUCE_ONLY_TRIGGERS",
+            "coin": coin,
+            "cancelled": [],
+        }
+
+    resp = cancel_orders(
+        user_id=user_id,
+        symbol=symbol,
+        order_ids=deduped,
+        vault_address=vault_address,
+    )
+    if isinstance(resp, dict):
+        resp.setdefault("coin", coin)
+    return resp
+
 def cancel_all_orders_for_symbol(
     user_id: int,
     symbol: str,
