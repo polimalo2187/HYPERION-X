@@ -63,8 +63,8 @@ RETEST_CONFIRM_CLOSE_POS_FLEX_LONG = 0.46
 RETEST_CONFIRM_CLOSE_POS_FLEX_SHORT = 0.54
 
 ATR_SL_MULT = 1.10
-ATR_SL_MIN_PCT = 0.0058
-ATR_SL_MAX_PCT = 0.0125
+ATR_SL_MIN_PCT = 0.0050
+ATR_SL_MAX_PCT = 0.0080
 SWING_BUFFER_ATR = 0.22
 
 MAX_SCORE = 100.0
@@ -577,8 +577,7 @@ def _compute_breakout_fixed_tp_pct(
     breakout_rvol = float(breakout_rvol or 1.0)
     trigger_rvol = float(trigger_rvol or 1.0)
 
-    # Nuevo marco operativo: TP fijo responsable para breakout.
-    # Requisito del usuario: objetivo total entre 0.7% y 0.9%, nunca por encima de 0.9%.
+    # Marco operativo fijo para breakout: TP total entre 0.7% y 0.9%.
     tp_pct = 0.0079
     tp_pct += _clamp((score - 85.0) * 0.00006, -0.00030, 0.00035)
     tp_pct += _clamp((breakout_rvol - 1.0) * 0.00005, -0.00010, 0.00022)
