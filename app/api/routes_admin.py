@@ -152,6 +152,20 @@ def admin_activate_user_trading(
     )
 
 
+@router.post('/users/{user_id}/trading/close')
+def admin_close_user_trading(
+    user_id: int,
+    payload: AdminActionPayload | None = None,
+    session: dict = Depends(require_admin_session),
+) -> dict:
+    return _require_admin_attr('admin_close_user_trading')(
+        int(user_id),
+        actor_user_id=int(session['user_id']),
+        actor_username=session.get('username') or '',
+        reason=(payload.reason if payload else None),
+    )
+
+
 @router.post('/users/{user_id}/trading/pause')
 def admin_pause_user_trading(
     user_id: int,
