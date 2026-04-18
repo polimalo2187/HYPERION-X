@@ -39,8 +39,8 @@ TRIGGER_EMA20_RECOVER_TOL_ATR = 0.55
 TRIGGER_EMA50_RECOVER_TOL_ATR = 1.05
 RETEST_INVALIDATION_ATR = 0.58
 SL_BUFFER_ATR = 0.18
-SL_MIN_PCT = 0.0058
-SL_MAX_PCT = 0.0148
+SL_MIN_PCT = 0.0050
+SL_MAX_PCT = 0.0070
 TARGET_LOOKBACK = 48
 MIN_RR = 0.95
 ATR_PCT_MIN = 0.0013
@@ -149,8 +149,7 @@ def _compute_liquidity_fixed_tp_pct(
     bars_since_sweep = max(1, int(bars_since_sweep or 1))
     trigger_rvol = float(trigger_rvol or 1.0)
 
-    # Nuevo marco operativo: TP fijo corto para reversión de liquidez.
-    # Requisito del usuario: objetivo total entre 0.5% y 0.7%.
+    # Marco operativo fijo para liquidez: TP total entre 0.5% y 0.7%.
     tp_pct = 0.0059
     tp_pct += _clamp((score - 84.0) * 0.00005, -0.00022, 0.00022)
     tp_pct += _clamp((min(rr_estimate, 2.0) - 1.0) * 0.00025, -0.00010, 0.00018)
