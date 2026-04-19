@@ -33,27 +33,28 @@ BLOCKED_MEME_KEYWORDS = {x.strip().upper() for x in _BLOCKED_MEME_ENV.split(",")
 MIN_CANDLES_REQUIRED = 260
 MIN_NONZERO_VOLUME_RATIO = 0.92
 
-# MTF simple: pocos filtros, todos con sentido operativo.
+# MTF simple pura: sesgo 1H + confirmación 15M + reset/continuación 5M.
 H1_ADX_MIN = 12.0
 M15_ADX_MIN = 11.0
-M5_ADX_MIN = 10.5
+M5_ADX_MIN = 9.5
 ATR_PCT_MIN = 0.00075
 ATR_PCT_MAX = 0.0180
-TREND_STACK_MIN_PCT = 0.00035
-RESET_LOOKBACK_BARS = 4
-RESET_TOUCH_TOL_ATR = 0.30
-RESET_BREAK_TOL_ATR = 0.42
-TRIGGER_MIN_RVOL = 0.60
-TRIGGER_MIN_BODY_RATIO = 0.20
-TRIGGER_CLOSE_POS_LONG_MIN = 0.52
-TRIGGER_CLOSE_POS_SHORT_MAX = 0.48
-TRIGGER_MAX_EMA20_EXTENSION_ATR = 0.78
-SL_MIN_PCT = 0.0050
-SL_MAX_PCT = 0.0080
-SL_ATR_MULT = 0.95
-SL_BUFFER_ATR = 0.12
+TREND_STACK_MIN_PCT = 0.00030
+RESET_LOOKBACK_BARS = 5
+RESET_TOUCH_TOL_ATR = 0.38
+RESET_BREAK_TOL_ATR = 0.48
+TRIGGER_MAX_EMA20_EXTENSION_ATR = 0.95
+MTF_SL_MIN_PCT = 0.0045
+MTF_SL_MAX_PCT = 0.0068
+MTF_SL_ATR_MULT = 0.88
+MTF_SL_BUFFER_ATR = 0.10
+MTF_TP_MIN_PCT = 0.0060
+MTF_TP_MAX_PCT = 0.0085
+MTF_RR_MIN = 1.05
+MTF_RR_MAX = 1.30
+MIN_RR_TO_SIGNAL = 0.95
 MAX_SCORE = 100.0
-MIN_SCORE_TO_SIGNAL = 71.0
+MIN_SCORE_TO_SIGNAL = 69.0
 STRENGTH_MIN = 0.20
 STRENGTH_MAX = 0.97
 LOG_SIGNAL_DIAGNOSTICS = True
@@ -421,97 +422,83 @@ def _detect_simple_mtf_trigger(
 ) -> Tuple[bool, str, Dict[str, Any]]:
     if len(c) < max(EMA_SLOW + 5, 80):
         return False, "NOT_ENOUGH_BARS", {}
+
     i = len(c) - 1
     recent_idx = list(range(max(0, i - RESET_LOOKBACK_BARS), i))
     if not recent_idx:
         return False, "NO_RESET_WINDOW", {}
+
     reset_low = min(l[j] for j in recent_idx)
     reset_high = max(h[j] for j in recent_idx)
     min_ema20 = min(float(ema20[j]) for j in recent_idx)
     max_ema20 = max(float(ema20[j]) for j in recent_idx)
     min_ema50 = min(float(ema50[j]) for j in recent_idx)
     max_ema50 = max(float(ema50[j]) for j in recent_idx)
-
-    trigger_rvol = _relative_volume(v, i, 20)
-    trigger_body = _body_ratio(o[i], h[i], l[i], c[i])
-    trigger_close_pos = _close_position_in_range(o[i], h[i], l[i], c[i])
     extension_atr = abs(float(c[i]) - float(ema20[i])) / max(atr, 1e-12)
+    prev_high = float(h[i - 1]) if i >= 1 else float(h[i])
+    prev_low = float(l[i - 1]) if i >= 1 else float(l[i])
+    bars_since_reset = int(i - recent_idx[-1])
 
     if direction == "long":
-        trend_ok = c[i] > ema20[i] > ema50[i] > ema200[i]
         reset_touched = reset_low <= (max_ema20 + atr * RESET_TOUCH_TOL_ATR)
         reset_not_broken = reset_low >= (min_ema50 - atr * RESET_BREAK_TOL_ATR)
-        reclaim_ok = c[i] > ema20[i] and c[i] > max(c[i - 1], o[i - 1])
-        close_loc_ok = trigger_close_pos >= TRIGGER_CLOSE_POS_LONG_MIN
+        reclaim_ok = float(c[i]) > float(ema20[i]) and float(c[i]) > float(o[i]) and float(c[i]) >= prev_high
         diag = {
             "reset_low": round(float(reset_low), 8),
             "ema20_ref": round(float(max_ema20), 8),
             "ema50_ref": round(float(min_ema50), 8),
-            "trigger_rvol": round(float(trigger_rvol), 4),
-            "trigger_body": round(float(trigger_body), 4),
-            "trigger_close_pos": round(float(trigger_close_pos), 4),
             "extension_atr": round(float(extension_atr), 4),
-            "bars_since_reset": int(i - recent_idx[-1]),
+            "bars_since_reset": bars_since_reset,
+            "confirm_close": round(float(c[i]), 8),
+            "prev_high": round(float(prev_high), 8),
         }
-        if not trend_ok:
-            return False, "NO_5M_TREND_STACK", diag
         if not reset_touched:
-            return False, "NO_RESET_TOUCH", diag
+            return False, "NO_5M_RESET_TOUCH", diag
         if not reset_not_broken:
             return False, "RESET_TOO_DEEP", diag
         if not reclaim_ok:
-            return False, "TRIGGER_RECLAIM_BAD", diag
-        if trigger_rvol < TRIGGER_MIN_RVOL:
-            return False, "TRIGGER_VOLUME_WEAK", diag
-        if trigger_body < TRIGGER_MIN_BODY_RATIO:
-            return False, "TRIGGER_BODY_WEAK", diag
-        if not close_loc_ok:
-            return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
+            return False, "NO_5M_CONTINUATION_CONFIRM", diag
         if extension_atr > TRIGGER_MAX_EMA20_EXTENSION_ATR:
-            return False, "TRIGGER_TOO_EXTENDED", diag
+            return False, "TOO_EXTENDED_AFTER_CONFIRM", diag
         return True, "OK", diag
 
-    trend_ok = c[i] < ema20[i] < ema50[i] < ema200[i]
     reset_touched = reset_high >= (min_ema20 - atr * RESET_TOUCH_TOL_ATR)
     reset_not_broken = reset_high <= (max_ema50 + atr * RESET_BREAK_TOL_ATR)
-    reclaim_ok = c[i] < ema20[i] and c[i] < min(c[i - 1], o[i - 1])
-    close_loc_ok = trigger_close_pos <= TRIGGER_CLOSE_POS_SHORT_MAX
+    reclaim_ok = float(c[i]) < float(ema20[i]) and float(c[i]) < float(o[i]) and float(c[i]) <= prev_low
     diag = {
         "reset_high": round(float(reset_high), 8),
         "ema20_ref": round(float(min_ema20), 8),
         "ema50_ref": round(float(max_ema50), 8),
-        "trigger_rvol": round(float(trigger_rvol), 4),
-        "trigger_body": round(float(trigger_body), 4),
-        "trigger_close_pos": round(float(trigger_close_pos), 4),
         "extension_atr": round(float(extension_atr), 4),
-        "bars_since_reset": int(i - recent_idx[-1]),
+        "bars_since_reset": bars_since_reset,
+        "confirm_close": round(float(c[i]), 8),
+        "prev_low": round(float(prev_low), 8),
     }
-    if not trend_ok:
-        return False, "NO_5M_TREND_STACK", diag
     if not reset_touched:
-        return False, "NO_RESET_TOUCH", diag
+        return False, "NO_5M_RESET_TOUCH", diag
     if not reset_not_broken:
         return False, "RESET_TOO_DEEP", diag
     if not reclaim_ok:
-        return False, "TRIGGER_RECLAIM_BAD", diag
-    if trigger_rvol < TRIGGER_MIN_RVOL:
-        return False, "TRIGGER_VOLUME_WEAK", diag
-    if trigger_body < TRIGGER_MIN_BODY_RATIO:
-        return False, "TRIGGER_BODY_WEAK", diag
-    if not close_loc_ok:
-        return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
+        return False, "NO_5M_CONTINUATION_CONFIRM", diag
     if extension_atr > TRIGGER_MAX_EMA20_EXTENSION_ATR:
-        return False, "TRIGGER_TOO_EXTENDED", diag
+        return False, "TOO_EXTENDED_AFTER_CONFIRM", diag
     return True, "OK", diag
 
 
-def _compute_simple_mtf_fixed_tp_pct(*, score: float, atr_pct: float, trigger_rvol: float) -> Tuple[float, float]:
-    tp_pct = 0.0080
-    tp_pct += _clamp((float(score or 0.0) - 82.0) * 0.000055, -0.00035, 0.00035)
-    tp_pct += _clamp((float(trigger_rvol or 1.0) - 1.0) * 0.00008, -0.00012, 0.00020)
-    tp_pct += _clamp((float(atr_pct or 0.0) - 0.0060) * 0.10, -0.00012, 0.00012)
-    tp_pct = _clamp(tp_pct, 0.0070, 0.0090)
-    return round(tp_pct, 6), 0.0
+def _compute_simple_mtf_fixed_tp_pct(*, score: float, atr_pct: float, sl_pct: float) -> Tuple[float, float]:
+    score = float(score or 0.0)
+    atr_pct = float(atr_pct or 0.0)
+    sl_pct = float(sl_pct or MTF_SL_MIN_PCT)
+
+    rr_target = 1.14
+    rr_target += _clamp((score - 82.0) * 0.0048, -0.08, 0.10)
+    rr_target += _clamp((atr_pct - 0.0060) * 6.0, -0.04, 0.04)
+    rr_target = _clamp(rr_target, MTF_RR_MIN, MTF_RR_MAX)
+
+    tp_pct = sl_pct * rr_target
+    tp_pct = _clamp(tp_pct, MTF_TP_MIN_PCT, MTF_TP_MAX_PCT)
+    rr_real = tp_pct / max(sl_pct, 1e-12)
+    return round(tp_pct, 6), round(rr_real, 4)
 
 
 def _dynamic_trade_management_params(
@@ -520,30 +507,28 @@ def _dynamic_trade_management_params(
     atr_pct: Optional[float] = None,
     *,
     sl_pct: Optional[float] = None,
-    trigger_rvol: float = 1.0,
 ) -> Dict[str, Any]:
     atr_pct = float(atr_pct or 0.0)
     score = float(score or 0.0)
     strength = float(strength or 0.0)
-    sl_pct = float(sl_pct or SL_MIN_PCT)
+    sl_pct = float(sl_pct or MTF_SL_MIN_PCT)
 
-    tp_fixed, _ = _compute_simple_mtf_fixed_tp_pct(score=score, atr_pct=atr_pct, trigger_rvol=trigger_rvol)
-    rr_target = round(tp_fixed / max(sl_pct, 1e-12), 4)
+    tp_fixed, rr_target = _compute_simple_mtf_fixed_tp_pct(score=score, atr_pct=atr_pct, sl_pct=sl_pct)
 
     if score >= 88.0 or strength >= 0.88:
         bucket = "strong"
-        be_ratio = 0.60
+        be_ratio = 0.56
         be_offset = 0.00070
     elif score >= 79.0 or strength >= 0.76:
         bucket = "base"
-        be_ratio = 0.54
+        be_ratio = 0.50
         be_offset = 0.00060
     else:
         bucket = "weak"
-        be_ratio = 0.48
+        be_ratio = 0.45
         be_offset = 0.00055
 
-    be_activation = _clamp(tp_fixed * be_ratio, 0.0032, 0.0054)
+    be_activation = _clamp(min(tp_fixed * be_ratio, sl_pct * 0.95), 0.0028, 0.0049)
     return {
         "tp_activation_price": round(tp_fixed, 6),
         "trail_retrace_price": 0.0,
@@ -631,7 +616,7 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
         if not ok_trigger:
             if LOG_SIGNAL_DIAGNOSTICS:
                 _log(f"BLOCK coin={coin} dir={direction} reason={reason5} diag={diag5}")
-            return {"signal": False, "reason": f"MTF_SIMPLE_{reason5}", "coin": coin, "diag": diag5}
+            return {"signal": False, "reason": reason5, "coin": coin, "diag": diag5}
 
         if direction == "long":
             reset_extreme = min(l5[max(0, len(l5) - 1 - RESET_LOOKBACK_BARS): len(l5) - 1])
@@ -640,29 +625,24 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             reset_extreme = max(h5[max(0, len(h5) - 1 - RESET_LOOKBACK_BARS): len(h5) - 1])
             structural_pct = max(0.0, (reset_extreme - close5) / max(close5, 1e-12))
 
-        sl_from_atr = atr_pct * SL_ATR_MULT
-        sl_from_structure = structural_pct + ((atr5 / max(close5, 1e-12)) * SL_BUFFER_ATR)
-        sl_pct = _clamp(max(sl_from_atr, sl_from_structure), SL_MIN_PCT, SL_MAX_PCT)
+        sl_from_atr = atr_pct * MTF_SL_ATR_MULT
+        sl_from_structure = structural_pct + ((atr5 / max(close5, 1e-12)) * MTF_SL_BUFFER_ATR)
+        sl_pct = _clamp(max(sl_from_atr, sl_from_structure), MTF_SL_MIN_PCT, MTF_SL_MAX_PCT)
 
-        trigger_rvol = float(diag5.get("trigger_rvol", 1.0) or 1.0)
-        trigger_body = float(diag5.get("trigger_body", 0.0) or 0.0)
-        trigger_close_pos = float(diag5.get("trigger_close_pos", 0.5) or 0.5)
         extension_atr = float(diag5.get("extension_atr", 0.0) or 0.0)
 
         h1_strength = _clamp((float(diag1h.get("adx", 0.0)) - H1_ADX_MIN) / 15.0, 0.0, 1.0)
         m15_strength = _clamp((float(diag15.get("adx", 0.0)) - M15_ADX_MIN) / 14.0, 0.0, 1.0)
         m5_strength = _clamp((adx5 - M5_ADX_MIN) / 13.0, 0.0, 1.0)
-        trigger_quality = _clamp(((trigger_rvol - 0.75) / 0.90) * 0.45 + ((trigger_body - 0.18) / 0.45) * 0.35 + (0.20 * (1.0 - _clamp(extension_atr / max(TRIGGER_MAX_EMA20_EXTENSION_ATR, 1e-12), 0.0, 1.0))), 0.0, 1.0)
-        close_loc_quality = _clamp(trigger_close_pos if direction == "long" else (1.0 - trigger_close_pos), 0.0, 1.0)
-        stack_quality = _clamp((float(diag1h.get("stack_spread", 0.0)) + float(diag15.get("stack_spread", 0.0))) / max(TREND_STACK_MIN_PCT * 6.0, 1e-12), 0.0, 1.0)
+        trend_alignment_quality = _clamp((float(diag1h.get("stack_spread", 0.0)) + float(diag15.get("stack_spread", 0.0))) / max(TREND_STACK_MIN_PCT * 6.0, 1e-12), 0.0, 1.0)
+        reset_quality = _clamp(1.0 - _clamp(extension_atr / max(TRIGGER_MAX_EMA20_EXTENSION_ATR, 1e-12), 0.0, 1.0), 0.0, 1.0)
 
         quality = _clamp(
-            (0.26 * h1_strength)
-            + (0.22 * m15_strength)
-            + (0.18 * m5_strength)
-            + (0.22 * trigger_quality)
-            + (0.12 * close_loc_quality)
-            + (0.10 * stack_quality),
+            (0.30 * h1_strength)
+            + (0.25 * m15_strength)
+            + (0.20 * m5_strength)
+            + (0.15 * trend_alignment_quality)
+            + (0.10 * reset_quality),
             0.0,
             1.0,
         )
@@ -677,8 +657,6 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
                     "min_score": MIN_SCORE_TO_SIGNAL,
                     "h1_adx": diag1h.get("adx"),
                     "m15_adx": diag15.get("adx"),
-                    "trigger_rvol": round(trigger_rvol, 4),
-                    "trigger_body": round(trigger_body, 4),
                     "extension_atr": round(extension_atr, 4),
                 },
             }
@@ -689,8 +667,19 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             score,
             atr_pct,
             sl_pct=sl_pct,
-            trigger_rvol=trigger_rvol,
         )
+        if float(mgmt.get("tp_rr_multiple", 0.0) or 0.0) < MIN_RR_TO_SIGNAL:
+            return {
+                "signal": False,
+                "reason": "RR_TOO_LOW",
+                "coin": coin,
+                "diag": {
+                    "tp_rr": round(float(mgmt.get("tp_rr_multiple", 0.0) or 0.0), 4),
+                    "sl_pct": round(sl_pct, 6),
+                    "tp_fixed": round(float(mgmt.get("tp_activation_price", 0.0) or 0.0), 6),
+                    "min_rr": MIN_RR_TO_SIGNAL,
+                },
+            }
 
         t5 = int(tf5.get("last_t") or candles5[-1].get("t") or 0)
         age5 = max(0.0, (time.time() * 1000.0 - t5) / 1000.0) if t5 else 0.0
@@ -711,7 +700,6 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             "mgmt_bucket": str(mgmt["bucket"]),
             "vol_regime": str(mgmt.get("vol_regime", _volatility_regime_from_atr_pct(atr_pct))),
             "atr_pct": round(float(atr_pct), 6),
-            "trigger_rvol": round(trigger_rvol, 4),
             "ema_stack_pct": round(float(diag1h.get("stack_spread", 0.0)), 6),
             "coin": coin,
             "close_5": round(close5, 6),
@@ -719,7 +707,7 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             "ema20_5m": round(float(ema20_5[-1]), 6),
             "adx1": round(float(diag1h.get("adx", 0.0)), 2),
             "adx15": round(float(diag15.get("adx", 0.0)), 2),
-            "strategy_model": "mtf_simple_continuation_5m_v1",
+            "strategy_model": "mtf_simple_continuation_5m_v2",
             "market_context_status": str(market_context.get("status") or tf5.get("status") or "OK"),
             "tp_rr_multiple": float(mgmt.get("tp_rr_multiple", 0.0) or 0.0),
             "h1_bias": direction,
@@ -729,7 +717,7 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             _log(
                 f"SIGNAL coin={coin} dir={out['direction']} close_5={out['close_5']} t5={out['last_candle_t_5m']} age5s={round(age5,1)} "
                 f"adx5={round(adx5,2)} adx15={out['adx15']} adx1={out['adx1']} atr_pct={out['atr_pct']} score={out['score']} "
-                f"trigger_rvol={out['trigger_rvol']} h1_bias={out['h1_bias']} m15_bias={out['m15_bias']} sl_pct={out['sl_price_pct']} "
+                f"h1_bias={out['h1_bias']} m15_bias={out['m15_bias']} sl_pct={out['sl_price_pct']} "
                 f"tp_fixed={out['tp_activation_price']} tp_rr={out['tp_rr_multiple']:.4f} be_act={out['break_even_activation_price']} "
                 f"be_offset={out['break_even_offset_price']} bucket={out['mgmt_bucket']}"
             )
@@ -750,10 +738,9 @@ def get_entry_signal(symbol: str, market_context: Optional[Dict[str, Any]] = Non
     return _evaluate_market_context(market_context)
 
 
-LEGACY_STRATEGY_ID = "breakout_reset"
 STRATEGY_ID = "mtf_simple"
 STRATEGY_VERSION = "v1"
-STRATEGY_MODEL = "mtf_simple_continuation_5m_v1"
+STRATEGY_MODEL = "mtf_simple_continuation_5m_v3_pure"
 
 
 class MtfSimpleStrategy(BaseStrategy):
@@ -767,15 +754,12 @@ class MtfSimpleStrategy(BaseStrategy):
             out.setdefault("strategy_id", self.strategy_id)
             out.setdefault("strategy_version", self.strategy_version)
             out.setdefault("strategy_model", self.strategy_model)
-            out.setdefault("strategy_legacy_alias", LEGACY_STRATEGY_ID)
         return out
 
     def get_trade_management_params(self, strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
         return get_trade_management_params(strength, score, atr_pct)
 
 
-# Alias de compatibilidad para no romper imports legacy.
-BreakoutResetStrategy = MtfSimpleStrategy
 DEFAULT_STRATEGY = MtfSimpleStrategy()
 
 
