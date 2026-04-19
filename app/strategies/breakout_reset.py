@@ -44,6 +44,7 @@ RESET_LOOKBACK_BARS = 5
 RESET_TOUCH_TOL_ATR = 0.38
 RESET_BREAK_TOL_ATR = 0.48
 TRIGGER_MAX_EMA20_EXTENSION_ATR = 0.95
+CONTINUATION_CONFIRM_TOL_ATR = 0.10
 MTF_SL_MIN_PCT = 0.0045
 MTF_SL_MAX_PCT = 0.0068
 MTF_SL_ATR_MULT = 0.88
@@ -439,10 +440,19 @@ def _detect_simple_mtf_trigger(
     prev_low = float(l[i - 1]) if i >= 1 else float(l[i])
     bars_since_reset = int(i - recent_idx[-1])
 
+    confirm_tol = atr * CONTINUATION_CONFIRM_TOL_ATR
+
     if direction == "long":
         reset_touched = reset_low <= (max_ema20 + atr * RESET_TOUCH_TOL_ATR)
         reset_not_broken = reset_low >= (min_ema50 - atr * RESET_BREAK_TOL_ATR)
-        reclaim_ok = float(c[i]) > float(ema20[i]) and float(c[i]) > float(o[i]) and float(c[i]) >= prev_high
+        reclaim_ok = (
+            float(c[i]) > float(ema20[i])
+            and float(c[i]) > float(o[i])
+            and (
+                float(c[i]) >= (prev_high - confirm_tol)
+                or float(h[i]) >= prev_high
+            )
+        )
         diag = {
             "reset_low": round(float(reset_low), 8),
             "ema20_ref": round(float(max_ema20), 8),
@@ -451,6 +461,8 @@ def _detect_simple_mtf_trigger(
             "bars_since_reset": bars_since_reset,
             "confirm_close": round(float(c[i]), 8),
             "prev_high": round(float(prev_high), 8),
+            "confirm_tol_atr": round(float(CONTINUATION_CONFIRM_TOL_ATR), 4),
+            "confirm_level": round(float(prev_high - confirm_tol), 8),
         }
         if not reset_touched:
             return False, "NO_5M_RESET_TOUCH", diag
@@ -464,7 +476,14 @@ def _detect_simple_mtf_trigger(
 
     reset_touched = reset_high >= (min_ema20 - atr * RESET_TOUCH_TOL_ATR)
     reset_not_broken = reset_high <= (max_ema50 + atr * RESET_BREAK_TOL_ATR)
-    reclaim_ok = float(c[i]) < float(ema20[i]) and float(c[i]) < float(o[i]) and float(c[i]) <= prev_low
+    reclaim_ok = (
+        float(c[i]) < float(ema20[i])
+        and float(c[i]) < float(o[i])
+        and (
+            float(c[i]) <= (prev_low + confirm_tol)
+            or float(l[i]) <= prev_low
+        )
+    )
     diag = {
         "reset_high": round(float(reset_high), 8),
         "ema20_ref": round(float(min_ema20), 8),
@@ -473,6 +492,8 @@ def _detect_simple_mtf_trigger(
         "bars_since_reset": bars_since_reset,
         "confirm_close": round(float(c[i]), 8),
         "prev_low": round(float(prev_low), 8),
+        "confirm_tol_atr": round(float(CONTINUATION_CONFIRM_TOL_ATR), 4),
+        "confirm_level": round(float(prev_low + confirm_tol), 8),
     }
     if not reset_touched:
         return False, "NO_5M_RESET_TOUCH", diag
