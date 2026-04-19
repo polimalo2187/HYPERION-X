@@ -1,23 +1,25 @@
-
 import os
 import time
 from typing import Dict, Any, List, Optional, Tuple
+
 from app.strategies.base import BaseStrategy
 from app.hyperliquid_client import make_request, norm_coin
 from app.market_context import build_market_context
 
 TF_5M = "5m"
+TF_15M = "15m"
+TF_1H = "1h"
 LOOKBACK_5M = 320
+LOOKBACK_15M = 240
+LOOKBACK_1H = 240
 
 EMA_FAST = 20
 EMA_MID = 50
 EMA_SLOW = 200
 ADX_PERIOD = 14
 ATR_PERIOD = 14
-EMA_SLOPE_LOOKBACK = 8
+EMA_SLOPE_LOOKBACK = 6
 
-# Universo dinámico: por defecto permite cualquier par de calidad suficiente
-# y bloquea memecoins probables. Si defines ALLOWED_TRADE_SYMBOLS, esa allowlist manda.
 _ALLOWED_ENV = os.getenv("ALLOWED_TRADE_SYMBOLS", "").strip()
 ALLOWED_SYMBOLS = {x.strip().upper() for x in _ALLOWED_ENV.split(",") if x.strip()}
 
@@ -31,47 +33,29 @@ BLOCKED_MEME_KEYWORDS = {x.strip().upper() for x in _BLOCKED_MEME_ENV.split(",")
 MIN_CANDLES_REQUIRED = 260
 MIN_NONZERO_VOLUME_RATIO = 0.92
 
-ADX_MIN = 13.2
-# Recalibración v5: aflojamos el núcleo (breakout/retest/ADX) para recuperar frecuencia
-# sin tocar las protecciones anti-chase / anti-vela expandida que ya estaban filtrando
-# entradas claramente tardías.
+# MTF simple: pocos filtros, todos con sentido operativo.
+H1_ADX_MIN = 12.0
+M15_ADX_MIN = 11.0
+M5_ADX_MIN = 10.5
 ATR_PCT_MIN = 0.00075
-ATR_PCT_MAX = 0.0165
-ATR_PCT_EXTREME = 0.0175
-
-BREAKOUT_LOOKBACK = 24
-BREAKOUT_MIN_ATR_FRAC = 0.075
-BREAKOUT_CONFIRM_CLOSE_ATR = 0.075
-BREAKOUT_MAX_AGE_BARS = 7
-RETEST_TOL_ATR = 0.62
-RETEST_HARD_FAIL_ATR = 1.30
-MAX_CHASE_ATR = 0.58
-MIN_BODY_RATIO = 0.24
-BREAKOUT_MIN_BODY_RATIO = 0.30
-BREAKOUT_MIN_RVOL = 0.86
-TRIGGER_MIN_RVOL = 0.82
+ATR_PCT_MAX = 0.0180
+TREND_STACK_MIN_PCT = 0.00035
+RESET_LOOKBACK_BARS = 4
+RESET_TOUCH_TOL_ATR = 0.30
+RESET_BREAK_TOL_ATR = 0.42
+TRIGGER_MIN_RVOL = 0.60
+TRIGGER_MIN_BODY_RATIO = 0.20
 TRIGGER_CLOSE_POS_LONG_MIN = 0.52
 TRIGGER_CLOSE_POS_SHORT_MAX = 0.48
-TRIGGER_MAX_RANGE_ATR = 1.35
-TRIGGER_MAX_BODY_ATR = 0.90
-TRIGGER_MAX_EMA20_EXTENSION_ATR = 1.12
-TREND_STACK_MIN_PCT = 0.00055
-
-RETEST_CLOSE_ATR_TOL = 0.14
-RETEST_EMA20_TOL_ATR = 0.17
-RETEST_CONFIRM_CLOSE_POS_FLEX_LONG = 0.50
-RETEST_CONFIRM_CLOSE_POS_FLEX_SHORT = 0.50
-
-ATR_SL_MULT = 1.10
-ATR_SL_MIN_PCT = 0.0050
-ATR_SL_MAX_PCT = 0.0080
-SWING_BUFFER_ATR = 0.22
-
+TRIGGER_MAX_EMA20_EXTENSION_ATR = 0.78
+SL_MIN_PCT = 0.0050
+SL_MAX_PCT = 0.0080
+SL_ATR_MULT = 0.95
+SL_BUFFER_ATR = 0.12
 MAX_SCORE = 100.0
-MIN_SCORE_TO_SIGNAL = 73.0
+MIN_SCORE_TO_SIGNAL = 71.0
 STRENGTH_MIN = 0.20
 STRENGTH_MAX = 0.97
-
 LOG_SIGNAL_DIAGNOSTICS = True
 
 
@@ -83,7 +67,7 @@ def _log(msg: str):
 
 
 def _interval_ms(interval: str) -> int:
-    return {"5m": 300_000}.get(interval, 0)
+    return {"5m": 300_000, "15m": 900_000, "1h": 3_600_000}.get(interval, 0)
 
 
 def _parse_candle(x: dict) -> Optional[dict]:
@@ -120,7 +104,7 @@ def _fetch_candles(coin: str, interval: str, limit: int):
                 "endTime": now,
             },
         }
-        resp = make_request("/info", payload)
+        resp = make_request("/info", payload, retries=3, backoff=0.35, timeout=5.0)
     except Exception:
         return [], "API_FAIL"
 
@@ -254,14 +238,9 @@ def _close_position_in_range(o: float, h: float, l: float, c: float) -> float:
     return _clamp((c - l) / rng, 0.0, 1.0)
 
 
-def _lower_wick_ratio(o: float, h: float, l: float, c: float) -> float:
+def _body_ratio(o: float, h: float, l: float, c: float) -> float:
     rng = max(h - l, 1e-12)
-    return _clamp((min(o, c) - l) / rng, 0.0, 1.0)
-
-
-def _upper_wick_ratio(o: float, h: float, l: float, c: float) -> float:
-    rng = max(h - l, 1e-12)
-    return _clamp((h - max(o, c)) / rng, 0.0, 1.0)
+    return abs(c - o) / rng
 
 
 def _is_stale(candles: List[dict], interval: str) -> Tuple[bool, float, int]:
@@ -271,8 +250,6 @@ def _is_stale(candles: List[dict], interval: str) -> Tuple[bool, float, int]:
     age_s = max(0.0, (time.time() * 1000.0 - last_t) / 1000.0)
     interval_s = _interval_ms(interval) / 1000.0
     return age_s > (interval_s * 3.0), age_s, last_t
-
-
 
 
 def _base_coin(symbol: str) -> str:
@@ -306,6 +283,7 @@ def _validate_symbol_quality(coin: str, candles: List[dict]) -> Tuple[bool, str,
         return False, "LOW_ACTIVITY_SYMBOL", {"nonzero_vol_ratio": round(nonzero_vol_ratio, 4)}
     return True, "OK", {"base": _base_coin(coin), "bars": len(valid), "nonzero_vol_ratio": round(nonzero_vol_ratio, 4)}
 
+
 def _volatility_regime_from_atr_pct(atr_pct: float) -> str:
     if atr_pct <= 0.0030:
         return "low"
@@ -316,278 +294,224 @@ def _volatility_regime_from_atr_pct(atr_pct: float) -> str:
     return "extreme"
 
 
-def _body_ratio(o: float, h: float, l: float, c: float) -> float:
-    rng = max(h - l, 1e-12)
-    return abs(c - o) / rng
+def _tf_snapshot_from_candles(candles: List[dict], interval: str) -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {
+        "interval": interval,
+        "status": "EMPTY",
+        "detail": "EMPTY",
+        "context_ok": False,
+        "candles": candles,
+        "stale": True,
+        "age_s": 9e9,
+        "last_t": 0,
+        "o": [], "h": [], "l": [], "c": [], "v": [],
+        "close": 0.0,
+        "atr": 0.0,
+        "atr_pct": 0.0,
+        "adx": 0.0,
+    }
+    if not candles:
+        return snapshot
+    stale, age_s, last_t = _is_stale(candles, interval)
+    o, h, l, c, v = _extract(candles)
+    close = float(c[-1]) if c else 0.0
+    atr_value = float(_atr(h, l, c, ATR_PERIOD) or 0.0)
+    adx_series = _adx(h, l, c, ADX_PERIOD)
+    snapshot.update({
+        "status": "STALE_CANDLES" if stale else "OK",
+        "detail": "STALE_CANDLES" if stale else "OK",
+        "context_ok": not bool(stale),
+        "stale": bool(stale),
+        "age_s": float(age_s),
+        "last_t": int(last_t),
+        "o": o, "h": h, "l": l, "c": c, "v": v,
+        "close": close,
+        "atr": atr_value,
+        "atr_pct": (atr_value / close) if close > 0 else 0.0,
+        "adx": float(_last(adx_series) or 0.0),
+        "adx_series": adx_series,
+        f"ema{EMA_FAST}": _ema(c, EMA_FAST),
+        f"ema{EMA_MID}": _ema(c, EMA_MID),
+        f"ema{EMA_SLOW}": _ema(c, EMA_SLOW),
+    })
+    return snapshot
 
 
-def _candle_range_atr(o: float, h: float, l: float, c: float, atr: float) -> float:
-    return (h - l) / max(atr, 1e-12)
-
-
-def _candle_body_atr(o: float, h: float, l: float, c: float, atr: float) -> float:
-    return abs(c - o) / max(atr, 1e-12)
-
-
-def _detect_breakout_retest_long(
-    o: List[float], h: List[float], l: List[float], c: List[float], v: List[float], ema20: List[float], ema50: List[float], atr: float
-) -> Tuple[bool, str, Dict[str, Any]]:
-    if len(c) < max(BREAKOUT_LOOKBACK + BREAKOUT_MAX_AGE_BARS + 4, 80):
-        return False, "NOT_ENOUGH_BARS", {}
-    breakout_idx = None
-    breakout_level = None
-    breakout_rvol = 1.0
-    breakout_body = 0.0
-    breakout_close_dist_atr = 0.0
-    breakout_buffer = atr * BREAKOUT_MIN_ATR_FRAC
-    start = len(c) - BREAKOUT_MAX_AGE_BARS - 2
-    end = len(c) - 1
-    for i in range(start, end):
-        left_start = max(0, i - BREAKOUT_LOOKBACK)
-        if i - left_start < 8:
-            continue
-        level = max(h[left_start:i])
-        candle_body = _body_ratio(o[i], h[i], l[i], c[i])
-        candle_rvol = _relative_volume(v, i, 20)
-        close_dist_atr = (c[i] - level) / max(atr, 1e-12)
-        if (
-            c[i] > level + breakout_buffer
-            and h[i] > level + breakout_buffer
-            and c[i] > ema20[i]
-            and c[i] > ema50[i]
-            and candle_body >= BREAKOUT_MIN_BODY_RATIO
-            and candle_rvol >= BREAKOUT_MIN_RVOL
-            and close_dist_atr >= BREAKOUT_CONFIRM_CLOSE_ATR
-        ):
-            breakout_idx = i
-            breakout_level = level
-            breakout_rvol = candle_rvol
-            breakout_body = candle_body
-            breakout_close_dist_atr = close_dist_atr
-    if breakout_idx is None or breakout_level is None:
-        return False, "NO_BREAKOUT", {}
-    if breakout_idx >= len(c) - 1:
-        return False, "NO_RETEST_BAR", {"breakout_idx": breakout_idx}
-
-    i = len(c) - 1
-    retest_low = l[i]
-    trigger_rvol = _relative_volume(v, i, 20)
-    trigger_close_pos = _close_position_in_range(o[i], h[i], l[i], c[i])
-    trigger_lower_wick = _lower_wick_ratio(o[i], h[i], l[i], c[i])
-    trigger_range_atr = _candle_range_atr(o[i], h[i], l[i], c[i], atr)
-    trigger_body_atr = _candle_body_atr(o[i], h[i], l[i], c[i], atr)
-    trigger_ema20_extension_atr = (c[i] - ema20[i]) / max(atr, 1e-12)
-
-    touched = retest_low <= breakout_level + (atr * RETEST_TOL_ATR)
-    hard_fail = retest_low < breakout_level - (atr * RETEST_HARD_FAIL_ATR)
-    close_ok = (
-        (c[i] > breakout_level and c[i] > o[i] and c[i] > ema20[i])
-        or (
-            c[i] >= breakout_level - (atr * RETEST_CLOSE_ATR_TOL)
-            and c[i] >= ema20[i] - (atr * RETEST_EMA20_TOL_ATR)
-            and trigger_close_pos >= RETEST_CONFIRM_CLOSE_POS_FLEX_LONG
+def _resolve_tf_snapshot(symbol: str, interval: str, limit: int, provided_market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if interval == TF_5M and isinstance(provided_market_context, dict):
+        tf_ctx = ((provided_market_context.get("timeframes") or {}).get(TF_5M) if isinstance(provided_market_context.get("timeframes"), dict) else None)
+        if isinstance(tf_ctx, dict) and tf_ctx.get("candles"):
+            return tf_ctx
+    if interval == TF_5M:
+        ctx = build_market_context(
+            symbol=symbol,
+            interval=TF_5M,
+            limit=LOOKBACK_5M,
+            ema_periods=(EMA_FAST, EMA_MID, EMA_SLOW),
+            adx_period=ADX_PERIOD,
+            atr_period=ATR_PERIOD,
         )
-    )
-    body_ok = _body_ratio(o[i], h[i], l[i], c[i]) >= MIN_BODY_RATIO
-    chase_ok = (c[i] - breakout_level) <= atr * MAX_CHASE_ATR
-    close_loc_ok = trigger_close_pos >= TRIGGER_CLOSE_POS_LONG_MIN
-    trigger_rvol_ok = trigger_rvol >= TRIGGER_MIN_RVOL
-    wick_support_ok = trigger_lower_wick >= 0.12 or trigger_close_pos >= 0.72
-    range_ok = trigger_range_atr <= TRIGGER_MAX_RANGE_ATR
-    body_expansion_ok = trigger_body_atr <= TRIGGER_MAX_BODY_ATR
-    ema20_extension_ok = trigger_ema20_extension_atr <= TRIGGER_MAX_EMA20_EXTENSION_ATR
-    post_break_lows = min(l[breakout_idx + 1 : i + 1]) if i > breakout_idx else l[i]
-    retained_structure = post_break_lows >= breakout_level - (atr * RETEST_HARD_FAIL_ATR)
+        tf_ctx = ((ctx.get("timeframes") or {}).get(TF_5M) if isinstance(ctx.get("timeframes"), dict) else None)
+        if isinstance(tf_ctx, dict):
+            return tf_ctx
+    candles, status = _fetch_candles(symbol, interval, limit)
+    out = _tf_snapshot_from_candles(candles, interval)
+    if status != "OK":
+        out["status"] = status
+        out["detail"] = status
+        out["context_ok"] = False
+    return out
 
-    diag = {
-        "breakout_level": round(float(breakout_level), 8),
-        "breakout_idx": int(breakout_idx),
-        "bars_since_breakout": int(i - breakout_idx),
-        "touched": bool(touched),
-        "hard_fail": bool(hard_fail),
-        "close_ok": bool(close_ok),
-        "body_ratio": round(_body_ratio(o[i], h[i], l[i], c[i]), 4),
-        "breakout_body_ratio": round(float(breakout_body), 4),
-        "breakout_rvol": round(float(breakout_rvol), 4),
-        "trigger_rvol": round(float(trigger_rvol), 4),
-        "trigger_close_pos": round(float(trigger_close_pos), 4),
-        "trigger_lower_wick": round(float(trigger_lower_wick), 4),
-        "trigger_range_atr": round(float(trigger_range_atr), 4),
-        "trigger_body_atr": round(float(trigger_body_atr), 4),
-        "trigger_ema20_extension_atr": round(float(trigger_ema20_extension_atr), 4),
-        "close_dist_atr": round(float(breakout_close_dist_atr), 4),
-        "chase_atr": round((c[i] - breakout_level) / max(atr, 1e-12), 4),
-        "retest_gap_atr": round((retest_low - breakout_level) / max(atr, 1e-12), 4),
+
+def _bias_from_tf(tf_ctx: Dict[str, Any], *, adx_min: float, require_close_on_fast: bool = True) -> Tuple[str, Dict[str, Any]]:
+    c = tf_ctx.get("c") or []
+    ema20 = tf_ctx.get(f"ema{EMA_FAST}") or []
+    ema50 = tf_ctx.get(f"ema{EMA_MID}") or []
+    ema200 = tf_ctx.get(f"ema{EMA_SLOW}") or []
+    if not c or not ema20 or not ema50 or not ema200:
+        return "none", {"reason": "NO_TF_DATA"}
+    close = float(c[-1])
+    adx_val = float(tf_ctx.get("adx") or 0.0)
+    atr_pct = float(tf_ctx.get("atr_pct") or 0.0)
+    slope20 = _pct_change(float(ema20[-1]), float(ema20[max(0, len(ema20) - 1 - EMA_SLOPE_LOOKBACK)] or ema20[-1]))
+    slope50 = _pct_change(float(ema50[-1]), float(ema50[max(0, len(ema50) - 1 - EMA_SLOPE_LOOKBACK)] or ema50[-1]))
+    stack_spread = abs(float(ema20[-1]) - float(ema50[-1])) / max(close, 1e-12)
+    long_bias = (
+        close > ema20[-1] > ema50[-1] > ema200[-1]
+        and slope20 > 0.0
+        and slope50 >= -0.00010
+        and adx_val >= adx_min
+        and stack_spread >= TREND_STACK_MIN_PCT
+        and (not require_close_on_fast or close >= ema20[-1])
+    )
+    short_bias = (
+        close < ema20[-1] < ema50[-1] < ema200[-1]
+        and slope20 < 0.0
+        and slope50 <= 0.00010
+        and adx_val >= adx_min
+        and stack_spread >= TREND_STACK_MIN_PCT
+        and (not require_close_on_fast or close <= ema20[-1])
+    )
+    direction = "long" if long_bias else "short" if short_bias else "none"
+    return direction, {
+        "adx": round(adx_val, 2),
+        "atr_pct": round(atr_pct, 6),
+        "slope20": round(slope20, 6),
+        "slope50": round(slope50, 6),
+        "stack_spread": round(stack_spread, 6),
+        "close": round(close, 8),
+        "ema20": round(float(ema20[-1]), 8),
+        "ema50": round(float(ema50[-1]), 8),
+        "ema200": round(float(ema200[-1]), 8),
     }
 
-    if hard_fail or not retained_structure:
-        return False, "RETEST_TOO_DEEP", diag
-    if not touched:
-        return False, "NO_RETEST_TOUCH", diag
-    if not close_ok:
-        return False, "RETEST_CLOSE_BAD", diag
-    if not body_ok:
-        return False, "TRIGGER_BODY_WEAK", diag
-    if not close_loc_ok:
-        return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
-    if not trigger_rvol_ok:
-        return False, "RETEST_VOLUME_WEAK", diag
-    if not wick_support_ok:
-        return False, "TRIGGER_REJECTION_WEAK", diag
-    if not range_ok:
-        return False, "TRIGGER_CANDLE_TOO_LARGE", diag
-    if not body_expansion_ok:
-        return False, "TRIGGER_BODY_OVEREXTENDED", diag
-    if not ema20_extension_ok:
-        return False, "TRIGGER_TOO_FAR_FROM_EMA20", diag
-    if not chase_ok:
-        return False, "TOO_EXTENDED_AFTER_RETEST", diag
-    return True, "OK", diag
 
-
-def _detect_breakout_retest_short(
-    o: List[float], h: List[float], l: List[float], c: List[float], v: List[float], ema20: List[float], ema50: List[float], atr: float
-) -> Tuple[bool, str, Dict[str, Any]]:
-    if len(c) < max(BREAKOUT_LOOKBACK + BREAKOUT_MAX_AGE_BARS + 4, 80):
-        return False, "NOT_ENOUGH_BARS", {}
-    breakout_idx = None
-    breakout_level = None
-    breakout_rvol = 1.0
-    breakout_body = 0.0
-    breakout_close_dist_atr = 0.0
-    breakout_buffer = atr * BREAKOUT_MIN_ATR_FRAC
-    start = len(c) - BREAKOUT_MAX_AGE_BARS - 2
-    end = len(c) - 1
-    for i in range(start, end):
-        left_start = max(0, i - BREAKOUT_LOOKBACK)
-        if i - left_start < 8:
-            continue
-        level = min(l[left_start:i])
-        candle_body = _body_ratio(o[i], h[i], l[i], c[i])
-        candle_rvol = _relative_volume(v, i, 20)
-        close_dist_atr = (level - c[i]) / max(atr, 1e-12)
-        if (
-            c[i] < level - breakout_buffer
-            and l[i] < level - breakout_buffer
-            and c[i] < ema20[i]
-            and c[i] < ema50[i]
-            and candle_body >= BREAKOUT_MIN_BODY_RATIO
-            and candle_rvol >= BREAKOUT_MIN_RVOL
-            and close_dist_atr >= BREAKOUT_CONFIRM_CLOSE_ATR
-        ):
-            breakout_idx = i
-            breakout_level = level
-            breakout_rvol = candle_rvol
-            breakout_body = candle_body
-            breakout_close_dist_atr = close_dist_atr
-    if breakout_idx is None or breakout_level is None:
-        return False, "NO_BREAKDOWN", {}
-    if breakout_idx >= len(c) - 1:
-        return False, "NO_RETEST_BAR", {"breakout_idx": breakout_idx}
-
-    i = len(c) - 1
-    retest_high = h[i]
-    trigger_rvol = _relative_volume(v, i, 20)
-    trigger_close_pos = _close_position_in_range(o[i], h[i], l[i], c[i])
-    trigger_upper_wick = _upper_wick_ratio(o[i], h[i], l[i], c[i])
-    trigger_range_atr = _candle_range_atr(o[i], h[i], l[i], c[i], atr)
-    trigger_body_atr = _candle_body_atr(o[i], h[i], l[i], c[i], atr)
-    trigger_ema20_extension_atr = (ema20[i] - c[i]) / max(atr, 1e-12)
-
-    touched = retest_high >= breakout_level - (atr * RETEST_TOL_ATR)
-    hard_fail = retest_high > breakout_level + (atr * RETEST_HARD_FAIL_ATR)
-    close_ok = (
-        (c[i] < breakout_level and c[i] < o[i] and c[i] < ema20[i])
-        or (
-            c[i] <= breakout_level + (atr * RETEST_CLOSE_ATR_TOL)
-            and c[i] <= ema20[i] + (atr * RETEST_EMA20_TOL_ATR)
-            and trigger_close_pos <= RETEST_CONFIRM_CLOSE_POS_FLEX_SHORT
-        )
-    )
-    body_ok = _body_ratio(o[i], h[i], l[i], c[i]) >= MIN_BODY_RATIO
-    chase_ok = (breakout_level - c[i]) <= atr * MAX_CHASE_ATR
-    close_loc_ok = trigger_close_pos <= TRIGGER_CLOSE_POS_SHORT_MAX
-    trigger_rvol_ok = trigger_rvol >= TRIGGER_MIN_RVOL
-    wick_support_ok = trigger_upper_wick >= 0.12 or trigger_close_pos <= 0.28
-    range_ok = trigger_range_atr <= TRIGGER_MAX_RANGE_ATR
-    body_expansion_ok = trigger_body_atr <= TRIGGER_MAX_BODY_ATR
-    ema20_extension_ok = trigger_ema20_extension_atr <= TRIGGER_MAX_EMA20_EXTENSION_ATR
-    post_break_highs = max(h[breakout_idx + 1 : i + 1]) if i > breakout_idx else h[i]
-    retained_structure = post_break_highs <= breakout_level + (atr * RETEST_HARD_FAIL_ATR)
-
-    diag = {
-        "breakout_level": round(float(breakout_level), 8),
-        "breakout_idx": int(breakout_idx),
-        "bars_since_breakout": int(i - breakout_idx),
-        "touched": bool(touched),
-        "hard_fail": bool(hard_fail),
-        "close_ok": bool(close_ok),
-        "body_ratio": round(_body_ratio(o[i], h[i], l[i], c[i]), 4),
-        "breakout_body_ratio": round(float(breakout_body), 4),
-        "breakout_rvol": round(float(breakout_rvol), 4),
-        "trigger_rvol": round(float(trigger_rvol), 4),
-        "trigger_close_pos": round(float(trigger_close_pos), 4),
-        "trigger_upper_wick": round(float(trigger_upper_wick), 4),
-        "trigger_range_atr": round(float(trigger_range_atr), 4),
-        "trigger_body_atr": round(float(trigger_body_atr), 4),
-        "trigger_ema20_extension_atr": round(float(trigger_ema20_extension_atr), 4),
-        "close_dist_atr": round(float(breakout_close_dist_atr), 4),
-        "chase_atr": round((breakout_level - c[i]) / max(atr, 1e-12), 4),
-        "retest_gap_atr": round((breakout_level - retest_high) / max(atr, 1e-12), 4),
-    }
-
-    if hard_fail or not retained_structure:
-        return False, "RETEST_TOO_DEEP", diag
-    if not touched:
-        return False, "NO_RETEST_TOUCH", diag
-    if not close_ok:
-        return False, "RETEST_CLOSE_BAD", diag
-    if not body_ok:
-        return False, "TRIGGER_BODY_WEAK", diag
-    if not close_loc_ok:
-        return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
-    if not trigger_rvol_ok:
-        return False, "RETEST_VOLUME_WEAK", diag
-    if not wick_support_ok:
-        return False, "TRIGGER_REJECTION_WEAK", diag
-    if not range_ok:
-        return False, "TRIGGER_CANDLE_TOO_LARGE", diag
-    if not body_expansion_ok:
-        return False, "TRIGGER_BODY_OVEREXTENDED", diag
-    if not ema20_extension_ok:
-        return False, "TRIGGER_TOO_FAR_FROM_EMA20", diag
-    if not chase_ok:
-        return False, "TOO_EXTENDED_AFTER_RETEST", diag
-    return True, "OK", diag
-
-
-def _compute_breakout_fixed_tp_pct(
+def _detect_simple_mtf_trigger(
     *,
-    score: float,
-    atr_pct: float,
-    sl_pct: float,
-    bars_since_breakout: int,
-    breakout_rvol: float,
-    trigger_rvol: float,
-) -> Tuple[float, float]:
-    sl_pct = max(float(sl_pct or 0.0), ATR_SL_MIN_PCT)
-    score = float(score or 0.0)
-    atr_pct = float(atr_pct or 0.0)
-    bars_since_breakout = max(1, int(bars_since_breakout or 1))
-    breakout_rvol = float(breakout_rvol or 1.0)
-    trigger_rvol = float(trigger_rvol or 1.0)
+    direction: str,
+    o: List[float],
+    h: List[float],
+    l: List[float],
+    c: List[float],
+    v: List[float],
+    ema20: List[float],
+    ema50: List[float],
+    ema200: List[float],
+    atr: float,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    if len(c) < max(EMA_SLOW + 5, 80):
+        return False, "NOT_ENOUGH_BARS", {}
+    i = len(c) - 1
+    recent_idx = list(range(max(0, i - RESET_LOOKBACK_BARS), i))
+    if not recent_idx:
+        return False, "NO_RESET_WINDOW", {}
+    reset_low = min(l[j] for j in recent_idx)
+    reset_high = max(h[j] for j in recent_idx)
+    min_ema20 = min(float(ema20[j]) for j in recent_idx)
+    max_ema20 = max(float(ema20[j]) for j in recent_idx)
+    min_ema50 = min(float(ema50[j]) for j in recent_idx)
+    max_ema50 = max(float(ema50[j]) for j in recent_idx)
 
-    # Marco operativo fijo para breakout: TP total entre 0.7% y 0.9%.
-    tp_pct = 0.0079
-    tp_pct += _clamp((score - 85.0) * 0.00006, -0.00030, 0.00035)
-    tp_pct += _clamp((breakout_rvol - 1.0) * 0.00005, -0.00010, 0.00022)
-    tp_pct += _clamp((trigger_rvol - 1.0) * 0.00004, -0.00010, 0.00018)
-    tp_pct += _clamp((atr_pct - 0.0060) * 0.18, -0.00022, 0.00022)
-    tp_pct -= _clamp((bars_since_breakout - 1) * 0.00010, 0.0, 0.00045)
+    trigger_rvol = _relative_volume(v, i, 20)
+    trigger_body = _body_ratio(o[i], h[i], l[i], c[i])
+    trigger_close_pos = _close_position_in_range(o[i], h[i], l[i], c[i])
+    extension_atr = abs(float(c[i]) - float(ema20[i])) / max(atr, 1e-12)
+
+    if direction == "long":
+        trend_ok = c[i] > ema20[i] > ema50[i] > ema200[i]
+        reset_touched = reset_low <= (max_ema20 + atr * RESET_TOUCH_TOL_ATR)
+        reset_not_broken = reset_low >= (min_ema50 - atr * RESET_BREAK_TOL_ATR)
+        reclaim_ok = c[i] > ema20[i] and c[i] > max(c[i - 1], o[i - 1])
+        close_loc_ok = trigger_close_pos >= TRIGGER_CLOSE_POS_LONG_MIN
+        diag = {
+            "reset_low": round(float(reset_low), 8),
+            "ema20_ref": round(float(max_ema20), 8),
+            "ema50_ref": round(float(min_ema50), 8),
+            "trigger_rvol": round(float(trigger_rvol), 4),
+            "trigger_body": round(float(trigger_body), 4),
+            "trigger_close_pos": round(float(trigger_close_pos), 4),
+            "extension_atr": round(float(extension_atr), 4),
+            "bars_since_reset": int(i - recent_idx[-1]),
+        }
+        if not trend_ok:
+            return False, "NO_5M_TREND_STACK", diag
+        if not reset_touched:
+            return False, "NO_RESET_TOUCH", diag
+        if not reset_not_broken:
+            return False, "RESET_TOO_DEEP", diag
+        if not reclaim_ok:
+            return False, "TRIGGER_RECLAIM_BAD", diag
+        if trigger_rvol < TRIGGER_MIN_RVOL:
+            return False, "TRIGGER_VOLUME_WEAK", diag
+        if trigger_body < TRIGGER_MIN_BODY_RATIO:
+            return False, "TRIGGER_BODY_WEAK", diag
+        if not close_loc_ok:
+            return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
+        if extension_atr > TRIGGER_MAX_EMA20_EXTENSION_ATR:
+            return False, "TRIGGER_TOO_EXTENDED", diag
+        return True, "OK", diag
+
+    trend_ok = c[i] < ema20[i] < ema50[i] < ema200[i]
+    reset_touched = reset_high >= (min_ema20 - atr * RESET_TOUCH_TOL_ATR)
+    reset_not_broken = reset_high <= (max_ema50 + atr * RESET_BREAK_TOL_ATR)
+    reclaim_ok = c[i] < ema20[i] and c[i] < min(c[i - 1], o[i - 1])
+    close_loc_ok = trigger_close_pos <= TRIGGER_CLOSE_POS_SHORT_MAX
+    diag = {
+        "reset_high": round(float(reset_high), 8),
+        "ema20_ref": round(float(min_ema20), 8),
+        "ema50_ref": round(float(max_ema50), 8),
+        "trigger_rvol": round(float(trigger_rvol), 4),
+        "trigger_body": round(float(trigger_body), 4),
+        "trigger_close_pos": round(float(trigger_close_pos), 4),
+        "extension_atr": round(float(extension_atr), 4),
+        "bars_since_reset": int(i - recent_idx[-1]),
+    }
+    if not trend_ok:
+        return False, "NO_5M_TREND_STACK", diag
+    if not reset_touched:
+        return False, "NO_RESET_TOUCH", diag
+    if not reset_not_broken:
+        return False, "RESET_TOO_DEEP", diag
+    if not reclaim_ok:
+        return False, "TRIGGER_RECLAIM_BAD", diag
+    if trigger_rvol < TRIGGER_MIN_RVOL:
+        return False, "TRIGGER_VOLUME_WEAK", diag
+    if trigger_body < TRIGGER_MIN_BODY_RATIO:
+        return False, "TRIGGER_BODY_WEAK", diag
+    if not close_loc_ok:
+        return False, "TRIGGER_CLOSE_LOCATION_BAD", diag
+    if extension_atr > TRIGGER_MAX_EMA20_EXTENSION_ATR:
+        return False, "TRIGGER_TOO_EXTENDED", diag
+    return True, "OK", diag
+
+
+def _compute_simple_mtf_fixed_tp_pct(*, score: float, atr_pct: float, trigger_rvol: float) -> Tuple[float, float]:
+    tp_pct = 0.0080
+    tp_pct += _clamp((float(score or 0.0) - 82.0) * 0.000055, -0.00035, 0.00035)
+    tp_pct += _clamp((float(trigger_rvol or 1.0) - 1.0) * 0.00008, -0.00012, 0.00020)
+    tp_pct += _clamp((float(atr_pct or 0.0) - 0.0060) * 0.10, -0.00012, 0.00012)
     tp_pct = _clamp(tp_pct, 0.0070, 0.0090)
-
-    rr_target = tp_pct / max(sl_pct, 1e-12)
-    return round(tp_pct, 6), round(rr_target, 4)
+    return round(tp_pct, 6), 0.0
 
 
 def _dynamic_trade_management_params(
@@ -596,94 +520,82 @@ def _dynamic_trade_management_params(
     atr_pct: Optional[float] = None,
     *,
     sl_pct: Optional[float] = None,
-    bars_since_breakout: int = 1,
-    breakout_rvol: float = 1.0,
     trigger_rvol: float = 1.0,
 ) -> Dict[str, Any]:
     atr_pct = float(atr_pct or 0.0)
     score = float(score or 0.0)
     strength = float(strength or 0.0)
-    sl_pct = float(sl_pct or ATR_SL_MIN_PCT)
+    sl_pct = float(sl_pct or SL_MIN_PCT)
 
-    tp_fixed, tp_rr_multiple = _compute_breakout_fixed_tp_pct(
-        score=score,
-        atr_pct=atr_pct,
-        sl_pct=sl_pct,
-        bars_since_breakout=bars_since_breakout,
-        breakout_rvol=breakout_rvol,
-        trigger_rvol=trigger_rvol,
-    )
+    tp_fixed, _ = _compute_simple_mtf_fixed_tp_pct(score=score, atr_pct=atr_pct, trigger_rvol=trigger_rvol)
+    rr_target = round(tp_fixed / max(sl_pct, 1e-12), 4)
 
-    break_even_activation = _clamp(max(sl_pct * 0.52, tp_fixed * 0.46), 0.0037, min(tp_fixed * 0.62, 0.0052))
-
-    # El offset del break-even debe cubrir fees/slippage sin ahogar la posición.
-    break_even_offset = _clamp(max(atr_pct * 0.06, 0.00055), 0.00055, 0.00105)
-
-    if score >= 90.0:
+    if score >= 88.0 or strength >= 0.88:
         bucket = "strong"
-    elif score >= 83.0:
+        be_ratio = 0.60
+        be_offset = 0.00070
+    elif score >= 79.0 or strength >= 0.76:
         bucket = "base"
+        be_ratio = 0.54
+        be_offset = 0.00060
     else:
         bucket = "weak"
+        be_ratio = 0.48
+        be_offset = 0.00055
 
+    be_activation = _clamp(tp_fixed * be_ratio, 0.0032, 0.0054)
     return {
-        "bucket": bucket,
         "tp_activation_price": round(tp_fixed, 6),
         "trail_retrace_price": 0.0,
         "force_min_profit_price": 999999.0,
         "force_min_strength": 0.0,
         "partial_tp_activation_price": 999999.0,
         "partial_tp_close_fraction": 0.0,
-        "break_even_activation_price": round(break_even_activation, 6),
-        "break_even_offset_price": round(break_even_offset, 6),
-        "tp_rr_multiple": round(tp_rr_multiple, 4),
+        "break_even_activation_price": round(be_activation, 6),
+        "break_even_offset_price": round(be_offset, 6),
+        "bucket": bucket,
         "vol_regime": _volatility_regime_from_atr_pct(atr_pct),
+        "tp_rr_multiple": rr_target,
     }
 
 
-def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None, sl_pct: Optional[float] = None) -> Dict[str, Any]:
-    return _dynamic_trade_management_params(strength, score, atr_pct, sl_pct=sl_pct)
+def get_trade_management_params(strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
+    return _dynamic_trade_management_params(strength, score, atr_pct)
 
 
 def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
+    coin = str(market_context.get("coin") or market_context.get("symbol") or "").upper()
     try:
-        coin = str(market_context.get("coin") or "").strip()
-        if not coin:
-            return {"signal": False, "reason": "BAD_SYMBOL"}
+        tf5 = _resolve_tf_snapshot(coin, TF_5M, LOOKBACK_5M, provided_market_context=market_context)
+        candles5 = tf5.get("candles") or []
+        ok_symbol, reason_symbol, symbol_diag = _validate_symbol_quality(coin, candles5)
+        if not ok_symbol:
+            return {"signal": False, "reason": reason_symbol, "coin": coin, "diag": symbol_diag}
+        if str(tf5.get("status") or "") != "OK" or bool(tf5.get("stale", True)):
+            return {"signal": False, "reason": "STALE_OR_BAD_5M", "coin": coin, "diag": {"status": tf5.get("status"), "age_s": round(float(tf5.get("age_s", 0.0) or 0.0), 1)}}
 
-        tf5 = (market_context.get("timeframes") or {}).get(TF_5M) or {}
-        st5 = str(tf5.get("status") or "UNKNOWN")
-        c5 = tf5.get("candles") or []
-        if st5 in ("API_FAIL", "BAD_SYMBOL", "BAD_INTERVAL"):
-            return {"signal": False, "reason": "CANDLES_FETCH_FAIL", "detail": {"5m": st5}, "coin": coin}
-        if not c5:
-            return {"signal": False, "reason": "NO_CANDLES", "coin": coin}
-
-        quality_ok, quality_reason, quality_diag = _validate_symbol_quality(coin, c5)
-        if not quality_ok:
-            return {"signal": False, "reason": quality_reason, "coin": coin, "diag": quality_diag}
-
-        stale5 = bool(tf5.get("stale", True))
-        age5 = float(tf5.get("age_s", 0.0) or 0.0)
-        t5 = int(tf5.get("last_t", 0) or 0)
-        if stale5:
-            return {"signal": False, "reason": "STALE_CANDLES", "coin": coin, "age_s": {"5m": round(age5, 1)}, "last_t": {"5m": t5}}
+        tf15 = _resolve_tf_snapshot(coin, TF_15M, LOOKBACK_15M)
+        tf1h = _resolve_tf_snapshot(coin, TF_1H, LOOKBACK_1H)
+        if str(tf15.get("status") or "") != "OK" or str(tf1h.get("status") or "") != "OK":
+            return {
+                "signal": False,
+                "reason": "BAD_HIGHER_TF_DATA",
+                "coin": coin,
+                "diag": {"tf15": tf15.get("status"), "tf1h": tf1h.get("status")},
+            }
 
         o5 = tf5.get("o") or []
         h5 = tf5.get("h") or []
         l5 = tf5.get("l") or []
-        cl5 = tf5.get("c") or []
+        c5 = tf5.get("c") or []
         v5 = tf5.get("v") or []
-        if not cl5:
-            return {"signal": False, "reason": "BAD_CANDLES_PARSE", "coin": coin}
+        ema20_5 = tf5.get(f"ema{EMA_FAST}") or []
+        ema50_5 = tf5.get(f"ema{EMA_MID}") or []
+        ema200_5 = tf5.get(f"ema{EMA_SLOW}") or []
+        if not c5 or not ema20_5 or not ema50_5 or not ema200_5:
+            return {"signal": False, "reason": "NO_5M_TREND_DATA", "coin": coin}
 
-        ema20 = tf5.get(f"ema{EMA_FAST}") or []
-        ema50 = tf5.get(f"ema{EMA_MID}") or []
-        ema200 = tf5.get(f"ema{EMA_SLOW}") or []
-        if not ema20 or not ema50 or not ema200:
-            return {"signal": False, "reason": "NO_TREND_DATA", "coin": coin}
-
-        close5 = float(tf5.get("close") or cl5[-1])
+        close5 = float(tf5.get("close") or c5[-1])
         adx5 = float(tf5.get("adx") or 0.0)
         atr5 = float(tf5.get("atr") or 0.0)
         atr_pct = float(tf5.get("atr_pct") or 0.0)
@@ -691,74 +603,70 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             return {"signal": False, "reason": "ATR_TOO_LOW", "coin": coin, "diag": {"atr_pct": round(atr_pct, 6)}}
         if atr_pct > ATR_PCT_MAX:
             return {"signal": False, "reason": "ATR_TOO_HIGH", "coin": coin, "diag": {"atr_pct": round(atr_pct, 6)}}
-        if adx5 < ADX_MIN:
-            return {"signal": False, "reason": "ADX_TOO_LOW", "coin": coin, "diag": {"adx5": round(adx5, 2)}}
+        if adx5 < M5_ADX_MIN:
+            return {"signal": False, "reason": "ADX_5M_TOO_LOW", "coin": coin, "diag": {"adx5": round(adx5, 2)}}
 
-        slope50 = _pct_change(float(ema50[-1]), float(ema50[max(0, len(ema50) - 1 - EMA_SLOPE_LOOKBACK)] or ema50[-1]))
-        slope200 = _pct_change(float(ema200[-1]), float(ema200[max(0, len(ema200) - 1 - EMA_SLOPE_LOOKBACK)] or ema200[-1]))
+        bias1h, diag1h = _bias_from_tf(tf1h, adx_min=H1_ADX_MIN, require_close_on_fast=True)
+        bias15, diag15 = _bias_from_tf(tf15, adx_min=M15_ADX_MIN, require_close_on_fast=True)
+        if bias1h == "none":
+            return {"signal": False, "reason": "NO_H1_BIAS", "coin": coin, "diag": diag1h}
+        if bias15 == "none":
+            return {"signal": False, "reason": "NO_M15_BIAS", "coin": coin, "diag": diag15}
+        if bias1h != bias15:
+            return {"signal": False, "reason": "MTF_BIAS_MISMATCH", "coin": coin, "diag": {"h1": bias1h, "m15": bias15, "diag1h": diag1h, "diag15": diag15}}
 
-        long_trend = ema20[-1] > ema50[-1] and close5 > ema50[-1] and slope50 > 0.00012 and slope200 > -0.0022
-        short_trend = ema20[-1] < ema50[-1] and close5 < ema50[-1] and slope50 < -0.00012 and slope200 < 0.0022
-
-        if long_trend:
-            direction = "long"
-            ok, reason5, diag5 = _detect_breakout_retest_long(o5, h5, l5, cl5, v5, ema20, ema50, atr5)
-        elif short_trend:
-            direction = "short"
-            ok, reason5, diag5 = _detect_breakout_retest_short(o5, h5, l5, cl5, v5, ema20, ema50, atr5)
-        else:
-            return {"signal": False, "reason": "NO_TREND_STACK_5M", "coin": coin, "diag": {"slope50": round(slope50, 5), "slope200": round(slope200, 5)}}
-
-        if not ok:
+        direction = bias1h
+        ok_trigger, reason5, diag5 = _detect_simple_mtf_trigger(
+            direction=direction,
+            o=o5,
+            h=h5,
+            l=l5,
+            c=c5,
+            v=v5,
+            ema20=ema20_5,
+            ema50=ema50_5,
+            ema200=ema200_5,
+            atr=atr5,
+        )
+        if not ok_trigger:
             if LOG_SIGNAL_DIAGNOSTICS:
                 _log(f"BLOCK coin={coin} dir={direction} reason={reason5} diag={diag5}")
-            return {"signal": False, "reason": f"BREAKOUT_RETEST_{reason5}", "coin": coin, "diag": diag5}
+            return {"signal": False, "reason": f"MTF_SIMPLE_{reason5}", "coin": coin, "diag": diag5}
 
         if direction == "long":
-            swing_low = min(l5[-10:])
-            swing_dist_pct = max(0.0, (close5 - swing_low) / max(close5, 1e-12))
+            reset_extreme = min(l5[max(0, len(l5) - 1 - RESET_LOOKBACK_BARS): len(l5) - 1])
+            structural_pct = max(0.0, (close5 - reset_extreme) / max(close5, 1e-12))
         else:
-            swing_high = max(h5[-10:])
-            swing_dist_pct = max(0.0, (swing_high - close5) / max(close5, 1e-12))
+            reset_extreme = max(h5[max(0, len(h5) - 1 - RESET_LOOKBACK_BARS): len(h5) - 1])
+            structural_pct = max(0.0, (reset_extreme - close5) / max(close5, 1e-12))
 
-        sl_from_atr = atr_pct * ATR_SL_MULT
-        sl_from_swing = swing_dist_pct + ((atr5 / max(close5, 1e-12)) * SWING_BUFFER_ATR)
-        sl_pct = _clamp(max(sl_from_atr, sl_from_swing), ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
+        sl_from_atr = atr_pct * SL_ATR_MULT
+        sl_from_structure = structural_pct + ((atr5 / max(close5, 1e-12)) * SL_BUFFER_ATR)
+        sl_pct = _clamp(max(sl_from_atr, sl_from_structure), SL_MIN_PCT, SL_MAX_PCT)
 
-        breakout_rvol = float(diag5.get("breakout_rvol", 1.0) or 1.0)
         trigger_rvol = float(diag5.get("trigger_rvol", 1.0) or 1.0)
+        trigger_body = float(diag5.get("trigger_body", 0.0) or 0.0)
         trigger_close_pos = float(diag5.get("trigger_close_pos", 0.5) or 0.5)
-        bars_since_breakout = int(diag5.get("bars_since_breakout", BREAKOUT_MAX_AGE_BARS) or BREAKOUT_MAX_AGE_BARS)
-        ema_stack_pct = abs(float(ema20[-1]) - float(ema50[-1])) / max(close5, 1e-12)
+        extension_atr = float(diag5.get("extension_atr", 0.0) or 0.0)
 
-        adx_quality = _clamp((adx5 - ADX_MIN) / 18.0, 0.0, 1.0)
-        slope_quality = _clamp((abs(slope50) - 0.0002) / 0.0078, 0.0, 1.0)
-        body_quality = _clamp(diag5.get("body_ratio", 0.0) / 0.72, 0.0, 1.0)
-        breakout_body_quality = _clamp(diag5.get("breakout_body_ratio", 0.0) / 0.72, 0.0, 1.0)
-        volume_quality = _clamp(((breakout_rvol - 0.90) / 0.85) * 0.58 + ((trigger_rvol - 0.85) / 0.70) * 0.42, 0.0, 1.0)
-        retest_location_quality = _clamp(trigger_close_pos if direction == "long" else (1.0 - trigger_close_pos), 0.0, 1.0)
-        retest_proximity_quality = _clamp(1.0 - (abs(diag5.get("retest_gap_atr", 0.0)) / max(RETEST_TOL_ATR, 1e-12)), 0.0, 1.0)
-        trend_stack_quality = _clamp((ema_stack_pct - TREND_STACK_MIN_PCT) / 0.0038, 0.0, 1.0)
-        extension_penalty = _clamp(abs(diag5.get("chase_atr", 0.0)) / MAX_CHASE_ATR, 0.0, 1.0)
-        age_penalty = _clamp((bars_since_breakout - 1) / max(BREAKOUT_MAX_AGE_BARS - 1, 1), 0.0, 1.0)
-        atr_regime_quality = 1.0 - _clamp((atr_pct - ATR_PCT_MIN) / max(ATR_PCT_MAX - ATR_PCT_MIN, 1e-12), 0.0, 1.0) * 0.22
+        h1_strength = _clamp((float(diag1h.get("adx", 0.0)) - H1_ADX_MIN) / 15.0, 0.0, 1.0)
+        m15_strength = _clamp((float(diag15.get("adx", 0.0)) - M15_ADX_MIN) / 14.0, 0.0, 1.0)
+        m5_strength = _clamp((adx5 - M5_ADX_MIN) / 13.0, 0.0, 1.0)
+        trigger_quality = _clamp(((trigger_rvol - 0.75) / 0.90) * 0.45 + ((trigger_body - 0.18) / 0.45) * 0.35 + (0.20 * (1.0 - _clamp(extension_atr / max(TRIGGER_MAX_EMA20_EXTENSION_ATR, 1e-12), 0.0, 1.0))), 0.0, 1.0)
+        close_loc_quality = _clamp(trigger_close_pos if direction == "long" else (1.0 - trigger_close_pos), 0.0, 1.0)
+        stack_quality = _clamp((float(diag1h.get("stack_spread", 0.0)) + float(diag15.get("stack_spread", 0.0))) / max(TREND_STACK_MIN_PCT * 6.0, 1e-12), 0.0, 1.0)
 
-        setup_quality = _clamp(
-            (0.22 * adx_quality)
-            + (0.18 * slope_quality)
-            + (0.12 * body_quality)
-            + (0.10 * breakout_body_quality)
-            + (0.19 * volume_quality)
-            + (0.10 * retest_location_quality)
-            + (0.07 * retest_proximity_quality)
-            + (0.11 * trend_stack_quality)
-            + (0.06 * atr_regime_quality)
-            - (0.04 * extension_penalty)
-            - (0.02 * age_penalty),
+        quality = _clamp(
+            (0.26 * h1_strength)
+            + (0.22 * m15_strength)
+            + (0.18 * m5_strength)
+            + (0.22 * trigger_quality)
+            + (0.12 * close_loc_quality)
+            + (0.10 * stack_quality),
             0.0,
             1.0,
         )
-        score = round(min(MAX_SCORE, 62.0 + (38.0 * setup_quality)), 2)
+        score = round(min(MAX_SCORE, 69.0 + (28.0 * quality)), 2)
         if score < MIN_SCORE_TO_SIGNAL:
             return {
                 "signal": False,
@@ -767,10 +675,11 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
                 "diag": {
                     "score": score,
                     "min_score": MIN_SCORE_TO_SIGNAL,
-                    "breakout_rvol": round(breakout_rvol, 4),
+                    "h1_adx": diag1h.get("adx"),
+                    "m15_adx": diag15.get("adx"),
                     "trigger_rvol": round(trigger_rvol, 4),
-                    "bars_since_breakout": bars_since_breakout,
-                    "ema_stack_pct": round(ema_stack_pct, 6),
+                    "trigger_body": round(trigger_body, 4),
+                    "extension_atr": round(extension_atr, 4),
                 },
             }
 
@@ -780,11 +689,11 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             score,
             atr_pct,
             sl_pct=sl_pct,
-            bars_since_breakout=bars_since_breakout,
-            breakout_rvol=breakout_rvol,
             trigger_rvol=trigger_rvol,
         )
 
+        t5 = int(tf5.get("last_t") or candles5[-1].get("t") or 0)
+        age5 = max(0.0, (time.time() * 1000.0 - t5) / 1000.0) if t5 else 0.0
         out = {
             "signal": True,
             "direction": direction,
@@ -802,27 +711,27 @@ def _evaluate_market_context(market_context: Dict[str, Any]) -> dict:
             "mgmt_bucket": str(mgmt["bucket"]),
             "vol_regime": str(mgmt.get("vol_regime", _volatility_regime_from_atr_pct(atr_pct))),
             "atr_pct": round(float(atr_pct), 6),
-            "breakout_rvol": round(breakout_rvol, 4),
             "trigger_rvol": round(trigger_rvol, 4),
-            "bars_since_breakout": int(bars_since_breakout),
-            "ema_stack_pct": round(float(ema_stack_pct), 6),
+            "ema_stack_pct": round(float(diag1h.get("stack_spread", 0.0)), 6),
             "coin": coin,
             "close_5": round(close5, 6),
             "last_candle_t_5m": int(t5),
-            "ema20_5m": round(float(ema20[-1]), 6),
-            "adx1": round(adx5, 2),
-            "adx15": round(adx5, 2),
-            "strategy_model": "breakout_retest_5m_v6_recalibrated",
-            "market_context_status": str(market_context.get("status") or st5),
+            "ema20_5m": round(float(ema20_5[-1]), 6),
+            "adx1": round(float(diag1h.get("adx", 0.0)), 2),
+            "adx15": round(float(diag15.get("adx", 0.0)), 2),
+            "strategy_model": "mtf_simple_continuation_5m_v1",
+            "market_context_status": str(market_context.get("status") or tf5.get("status") or "OK"),
             "tp_rr_multiple": float(mgmt.get("tp_rr_multiple", 0.0) or 0.0),
+            "h1_bias": direction,
+            "m15_bias": bias15,
         }
         if LOG_SIGNAL_DIAGNOSTICS:
             _log(
                 f"SIGNAL coin={coin} dir={out['direction']} close_5={out['close_5']} t5={out['last_candle_t_5m']} age5s={round(age5,1)} "
-                f"adx5={round(adx5,2)} atr_pct={out['atr_pct']} vol_regime={out['vol_regime']} score={out['score']} "
-                f"breakout_rvol={out['breakout_rvol']} trigger_rvol={out['trigger_rvol']} bars_since_breakout={out['bars_since_breakout']} ema_stack_pct={out['ema_stack_pct']} "
-                f"breakout=OK sl_pct={out['sl_price_pct']} tp_fixed={out['tp_activation_price']} tp_rr={out['tp_rr_multiple']:.4f} "
-                f"be_act={out['break_even_activation_price']} be_offset={out['break_even_offset_price']} bucket={out['mgmt_bucket']}"
+                f"adx5={round(adx5,2)} adx15={out['adx15']} adx1={out['adx1']} atr_pct={out['atr_pct']} score={out['score']} "
+                f"trigger_rvol={out['trigger_rvol']} h1_bias={out['h1_bias']} m15_bias={out['m15_bias']} sl_pct={out['sl_price_pct']} "
+                f"tp_fixed={out['tp_activation_price']} tp_rr={out['tp_rr_multiple']:.4f} be_act={out['break_even_activation_price']} "
+                f"be_offset={out['break_even_offset_price']} bucket={out['mgmt_bucket']}"
             )
         return out
     except Exception as e:
@@ -841,19 +750,13 @@ def get_entry_signal(symbol: str, market_context: Optional[Dict[str, Any]] = Non
     return _evaluate_market_context(market_context)
 
 
-
-STRATEGY_ID = "breakout_reset"
+LEGACY_STRATEGY_ID = "breakout_reset"
+STRATEGY_ID = "mtf_simple"
 STRATEGY_VERSION = "v1"
-STRATEGY_MODEL = "breakout_retest_5m_v5_exit_asymmetry"
+STRATEGY_MODEL = "mtf_simple_continuation_5m_v1"
 
 
-class BreakoutResetStrategy(BaseStrategy):
-    """Implementación extraída de la estrategia breakout + retest actual.
-
-    Esta clase existe para desacoplar la estrategia del shim legacy `app.strategy`
-    sin cambiar todavía el contrato que usa el engine en producción.
-    """
-
+class MtfSimpleStrategy(BaseStrategy):
     strategy_id = STRATEGY_ID
     strategy_version = STRATEGY_VERSION
     strategy_model = STRATEGY_MODEL
@@ -864,13 +767,16 @@ class BreakoutResetStrategy(BaseStrategy):
             out.setdefault("strategy_id", self.strategy_id)
             out.setdefault("strategy_version", self.strategy_version)
             out.setdefault("strategy_model", self.strategy_model)
+            out.setdefault("strategy_legacy_alias", LEGACY_STRATEGY_ID)
         return out
 
     def get_trade_management_params(self, strength: float, score: float, atr_pct: Optional[float] = None) -> Dict[str, Any]:
         return get_trade_management_params(strength, score, atr_pct)
 
 
-DEFAULT_STRATEGY = BreakoutResetStrategy()
+# Alias de compatibilidad para no romper imports legacy.
+BreakoutResetStrategy = MtfSimpleStrategy
+DEFAULT_STRATEGY = MtfSimpleStrategy()
 
 
 def evaluate_symbol(symbol: str) -> dict:
