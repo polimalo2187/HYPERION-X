@@ -842,12 +842,13 @@ def _trail_exit_price_from_price(peak_or_trough_price: float, retrace_pct: float
     return (px * (1.0 - retr)) if d == "long" else (px * (1.0 + retr))
 
 
-def _log_trade_plan(*, context: str, user_id: int, symbol: str, direction: str, entry_price: float, sl_price_pct: float, tp_activate_price: float, break_even_activation_price: float, break_even_offset_price: float, qty_coin: float = 0.0, notional_usdc: float = 0.0, bucket: str = "") -> None:
+def _log_trade_plan(*, context: str, user_id: int, symbol: str, direction: str, entry_price: float, sl_price_pct: float, tp_activate_price: float, break_even_activation_price: float, break_even_offset_price: float, qty_coin: float = 0.0, notional_usdc: float = 0.0, bucket: str = "", strategy_id: str = "", strategy_model: str = "") -> None:
     sl_abs = _pct_to_abs_price(entry_price, sl_price_pct, direction, kind="sl")
     tp_abs = _pct_to_abs_price(entry_price, tp_activate_price, direction, kind="tp_activate")
     be_abs = _pct_to_abs_price(entry_price, break_even_offset_price, direction, kind="force_min_profit")
     log(
         f"TRADE_PLAN[{context}] user={user_id} symbol={symbol} dir={direction} "
+        f"strategy_id={strategy_id or 'n/a'} strategy_model={strategy_model or 'n/a'} "
         f"entry={float(entry_price):.8f} qty_coin={float(qty_coin):.8f} notional~={float(notional_usdc):.4f} "
         f"sl_pct={float(sl_price_pct):.6f} sl_price={sl_abs:.8f} "
         f"tp_fixed_pct={float(tp_activate_price):.6f} tp_fixed_price={tp_abs:.8f} "
@@ -3895,6 +3896,8 @@ def _manage_existing_open_position(user_id: int) -> Optional[dict]:
             qty_coin=float(qty_coin_real),
             notional_usdc=float(qty_usdc_real),
             bucket=str(adopt_mgmt.get("bucket", "")),
+            strategy_id=str((active_trade or {}).get("strategy_id") or ""),
+            strategy_model=str((active_trade or {}).get("strategy_model") or ""),
         )
         _update_active_trade_fields(user_id, adopt_plan_logged_at=now_ts)
 
@@ -4777,6 +4780,8 @@ def execute_trade_cycle(user_id: int) -> dict | None:
             qty_coin=float(size_real),
             notional_usdc=float(notional_real),
             bucket=str(mgmt.get("bucket", "")),
+            strategy_id=str(signal.get("strategy_id") or ""),
+            strategy_model=str(signal.get("strategy_model") or ""),
         )
 
         # ✅ PROTECCIÓN REAL EN EXCHANGE (BANK GRADE):
