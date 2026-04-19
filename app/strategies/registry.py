@@ -4,7 +4,8 @@ from typing import Dict
 
 from app.strategies.base import BaseStrategy
 
-DEFAULT_STRATEGY_ID = "breakout_reset"
+DEFAULT_STRATEGY_ID = "mtf_simple"
+LEGACY_DEFAULT_STRATEGY_ID = "breakout_reset"
 
 
 class StrategyRegistry:
@@ -21,6 +22,7 @@ class StrategyRegistry:
 
         self._strategies: Dict[str, BaseStrategy] = {
             DEFAULT_STRATEGY_ID: BREAKOUT_DEFAULT_STRATEGY,
+            LEGACY_DEFAULT_STRATEGY_ID: BREAKOUT_DEFAULT_STRATEGY,
             LIQUIDITY_DEFAULT_STRATEGY.strategy_id: LIQUIDITY_DEFAULT_STRATEGY,
             RANGE_DEFAULT_STRATEGY.strategy_id: RANGE_DEFAULT_STRATEGY,
         }
